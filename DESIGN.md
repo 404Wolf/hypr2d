@@ -314,3 +314,37 @@ The exact pending hand-test checklist is in README §Tracked swipe.
 M2 passed nine Rust tests, formatting/Clippy, and the complete normal nested
 suite, including the monitor-removal and paused-frame settlement regressions.
 Real trackpad testing remains explicitly pending.
+
+### M3 implementation and final validation
+
+The Rust `hypr2d` CLI uses Unix IPC directly, with explicit instance selection
+for tests. `waybar` subscribes to socket2 before its initial snapshot, blocks
+on events, fetches state only for relevant changes, and deduplicates rendered
+records. No process polling, interval, signal refresh, or hyprctl subprocess is
+used. Plugin `ready`/`unloaded` events let the same stream survive plugin reload;
+transient IPC errors can recover on the next relevant event. Selected-monitor
+moves are planned atomically in the core instead of a client read/goto race.
+
+The minimap is radius-configurable and shows current, occupied, empty and urgent
+cells, with escaped window metadata in the tooltip. Waybar's CSS classes apply
+to the entire custom widget, so classes describe states present in the minimap;
+per-cell colors use Pango spans. This API limit and the exact JSON/CSS examples
+are documented in README §Waybar. Click and scroll actions invoke the CLI.
+
+Final x86_64-linux validation passed:
+
+- Fifteen Rust tests (nine core/physics and six CLI/render/stream), rustfmt,
+  Clippy with `-D warnings`, C++ formatting and the pinned plugin/CLI build.
+- The complete M1–M3 suite in a normal unprivileged nested window and in the
+  disposable CI VM, including rapid moves, two-monitor all/focus/carry,
+  synthetic swipe offsets/cancellation/settlement/removal/unload, socket events,
+  CLI actions, idle deduplication, title/close events and escaping, and stream
+  recovery across plugin unload/reload.
+- The actual shipped Waybar config and CSS parsed and rendered in the nested
+  instance. A nested-only screenshot was visually inspected: compact 3×3
+  minimap with OneDark colors on the black bar.
+- `nix flake check --builders '' -L` completed successfully. aarch64-linux
+  remains untested; physical trackpad checks remain pending per README.
+
+M1–M3 are implemented. M4 and later milestones remain untouched. No live-session
+plugin load, Home Manager write, remote creation or push was performed.

@@ -23,8 +23,9 @@
           cargo clippy --workspace --all-targets --offline -- -D warnings
         '';
         installPhase = ''
-          mkdir -p $out/lib $out/include
+          mkdir -p $out/lib $out/include $out/bin
           cp target/*/release/libhypr2d_core.a $out/lib/
+          cp target/*/release/hypr2d $out/bin/
           cp -rL target/*/cxxbridge/* $out/include/
         '';
       };
@@ -41,12 +42,18 @@
             -I${rust}/include $(pkg-config --cflags hyprland) \
             ${rust}/lib/libhypr2d_core.a -o libhypr2d.so
         '';
-        installPhase = "mkdir -p $out/lib; cp libhypr2d.so $out/lib/";
+        installPhase = ''
+          mkdir -p $out/lib $out/bin
+          cp libhypr2d.so $out/lib/
+          cp ${rust}/bin/hypr2d $out/bin/
+          mkdir -p $out/share
+          cp -r ${./examples} $out/share/hypr2d
+        '';
       };
       nested = pkgs.writeShellApplication {
         name = "hypr2d-nested";
-        runtimeInputs = [ compositor pkgs.python3 pkgs.foot ];
-        text = builtins.replaceStrings [ "@PLUGIN@" "@SMOKE@" ] [ "${plugin}/lib/libhypr2d.so" "${./nix/smoke.py}" ] (builtins.readFile ./nix/nested.sh);
+        runtimeInputs = [ compositor pkgs.python3 pkgs.foot pkgs.waybar pkgs.grim ];
+        text = builtins.replaceStrings [ "@PLUGIN@" "@SMOKE@" "@CLI@" "@EXAMPLES@" ] [ "${plugin}/lib/libhypr2d.so" "${./nix/smoke.py}" "${rust}/bin/hypr2d" "${./examples}" ] (builtins.readFile ./nix/nested.sh);
       };
       parentConfig = pkgs.writeText "hypr2d-ci-parent.lua" ''
         hl.monitor({ output = "", mode = "1280x720@60", position = "auto", scale = 1 })
@@ -80,12 +87,14 @@
           machine.wait_until_succeeds("test -f /tmp/hypr2d-status", timeout=180)
           print(machine.succeed("cat /tmp/hypr2d-test.log"))
           machine.succeed("grep 'PASS M1:' /tmp/hypr2d-test.log")
+          machine.succeed("grep 'PASS M2:' /tmp/hypr2d-test.log")
+          machine.succeed("grep 'PASS M3:' /tmp/hypr2d-test.log")
           machine.succeed("grep '^0$' /tmp/hypr2d-status")
           machine.copy_from_machine("/tmp/hypr2d-test.log")
         '';
       };
-    in { default = plugin; inherit plugin nested rust integration; });
-    apps = each (system: { nested = { type = "app"; meta.description = "Run the isolated nested Hyprland spike"; program = "${self.packages.${system}.nested}/bin/hypr2d-nested"; }; });
+    in { default = plugin; cli = rust; inherit plugin nested rust integration; });
+    apps = each (system: { default = { type = "app"; meta.description = "hypr2d CLI and Waybar module"; program = "${self.packages.${system}.plugin}/bin/hypr2d"; }; nested = { type = "app"; meta.description = "Run the isolated nested Hyprland spike"; program = "${self.packages.${system}.nested}/bin/hypr2d-nested"; }; });
     devShells = each (system: let pkgs = import nixpkgs { inherit system; }; in { default = pkgs.mkShell { packages = [ pkgs.cargo pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.clang-tools ]; }; });
     checks = each (system: { inherit (self.packages.${system}) plugin rust integration; });
   };

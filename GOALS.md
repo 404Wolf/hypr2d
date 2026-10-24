@@ -22,8 +22,8 @@ changed; flag anything that blocks you at the bottom under "Questions".
   - Tested with Rust physics and synthetic events through production listeners in nested Hyprland. Real-trackpad hand-tests remain scheduled by the user; see README §Tracked swipe.
 
 ## M3 — Waybar module
-- [ ] `hypr2d waybar` streams JSON (no polling): minimap around the current cell, occupied/empty/urgent states as CSS classes, tooltip listing windows per occupied cell, click/scroll to move
-- [ ] Example waybar config + CSS in README
+- [x] `hypr2d waybar` streams JSON (no polling): minimap around the current cell, occupied/empty/urgent states as CSS classes, tooltip listing windows per occupied cell, click/scroll to move
+- [x] Example waybar config + CSS in README
 
 ## M4 — Overview
 - [ ] `hypr2d:overview` shows ALL monitors' grids at once (one panel per monitor, laid out like the physical monitors) plus the special-workspace strip, with live thumbnails

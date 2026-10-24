@@ -5,7 +5,7 @@ Lua binds and a JSON state endpoint.
 See [DESIGN.md](DESIGN.md) for API findings and [GOALS.md](GOALS.md) for milestones.
 
 ```sh
-nix build                    # result/lib/libhypr2d.so
+nix build                    # result/lib/libhypr2d.so + result/bin/hypr2d
 nix flake check              # plugin build and Rust tests
 nix run .#nested             # isolated, normal Wayland window
 nix run .#nested -- --smoke-test  # preload, log, unload/reload, exit assertions
@@ -147,3 +147,83 @@ test, check each of these:
 8. During tracking and settling, use a grid keybind, switch workspace externally,
    unplug the gesture's monitor, and unload/reload the plugin. No forced-visible
    neighbour, orphan callback, crash, or stray animation may remain.
+
+## Waybar
+
+The built package includes `bin/hypr2d` (also `nix build .#cli`). Run
+`hypr2d state`, `hypr2d move left`, `hypr2d carry down`, or `hypr2d goto 2 3`.
+The CLI talks directly to Hyprland's Unix socket; it starts no subprocesses.
+It uses `HYPRLAND_INSTANCE_SIGNATURE` and `XDG_RUNTIME_DIR`, or accepts an exact
+`--instance SIGNATURE`. Tests always supply their own nested signature.
+
+`hypr2d waybar [--monitor NAME] [--radius 0..4]` emits newline-delimited JSON.
+Radius 1 gives a 3×3 minimap around the current cell (smaller grids show each
+cell only once). Without `--monitor`, it follows the focused monitor. The
+stream subscribes to socket2 before its first snapshot and then blocks on
+events. It updates on workspace/focus, monitor, window title/open/close/move,
+urgency and plugin lifecycle changes; identical records are suppressed. Plugin
+unload shows an unavailable state and reload resumes the same process. No
+interval, polling loop, refresh signal, or repeated process execution is used.
+
+Use [examples/waybar.jsonc](examples/waybar.jsonc) and
+[examples/waybar.css](examples/waybar.css), also installed in
+`share/hypr2d/`. The exact module configuration is:
+
+```json
+"custom/hypr2d": {
+  "exec": "hypr2d waybar --radius 1",
+  "return-type": "json",
+  "format": "{text}",
+  "escape": false,
+  "exec-on-event": false,
+  "on-click": "hypr2d move right",
+  "on-click-right": "hypr2d move left",
+  "on-click-middle": "hypr2d goto 0 0",
+  "on-scroll-up": "hypr2d move up",
+  "on-scroll-down": "hypr2d move down"
+}
+```
+
+For a bar fixed to one output, add `--monitor eDP-1` to the stream and **all**
+actions, e.g. `hypr2d move right --monitor eDP-1`. Selected-monitor moves are
+planned atomically in the plugin; the CLI does not calculate a cell and race
+another read/goto pair. Add `custom/hypr2d` to the bar's module list. Do not set
+`interval`, `signal` or `restart-interval`; keep `exec-on-event` false.
+
+The supplied CSS uses a black background, OneDark foreground `#abb2bf`, blue
+current `#61afef`, green occupied `#98c379`, dim empty `#4b5263` and red urgent
+`#e06c75`. Glyphs are ● current, ◉ occupied, · empty and ! urgent. Titles and
+application IDs in the tooltip are markup-escaped; the tooltip lists every
+occupied cell on the selected monitor, including cells outside the minimap.
+
+`class` is an array containing the states present in the visible minimap:
+`current`, `occupied`, `empty`, `urgent`; error states are `unavailable` and
+`outside-grid`. GTK CSS styles the custom module as one widget. Individual
+cell colors use Pango spans, while the aggregate classes allow module borders
+and other CSS styling. Keep `escape: false` for these spans; all window text is
+escaped before it enters markup. This follows Waybar's documented
+[custom JSON module format](https://github.com/Alexays/Waybar/wiki/Module:-Custom).
+
+The example CSS (full file linked above):
+
+```css
+window#waybar { background: #000000; color: #abb2bf; }
+#custom-hypr2d {
+    background: #000000;
+    color: #abb2bf;
+    font-family: monospace;
+    font-size: 8px;
+    padding: 0 8px;
+    margin: 0 4px;
+    border-bottom: 2px solid #4b5263;
+}
+#custom-hypr2d.empty { color: #4b5263; }
+#custom-hypr2d.occupied { border-bottom-color: #98c379; }
+#custom-hypr2d.current { border-bottom-color: #61afef; }
+#custom-hypr2d.urgent { border-bottom-color: #e06c75; }
+#custom-hypr2d.unavailable, #custom-hypr2d.outside-grid {
+    color: #e5c07b;
+    border-bottom-color: #e5c07b;
+}
+tooltip { background: #000000; color: #abb2bf; border: 1px solid #4b5263; }
+```

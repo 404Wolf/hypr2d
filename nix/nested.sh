@@ -16,7 +16,7 @@ unset HYPRLAND_INSTANCE_SIGNATURE HYPR2D_TESTING
 export LIBSEAT_BACKEND=none
 if [[ "${1:-}" == "--smoke-test" ]]; then
   export HYPR2D_TESTING=1
-  python3 @SMOKE@ "$test_dir/hyprland.lua" "@PLUGIN@"
+  python3 @SMOKE@ "$test_dir/hyprland.lua" "@PLUGIN@" "@CLI@" "@EXAMPLES@"
 else
   Hyprland --config "$test_dir/hyprland.lua" "$@"
 fi

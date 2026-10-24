@@ -1,0 +1,28 @@
+/* OneDark Extra Dark: the bar and module stay black. */
+window#waybar {
+    background: #000000;
+    color: #abb2bf;
+}
+#custom-hypr2d {
+    background: #000000;
+    color: #abb2bf;
+    font-family: monospace;
+    font-size: 8px;
+    padding: 0 8px;
+    margin: 0 4px;
+    border-bottom: 2px solid #4b5263;
+}
+#custom-hypr2d.empty { color: #4b5263; }
+#custom-hypr2d.occupied { border-bottom-color: #98c379; }
+#custom-hypr2d.current { border-bottom-color: #61afef; }
+#custom-hypr2d.urgent { border-bottom-color: #e06c75; }
+#custom-hypr2d.unavailable,
+#custom-hypr2d.outside-grid {
+    color: #e5c07b;
+    border-bottom-color: #e5c07b;
+}
+tooltip {
+    background: #000000;
+    color: #abb2bf;
+    border: 1px solid #4b5263;
+}

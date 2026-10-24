@@ -1,0 +1,17 @@
+{
+  "height": 32,
+  "modules-left": ["custom/hypr2d"],
+  "custom/hypr2d": {
+    "exec": "hypr2d waybar --radius 1",
+    "return-type": "json",
+    "format": "{text}",
+    "escape": false,
+    "exec-on-event": false,
+    "on-click": "hypr2d move right",
+    "on-click-right": "hypr2d move left",
+    "on-click-middle": "hypr2d goto 0 0",
+    "on-scroll-up": "hypr2d move up",
+    "on-scroll-down": "hypr2d move down",
+    "tooltip": true
+  }
+}

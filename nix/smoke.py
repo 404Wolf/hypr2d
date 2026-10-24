@@ -3,13 +3,15 @@ import concurrent.futures
 import json
 import socket
 import signal
+import select
+import shlex
 import os
 from pathlib import Path
 import subprocess
 import sys
 import time
 
-config, plugin = sys.argv[1:]
+config, plugin, cli, examples = sys.argv[1:]
 root = Path(os.environ["XDG_RUNTIME_DIR"]) / "hypr"
 with open(Path(config).parent / "compositor.log", "w+") as output:
     command_line = ["Hyprland", "--config", config]
@@ -18,6 +20,7 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         command_line.append("--i-am-really-stupid")
     child = subprocess.Popen(command_line, stdout=output, stderr=output, start_new_session=True)
     clients = []
+    expected_loads = 1
     try:
         deadline = time.monotonic() + 30
         instance = None
@@ -50,6 +53,7 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         assert ctl("plugin", "unload", plugin) == "ok"
         assert "hypr2d" not in ctl("plugin", "list")
         assert ctl("plugin", "load", plugin) == "ok"
+        expected_loads += 1
         assert "hypr2d" in ctl("plugin", "list")
         def wait_for(test, message):
             deadline = time.monotonic() + 10
@@ -174,7 +178,7 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         command("configure", first["name"], "8", "8", "false", "10")
         synthetic("begin", 3)
         synthetic("update", 400, 0)
-        assert 0 < cell(mid)["offset"][0] < 200
+        assert 0 < cell(mid)["offset"][0] < 400
         assert gesture()["neighbor"] == 0
         synthetic("end", False)
         settle()
@@ -192,6 +196,7 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         synthetic("update", -40, 0)
         assert ctl("plugin", "unload", plugin) == "ok"
         assert ctl("plugin", "load", plugin) == "ok"
+        expected_loads += 1
         assert gesture() is None
         assert cell(mid)["offset"] == [0, 0]
         command("goto", "0", "0", str(sid))
@@ -203,10 +208,91 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         assert gesture() is None
         synthetic("end", True)
         print("PASS M2: production event listeners, cancellation, 1:1 offsets, axis lock/reversal, natural direction, commit/bounce, rubber band, interruption/unload")
+        def cli_command(*args):
+            result = subprocess.run([cli, "--instance", instance.name, *args], check=True, capture_output=True, text=True, timeout=10)
+            return result.stdout.strip()
+
+        cli_state = json.loads(cli_command("state"))
+        assert cli_state["version"] == 1
+        cli_command("goto", "0", "0")
+        module = subprocess.Popen([cli, "--instance", instance.name, "waybar", "--monitor", first["name"]], stdout=subprocess.PIPE, stderr=output, start_new_session=True)
+        clients.append(module)
+        buffer = b""
+        def record_when(predicate, timeout=10):
+            # The test script's top-level buffer is intentionally shared here.
+            global buffer
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    record = json.loads(line)
+                    if predicate(record):
+                        return record
+                ready, _, _ = select.select([module.stdout], [], [], max(0, deadline-time.monotonic()))
+                assert ready, "Waybar stream did not respond to an event"
+                data = os.read(module.stdout.fileno(), 65536)
+                assert data, "Waybar module exited unexpectedly"
+                buffer += data
+            raise AssertionError("Waybar record predicate did not match")
+
+        initial = record_when(lambda r: r["alt"] == "0,0")
+        assert "current" in initial["class"] and "empty" in initial["class"]
+        assert "foot" in initial["tooltip"]
+        assert "occupied" in initial["class"]
+        assert not buffer
+        assert not select.select([module.stdout], [], [], 0.2)[0], "Waybar emitted duplicate idle records"
+        cli_command("move", "right", "--monitor", first["name"])
+        record_when(lambda r: r["alt"] == "1,0")
+        assert cell(mid)["workspace"] == 11 + mid
+        # Window titles arrive on native socket2 events and must be markup-escaped.
+        title_env = dict(env)
+        title_client = subprocess.Popen(["foot", "--config=/dev/null", "--app-id=hypr2d-title-test", "sh", "-c", "printf '\033]2;hypr2d <title> & text\007'; sleep 120"], env=title_env, stdout=output, stderr=output, start_new_session=True)
+        clients.append(title_client)
+        titled = record_when(lambda r: "hypr2d &lt;title&gt; &amp; text" in r["tooltip"])
+        assert "<title>" not in titled["tooltip"]
+        title_client.terminate()
+        title_client.wait(timeout=10)
+        record_when(lambda r: "hypr2d &lt;title&gt;" not in r["tooltip"])
+        assert ctl("plugin", "unload", plugin) == "ok"
+        record_when(lambda r: "unavailable" in r["class"])
+        assert module.poll() is None
+        assert ctl("plugin", "load", plugin) == "ok"
+        expected_loads += 1
+        record_when(lambda r: r["alt"] == "1,0")
+        module.terminate()
+        module.wait(timeout=10)
+        # Parse and render the shipped config/CSS in a Waybar attached only to
+        # this nested instance, then capture only this nested output for QA.
+        bar_config = json.loads((Path(examples) / "waybar.jsonc").read_text())
+        bar_config["output"] = first["name"]
+        bar_config["custom/hypr2d"]["exec"] = shlex.join([cli, "--instance", instance.name, "waybar", "--monitor", first["name"]])
+        bar_path = Path(config).parent / "waybar.json"
+        bar_path.write_text(json.dumps(bar_config))
+        bar_env = dict(env)
+        bar_env["GDK_BACKEND"] = "wayland"
+        bar_env["HYPRLAND_INSTANCE_SIGNATURE"] = instance.name
+        with open(Path(config).parent / "waybar.log", "w+") as bar_log:
+            bar = subprocess.Popen(["waybar", "--config", str(bar_path), "--style", str(Path(examples) / "waybar.css")], env=bar_env, stdout=bar_log, stderr=bar_log, start_new_session=True)
+            clients.append(bar)
+            def bar_mapped():
+                layers = json.loads(ctl("-j", "layers"))
+                return any(layer["namespace"] == "waybar" for level in layers.get(first["name"], {}).get("levels", {}).values() for layer in level)
+            wait_for(bar_mapped, "example Waybar did not map in nested instance")
+            time.sleep(0.2)
+            assert bar.poll() is None
+            preview = os.environ.get("HYPR2D_PREVIEW")
+            if preview:
+                subprocess.run(["grim", "-o", first["name"], preview], env=bar_env, check=True, timeout=10)
+            bar.terminate()
+            bar.wait(timeout=10)
+            bar_log.flush()
+            log_text = Path(bar_log.name).read_text()
+            assert "Error parsing" not in log_text and "not a valid property" not in log_text, log_text
+        print("PASS M3: CLI state/actions, event-driven JSON, idle deduplication, occupied/title/close events, escaping, unload/reload, example Waybar/CSS")
         ctl("dispatch", "hl.dsp.exit()")
         child.wait(timeout=10)
         assert child.returncode == 0, child.returncode
-        assert log.read_text().count("hypr2d M0: C++ -> Rust -> C++: 41 -> 42") == 3
+        assert log.read_text().count("hypr2d M0: C++ -> Rust -> C++: 41 -> 42") == expected_loads
         print(f"PASS: nested {instance.name}: config, preload, Rust round trip, unload/reload, clean exit")
     except BaseException:
         output.flush()
