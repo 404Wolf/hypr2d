@@ -1,4 +1,5 @@
 pub mod grid;
+pub mod swipe;
 use grid::{Cell, Direction, Grid};
 use serde_json::json;
 use std::collections::HashMap;
@@ -12,6 +13,8 @@ mod ffi {
         focused: bool,
         offset_x: f64,
         offset_y: f64,
+        width: f64,
+        height: f64,
     }
     struct Window {
         workspace: u32,
@@ -35,9 +38,42 @@ mod ffi {
         output: String,
         error: String,
     }
+    enum SwipePhase {
+        Begin,
+        Update,
+        End,
+        Tick,
+        Cancel,
+    }
+    struct SwipeInput {
+        phase: SwipePhase,
+        fingers: u32,
+        dx: f64,
+        dy: f64,
+        now: f64,
+        cancelled: bool,
+    }
+    struct SwipeFrame {
+        claimed: bool,
+        active: bool,
+        settling: bool,
+        finish_after_ms: f64,
+        done: bool,
+        monitor: u32,
+        current: u32,
+        neighbor: u32,
+        current_x: f64,
+        current_y: f64,
+        neighbor_x: f64,
+        neighbor_y: f64,
+        commit: u32,
+        cell_x: u32,
+        cell_y: u32,
+    }
     extern "Rust" {
         type Core;
         fn new_core() -> Box<Core>;
+        fn swipe(self: &mut Core, monitors: &[Monitor], input: SwipeInput) -> SwipeFrame;
         fn spike_round_trip(value: u32) -> u32;
         fn command(self: &mut Core, monitors: &[Monitor], windows: &[Window], input: &str)
             -> Reply;
@@ -46,12 +82,16 @@ mod ffi {
 pub struct Core {
     grids: HashMap<String, Grid>,
     stride: u32,
+    swipe_config: swipe::Config,
+    gesture: Option<swipe::Swipe>,
 }
 impl Default for Core {
     fn default() -> Self {
         Self {
             grids: HashMap::new(),
             stride: 10,
+            swipe_config: swipe::Config::default(),
+            gesture: None,
         }
     }
 }
@@ -121,7 +161,7 @@ impl Core {
             error: String::new(),
         };
         if matches!(args.as_slice(), ["state"] | ["state", "-j"]) {
-            reply.output = json!({"version":1,"monitors":monitors.iter().map(|m| {
+            reply.output = json!({"version":1,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
                 let g = self.grid(m);
                 json!({"id":m.id,"name":m.name,"workspace":m.workspace,"focused":m.focused,"grid":g,"cell":g.cell(m.workspace,m.id),"offset":[m.offset_x,m.offset_y],
                     "cells":(0..g.rows).flat_map(|y|(0..g.columns).map(move |x|Cell{x,y})).filter_map(|c|g.id(c,m.id).ok().map(|id|json!({"x":c.x,"y":c.y,"workspace":id,"windows":windows.iter().filter(|w|w.workspace==id).map(|w|json!({"address":w.address,"title":w.title,"app_id":w.app_id,"urgent":w.urgent})).collect::<Vec<_>>()}))).collect::<Vec<_>>()})
@@ -156,6 +196,18 @@ impl Core {
             }
             self.stride = g.stride;
             self.grids.insert((*name).to_string(), g);
+            return Ok(reply);
+        }
+        if let ["swipe-config", fingers, distance, velocity, natural, axis_lock] = args.as_slice() {
+            let config = swipe::Config {
+                fingers: number(fingers)?,
+                distance: distance.parse().map_err(|_| "invalid distance")?,
+                velocity: velocity.parse().map_err(|_| "invalid velocity")?,
+                natural: natural.parse().map_err(|_| "natural must be true/false")?,
+                axis_lock: axis_lock.parse().map_err(|_| "invalid axis lock")?,
+            }
+            .validate()?;
+            self.swipe_config = config;
             return Ok(reply);
         }
         let focused = monitors
@@ -216,6 +268,104 @@ fn select_monitor<'a>(ms: &'a [ffi::Monitor], s: &str) -> Result<&'a ffi::Monito
         .find(|m| m.name == s || m.id.to_string() == s)
         .ok_or_else(|| "unknown monitor".into())
 }
+impl Default for ffi::SwipeFrame {
+    fn default() -> Self {
+        Self {
+            claimed: false,
+            active: false,
+            settling: false,
+            finish_after_ms: 0.,
+            done: true,
+            monitor: 0,
+            current: 0,
+            neighbor: 0,
+            current_x: 0.,
+            current_y: 0.,
+            neighbor_x: 0.,
+            neighbor_y: 0.,
+            commit: 0,
+            cell_x: 0,
+            cell_y: 0,
+        }
+    }
+}
+impl Core {
+    fn swipe(&mut self, monitors: &[ffi::Monitor], input: ffi::SwipeInput) -> ffi::SwipeFrame {
+        let ffi::SwipeInput {
+            phase,
+            fingers,
+            dx,
+            dy,
+            now,
+            cancelled,
+        } = input;
+        guarded(|| {
+            if phase == ffi::SwipePhase::Cancel {
+                self.gesture = None;
+                return ffi::SwipeFrame::default();
+            }
+            if phase == ffi::SwipePhase::Begin {
+                if fingers != self.swipe_config.fingers {
+                    return ffi::SwipeFrame {
+                        done: false,
+                        ..Default::default()
+                    };
+                }
+                let Some(m) = monitors.iter().find(|m| m.focused) else {
+                    return ffi::SwipeFrame::default();
+                };
+                self.gesture = swipe::Swipe::new(
+                    m.id,
+                    m.workspace,
+                    self.grid(m),
+                    [m.width, m.height],
+                    self.swipe_config,
+                    now,
+                );
+            }
+            let Some(mut gesture) = self.gesture.take() else {
+                return ffi::SwipeFrame::default();
+            };
+            if !monitors.iter().any(|m| m.id == gesture.monitor) {
+                return ffi::SwipeFrame::default();
+            }
+            let mut commit = None;
+            match phase {
+                ffi::SwipePhase::Update => gesture.update([dx, dy], now),
+                ffi::SwipePhase::End => commit = gesture.end(now, cancelled),
+                ffi::SwipePhase::Tick => gesture.tick(now),
+                _ => {}
+            }
+            let (current, neighbor) = gesture.offsets();
+            let result = ffi::SwipeFrame {
+                claimed: true,
+                active: !gesture.finished,
+                settling: gesture.settling(),
+                finish_after_ms: if phase == ffi::SwipePhase::End && !gesture.finished {
+                    swipe::MAX_SETTLE_MS + 1.
+                } else {
+                    0.
+                },
+                done: gesture.finished,
+                monitor: gesture.monitor,
+                current: gesture.origin,
+                neighbor: gesture.neighbor_id(),
+                current_x: current[0],
+                current_y: current[1],
+                neighbor_x: neighbor[0],
+                neighbor_y: neighbor[1],
+                commit: commit.map_or(0, |c| c.0),
+                cell_x: commit.map_or(0, |c| c.1.x),
+                cell_y: commit.map_or(0, |c| c.1.y),
+            };
+            if !gesture.finished {
+                self.gesture = Some(gesture);
+            }
+            result
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,6 +377,8 @@ mod tests {
             focused: id == 0,
             offset_x: 0.,
             offset_y: 0.,
+            width: 1280.,
+            height: 720.,
         }
     }
     #[test]
