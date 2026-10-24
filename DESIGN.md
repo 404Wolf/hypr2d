@@ -144,4 +144,101 @@ Three layers, no agent-specific code in this repo:
 
 ## Findings
 
-(M0 results go here.)
+### Tested M0 result (2026-10-24, x86_64-linux)
+
+- `nix flake check --builders '' -L` passed: plugin compilation, two Rust
+  tests (round trip/overflow and panic containment), rustfmt and Clippy with
+  `-D warnings`. aarch64-linux is offered but was not built or runtime tested.
+- `nix run .#nested --builders '' -- --smoke-test` passed against the final
+  build. It opened a normal Aquamarine Wayland backend window with a temporary
+  Lua config, verified no config errors and plugin preload, unloaded/reloaded
+  the plugin, then dispatched exit to that child's explicit instance.
+- Nested instance:
+  `e368c13c27a42a173b9e08fa0bf413f9f7073187_1792882466_2009271399`.
+  Its `hyprland.log` contains twice:
+  `hypr2d M0: C++ -> Rust -> C++: 41 -> 42`.
+- The child exited with status 0; no nested compositor or smoke-test process
+  remained. No plugin was loaded into the parent session and no Home Manager
+  files were changed. Milestones M1 onward remain unimplemented.
+
+### API inspection (exact pinned revision)
+
+Inspected Hyprland `e368c13c27a42a173b9e08fa0bf413f9f7073187`, not
+headers from the system profile. These are source findings; only the bridge
+and plugin lifecycle are exercised by the M0 runtime smoke test.
+
+- **Dispatchers / IPC (M1):** `HyprlandAPI::addDispatcherV2` accepts a
+  `std::function<SDispatchResult(std::string)>`; plugin-owned registrations
+  are removed on unload. `registerHyprCtlCommand` accepts an
+  `IPC::Socket1::SCommand` for `hyprctl hypr2d ...`; its callback receives the
+  output format. Lua also has `addLuaFunction` for plugin namespaces.
+  Sources: `src/plugins/PluginAPI.hpp`, `src/ipc/s1/S1.hpp`.
+- **socket2 (M1):** `IPC::Socket2::sock()->postEvent(SEvent{event, data})`
+  queues compositor IPC events. The wire format is `event>>data` plus a newline;
+  use event `hypr2d` and data `cell>>MONITOR,X,Y`, etc. This is an internal
+  compositor API, not a `HyprlandAPI` wrapper. No subprocess is needed.
+  Sources: `src/ipc/s2/S2.hpp`, `src/ipc/s2/S2.cpp`.
+- **Animation (M1):** `Animation::Workspace::startAnimation` takes an optional
+  style per call, including vertical slide styles. `CHLWorkspace` exposes
+  `m_renderOffset`, `m_alpha`, `m_forceRendering`, and `m_animationStyle`.
+  No config rewrite is required. The actual monitor workspace transition
+  must be coordinated with these overrides and tested for overlapping moves.
+  Sources: `src/animation/WorkspaceAnimationController.{hpp,cpp}`,
+  `src/output/Monitor.cpp`, `src/workspace/HLWorkspace.hpp`.
+- **Swipe input (M2):** retain RAII listeners from
+  `Event::bus()->m_events.gesture.swipe.{begin,update,end}.listen(...)`.
+  All three are cancellable. `CInputManager::onSwipe*` checks
+  `SCallbackInfo::cancelled` before built-in gesture handling and forwarding
+  to clients. Begin includes finger count; updates include delta/time; end
+  includes cancellation. Cancel the whole claimed sequence, and leave other
+  gestures alone. `CTrackpadGestures::addGesture` / `ITrackpadGesture` are
+  another internal route, but cancellable event listeners avoid taking over
+  global gesture registrations. Sources: `src/event/EventBus.hpp`,
+  `src/managers/input/InputManager.cpp:2340`, `src/devices/IPointer.hpp`.
+- **Tracked rendering (M2):** `CUnifiedWorkspaceSwipeGesture` already drives
+  neighbour workspaces using `m_renderOffset->setValueAndWarp`, forces
+  rendering and damages the monitor. It is useful mechanism reference, but
+  its neighbour selection and thresholds are not the Rust grid policy.
+  Sources: `src/managers/input/UnifiedWorkspaceSwipeGesture.cpp`.
+- **Textures / overview (M4):** `Render::IHyprRenderer` exposes
+  `beginRender(..., RENDER_MODE_FULL_FAKE, ..., framebuffer)`,
+  `renderWorkspace`, and `endRender`; framebuffers expose textures.
+  There is no high-level "snapshot workspace" plugin function. This is
+  internal renderer integration with GL context, damage, workspace visibility,
+  active workspace and feedback state to preserve and restore.
+  Sources: `src/render/Renderer.hpp`, `src/render/Framebuffer.hpp`.
+- **Render passes (M4):** custom `IPassElement` implementations can be added
+  with `g_pHyprRenderer->m_renderPass.add(...)`; render-stage events are
+  available. `draw()` now returns additional pass elements; blur requirements,
+  pass name and type are pure virtual, with bounding/damage/opaque hooks.
+  Built-in texture pass elements may reduce custom drawing work. Pass elements
+  and input/event listeners must not outlive plugin unload.
+  Sources: `src/render/pass/{Pass,PassElement,TexPassElement}.hpp`,
+  `src/event/EventBus.hpp`.
+
+### hyprexpo reference and remaining risks
+
+The upstream hyprland-plugins repository removed hyprexpo as unmaintained in
+commit `3aa21f2e0ca72412f1b434c3126f8f1fec3c716c`. Inspected its last version,
+[`b6e080577daf6575b95e6733dd2e2aef714bcf10/hyprexpo/overview.cpp`](https://github.com/hyprwm/hyprland-plugins/blob/b6e080577daf6575b95e6733dd2e2aef714bcf10/hyprexpo/overview.cpp).
+It creates per-cell framebuffers, uses full-fake renders, temporarily switches
+active/visible workspace state, and composes via a custom pass element.
+It suppresses the special workspace while capturing ordinary cells except the
+starting workspace. This does not directly implement the required special strip.
+It also refers to older workspace and animation APIs (e.g. `CWorkspace` and
+`g_pDesktopAnimationManager`), so it must be adapted, not copied verbatim.
+No upstream code is copied into the M0 plugin.
+
+- **M1:** no identified API blocker. Need integration tests for per-monitor
+  transitions, per-call slide direction, numbering, Lua dispatcher invocation,
+  IPC formatting and unload cleanup before claiming implementation support.
+- **M2:** no identified input API blocker. Actual physical trackpad behaviour,
+  cancellation, neighbour visibility, reversals and offset cleanup remain
+  untested. The nested Wayland window must receive gestures from its parent;
+  synthetic input alone will not establish physical feel.
+- **M4:** internal APIs allow the approach, but compatibility is not runtime
+  proven. Special-workspace capture, all-monitor composition, renderer backend
+  support, damage-driven live refresh, state restoration and GPU memory at
+  8×8 per monitor need a separate rendering prototype within M4. Full-resolution
+  textures for all cells are expensive; size captures to displayed thumbnails.
+  This is the main implementation risk, not a confirmed impossibility.
