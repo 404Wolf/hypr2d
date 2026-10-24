@@ -10,10 +10,11 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Confirm what 0.56's plugin API offers for: registering dispatchers, posting socket2 events, hooking trackpad swipe gestures, rendering workspaces to textures (hyprexpo's path), render-pass elements. Write findings in DESIGN.md §Findings
 
 ## M1 — Grid core (one grid per monitor)
-- [ ] Rust core: grid model, (x,y,monitor) ↔ workspace id with the user's current numbering, wrap, moves, carry, "all monitors" moves, unit tests
-- [ ] Dispatchers: `hypr2d:move <dir> [all]`, `hypr2d:carry <dir>`, `hypr2d:goto <x> <y>`, plus correct slide direction (horizontal vs vertical) without config mutation
-- [ ] socket2 events (`hypr2d>>…`) and `hyprctl hypr2d state -j`
-- [ ] Integration test in a headless/nested Hyprland driven by hyprctl (CI-runnable)
+- [x] Rust core: grid model, (x,y,monitor) ↔ workspace id with the user's current numbering, wrap, moves, carry, "all monitors" moves, unit tests
+- [x] Dispatchers: `hypr2d:move <dir> [all]`, `hypr2d:carry <dir>`, `hypr2d:goto <x> <y>`, plus correct slide direction (horizontal vs vertical) without config mutation
+  - 0.56 deviation: legacy dispatcher registration is a stub; use the equivalent `hl.plugin.hypr2d.*` Lua dispatchers documented in README §Binds.
+- [x] socket2 events (`hypr2d>>…`) and `hyprctl hypr2d state -j`
+- [x] Integration test in a headless/nested Hyprland driven by hyprctl (CI-runnable)
 
 ## M2 — Tracked 2D trackpad swipe
 - [ ] 3-finger swipe follows the fingers 1:1 along a locked axis to the neighbouring cell, commits past distance/velocity thresholds, otherwise springs back; rubber-band at non-wrapping edges

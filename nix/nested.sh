@@ -3,11 +3,17 @@ test_dir=$(mktemp -d -t hypr2d-nested.XXXXXX)
 trap 'rm -rf "$test_dir"' EXIT
 cat > "$test_dir/hyprland.lua" <<'LUA'
 hl.monitor({ output = "", mode = "1280x720@60", position = "auto", scale = 1 })
-hl.config({ debug = { disable_logs = false }, misc = { disable_hyprland_logo = true, disable_splash_rendering = true }, xwayland = { enabled = false } })
+hl.config({ debug = { disable_logs = false, enable_stdout_logs = true }, misc = { disable_hyprland_logo = true, disable_splash_rendering = true }, xwayland = { enabled = false } })
 hl.plugin.load("@PLUGIN@")
+if hl.plugin.hypr2d then
+  hl.bind("SUPER + CONTROL + H", hl.plugin.hypr2d.move("left"))
+  hl.plugin.hypr2d.configure("WAYLAND-1", {columns=8, rows=8, wrap=true, stride=10})
+end
 LUA
 unset HYPRLAND_INSTANCE_SIGNATURE
-export AQ_BACKEND=wayland
+: "${WAYLAND_DISPLAY:?hypr2d nested requires a Wayland parent}"
+# No seat backend means no DRM/input device access; Wayland fallback remains.
+export LIBSEAT_BACKEND=none
 if [[ "${1:-}" == "--smoke-test" ]]; then
   python3 @SMOKE@ "$test_dir/hyprland.lua" "@PLUGIN@"
 else

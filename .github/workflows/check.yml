@@ -1,0 +1,20 @@
+name: Checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  pinned:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - run: sudo chmod 666 /dev/kvm
+      - run: nix flake check -L
+  upstream:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - run: nix build .#plugin --override-input hyprland github:hyprwm/Hyprland --no-write-lock-file -L

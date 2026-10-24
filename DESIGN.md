@@ -167,9 +167,13 @@ Inspected Hyprland `e368c13c27a42a173b9e08fa0bf413f9f7073187`, not
 headers from the system profile. These are source findings; only the bridge
 and plugin lifecycle are exercised by the M0 runtime smoke test.
 
-- **Dispatchers / IPC (M1):** `HyprlandAPI::addDispatcherV2` accepts a
-  `std::function<SDispatchResult(std::string)>`; plugin-owned registrations
-  are removed on unload. `registerHyprCtlCommand` accepts an
+- **Dispatchers / IPC (M1, corrected after implementation inspection):**
+  `addDispatcherV2` is declared in the header but its implementation returns
+  false unconditionally (`src/plugins/PluginAPI.cpp:202`). Lua `dispatch`
+  evaluates `hl.dispatch(expression)` rather than parsing legacy dispatcher
+  strings. Commands therefore use `addLuaFunction` dispatcher constructors
+  (`hl.plugin.hypr2d.move("left")`, etc.) and a custom `hypr2d` IPC command.
+  The old literal `hypr2d:move left` form is unavailable on this revision. `registerHyprCtlCommand` accepts an
   `IPC::Socket1::SCommand` for `hyprctl hypr2d ...`; its callback receives the
   output format. Lua also has `addLuaFunction` for plugin namespaces.
   Sources: `src/plugins/PluginAPI.hpp`, `src/ipc/s1/S1.hpp`.
@@ -242,3 +246,40 @@ No upstream code is copied into the M0 plugin.
   8×8 per monitor need a separate rendering prototype within M4. Full-resolution
   textures for all cells are expensive; size captures to displayed thumbnails.
   This is the main implementation risk, not a confirmed impossibility.
+
+### M1 implementation
+
+Rust owns grid validation, reversible numbering, command parsing, per-monitor
+configuration, and plans for moves/carry/all/goto. C++ translates snapshots,
+applies compositor actions, and starts animations with per-call grid direction
+(including wrap). No animation configuration is rewritten. Shared stride is
+global; columns/rows/wrap are per output. See README §Binds for exact Lua calls.
+Dispatcher closures are Lua-only and look up the registered callback each time,
+so binds cannot retain dangling C++ function pointers after plugin unload.
+
+`hyprctl hypr2d state -j` returns versioned JSON including every grid cell and
+its window metadata. `hypr2d>>cell>>MONITOR,X,Y` events follow plugin moves;
+`hypr2d>>changed` signals other workspace activations and `hypr2d>>config`
+signals runtime grid changes.
+
+Nested integration passed: exact numbering and wrap, Lua dispatch, socket2,
+vertical/horizontal render offsets, 57 overlapping move requests, a second
+headless output with independent starting cells and preserved focus, no-wrap
+edges, and carrying a mapped Foot client. No physical input was injected.
+CI uses a NixOS VM with a virtual GPU and a plugin-free Hyprland parent: this Aquamarine build
+requires DMA-BUF/DRM support, and a pure pixman/software parent cannot provide
+it. The test runs only the isolated nested plugin instance.
+
+The nested launcher requires `WAYLAND_DISPLAY` and sets
+`LIBSEAT_BACKEND=none`: the deprecated-looking `AQ_BACKEND=wayland` variable
+is not implemented by this Aquamarine revision. Disabling seat access prevents
+nested DRM/input-device acquisition. The disposable CI VM uses root for its
+virtual GPU's authenticated dumb-buffer allocations; user-session integration
+is tested separately as the normal unprivileged user.
+
+M1 CI VM validation passed as well as the unprivileged nested run. The
+non-accelerated virtio GPU exposes a render node that cannot allocate dumb
+buffers; the test aliases that node to its authenticated primary node **inside
+the disposable VM only**. This keeps the exact compositor and plugin ABI while
+allowing software rendering of the nested window. The VM shuts down after the
+suite. Configured Lua binds and a configuration guard are also exercised.

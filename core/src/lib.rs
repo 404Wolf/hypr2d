@@ -1,40 +1,263 @@
+pub mod grid;
+use grid::{Cell, Direction, Grid};
+use serde_json::json;
+use std::collections::HashMap;
+
 #[cxx::bridge(namespace = "hypr2d")]
 mod ffi {
+    struct Monitor {
+        id: u32,
+        name: String,
+        workspace: u32,
+        focused: bool,
+        offset_x: f64,
+        offset_y: f64,
+    }
+    struct Window {
+        workspace: u32,
+        address: String,
+        title: String,
+        app_id: String,
+        urgent: bool,
+    }
+    struct Move {
+        monitor: u32,
+        workspace: u32,
+        x: u32,
+        y: u32,
+        vertical: bool,
+        positive: bool,
+        carry: bool,
+        all: bool,
+    }
+    struct Reply {
+        moves: Vec<Move>,
+        output: String,
+        error: String,
+    }
     extern "Rust" {
+        type Core;
+        fn new_core() -> Box<Core>;
         fn spike_round_trip(value: u32) -> u32;
+        fn command(self: &mut Core, monitors: &[Monitor], windows: &[Window], input: &str)
+            -> Reply;
     }
 }
-
-// Every exported operation must contain its panic before returning through cxx.
-fn spike_round_trip(value: u32) -> u32 {
-    contain_panic(|| value.checked_add(1).unwrap_or(0))
+pub struct Core {
+    grids: HashMap<String, Grid>,
+    stride: u32,
 }
-
-fn contain_panic(operation: impl FnOnce() -> u32 + std::panic::UnwindSafe) -> u32 {
-    match std::panic::catch_unwind(operation) {
+impl Default for Core {
+    fn default() -> Self {
+        Self {
+            grids: HashMap::new(),
+            stride: 10,
+        }
+    }
+}
+fn guarded<T: Default>(operation: impl FnOnce() -> T) -> T {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
         Ok(value) => value,
         Err(payload) => {
-            // Even an unusual panic payload with a panicking Drop stays in Rust.
             std::mem::forget(payload);
             let _ = std::io::Write::write_all(
                 &mut std::io::stderr(),
                 b"hypr2d: contained Rust panic; operation ignored\n",
             );
-            0
+            T::default()
         }
     }
 }
-
+fn new_core() -> Box<Core> {
+    guarded(|| Box::new(Core::default()))
+}
+fn spike_round_trip(value: u32) -> u32 {
+    guarded(|| value.checked_add(1).unwrap_or(0))
+}
+impl Default for ffi::Reply {
+    fn default() -> Self {
+        Self {
+            moves: Vec::new(),
+            output: String::new(),
+            error: "Rust operation failed".into(),
+        }
+    }
+}
+impl Core {
+    fn grid(&self, m: &ffi::Monitor) -> Grid {
+        self.grids
+            .get(m.name.as_str())
+            .or_else(|| self.grids.get(&m.id.to_string()))
+            .copied()
+            .unwrap_or(Grid {
+                stride: self.stride,
+                ..Grid::default()
+            })
+    }
+    fn command(
+        &mut self,
+        monitors: &[ffi::Monitor],
+        windows: &[ffi::Window],
+        input: &str,
+    ) -> ffi::Reply {
+        guarded(|| match self.plan(monitors, windows, input) {
+            Ok(r) => r,
+            Err(error) => ffi::Reply {
+                error,
+                ..Default::default()
+            },
+        })
+    }
+    fn plan(
+        &mut self,
+        monitors: &[ffi::Monitor],
+        windows: &[ffi::Window],
+        input: &str,
+    ) -> Result<ffi::Reply, String> {
+        let args: Vec<_> = input.split_whitespace().collect();
+        let mut reply = ffi::Reply {
+            moves: vec![],
+            output: "ok".into(),
+            error: String::new(),
+        };
+        if matches!(args.as_slice(), ["state"] | ["state", "-j"]) {
+            reply.output = json!({"version":1,"monitors":monitors.iter().map(|m| {
+                let g = self.grid(m);
+                json!({"id":m.id,"name":m.name,"workspace":m.workspace,"focused":m.focused,"grid":g,"cell":g.cell(m.workspace,m.id),"offset":[m.offset_x,m.offset_y],
+                    "cells":(0..g.rows).flat_map(|y|(0..g.columns).map(move |x|Cell{x,y})).filter_map(|c|g.id(c,m.id).ok().map(|id|json!({"x":c.x,"y":c.y,"workspace":id,"windows":windows.iter().filter(|w|w.workspace==id).map(|w|json!({"address":w.address,"title":w.title,"app_id":w.app_id,"urgent":w.urgent})).collect::<Vec<_>>()}))).collect::<Vec<_>>()})
+            }).collect::<Vec<_>>()}).to_string();
+            return Ok(reply);
+        }
+        if let ["configure", name, columns, rows, wrap, stride] = args.as_slice() {
+            let id = monitors
+                .iter()
+                .find(|m| m.name == *name || m.id.to_string() == *name)
+                .map_or(0, |m| m.id);
+            let g = Grid {
+                columns: number(columns)?,
+                rows: number(rows)?,
+                wrap: wrap.parse().map_err(|_| "wrap must be true/false")?,
+                stride: number(stride)?,
+            }
+            .validate(id)?;
+            if monitors.iter().any(|other| other.id >= g.stride) {
+                return Err("stride must exceed every monitor id".into());
+            }
+            // Stride is shared: distinct monitor residues must never collide.
+            for config in self.grids.values() {
+                Grid {
+                    stride: g.stride,
+                    ..*config
+                }
+                .validate(0)?;
+            }
+            for config in self.grids.values_mut() {
+                config.stride = g.stride;
+            }
+            self.stride = g.stride;
+            self.grids.insert((*name).to_string(), g);
+            return Ok(reply);
+        }
+        let focused = monitors
+            .iter()
+            .find(|m| m.focused)
+            .ok_or("no focused monitor")?;
+        let (selected, target, dir, carry, all) = match args.as_slice() {
+            [op @ ("move" | "carry"), direction] => (vec![focused],None,Some(Direction::parse(direction)?),*op=="carry",false),
+            ["move", direction, "all"] => (monitors.iter().collect(),None,Some(Direction::parse(direction)?),false,true),
+            ["goto", x, y] => (vec![focused],Some(Cell{x:number(x)?,y:number(y)?}),None,false,false),
+            ["goto", x, y, monitor] => (vec![select_monitor(monitors,monitor)?],Some(Cell{x:number(x)?,y:number(y)?}),None,false,false),
+            _ => return Err("expected move DIR [all], carry DIR, goto X Y [MONITOR], state, or configure MONITOR COLS ROWS WRAP STRIDE".into())
+        };
+        for m in selected {
+            let g = self.grid(m).validate(m.id)?;
+            let current = g.cell(m.workspace, m.id);
+            let c = if let Some(c) = target {
+                c
+            } else {
+                let c =
+                    current.ok_or("active workspace is outside this monitor's grid; use goto")?;
+                g.step(c, dir.ok_or("missing direction")?).unwrap_or(c)
+            };
+            let d = dir.unwrap_or_else(|| {
+                let old = current.unwrap_or(c);
+                if c.y != old.y {
+                    if c.y > old.y {
+                        Direction::Down
+                    } else {
+                        Direction::Up
+                    }
+                } else if c.x > old.x {
+                    Direction::Right
+                } else {
+                    Direction::Left
+                }
+            });
+            reply.moves.push(ffi::Move {
+                monitor: m.id,
+                workspace: g.id(c, m.id)?,
+                x: c.x,
+                y: c.y,
+                vertical: d.vertical(),
+                positive: d.positive(),
+                carry,
+                all,
+            });
+        }
+        Ok(reply)
+    }
+}
+fn number(s: &str) -> Result<u32, String> {
+    s.parse()
+        .map_err(|_| "expected a non-negative integer".into())
+}
+fn select_monitor<'a>(ms: &'a [ffi::Monitor], s: &str) -> Result<&'a ffi::Monitor, String> {
+    ms.iter()
+        .find(|m| m.name == s || m.id.to_string() == s)
+        .ok_or_else(|| "unknown monitor".into())
+}
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn panic_is_contained() {
-        assert_eq!(super::contain_panic(|| panic!("test panic")), 0);
+    use super::*;
+    fn monitor(id: u32, ws: u32) -> ffi::Monitor {
+        ffi::Monitor {
+            id,
+            name: format!("m{id}"),
+            workspace: ws,
+            focused: id == 0,
+            offset_x: 0.,
+            offset_y: 0.,
+        }
     }
-
     #[test]
-    fn round_trip_and_overflow_are_safe() {
-        assert_eq!(super::spike_round_trip(41), 42);
-        assert_eq!(super::spike_round_trip(u32::MAX), 0);
+    fn panic_and_round_trip() {
+        assert_eq!(guarded::<u32>(|| panic!("test")), 0u32);
+        assert_eq!(spike_round_trip(41), 42);
+        assert_eq!(spike_round_trip(u32::MAX), 0);
+    }
+    #[test]
+    fn all_and_carry_and_invalid_commands() {
+        let mut c = Core::default();
+        let ms = [monitor(0, 1), monitor(1, 92)];
+        let r = c.command(&ms, &[], "move left all");
+        assert!(r.error.is_empty());
+        assert_eq!(
+            r.moves.iter().map(|m| m.workspace).collect::<Vec<_>>(),
+            vec![71, 82]
+        );
+        let r = c.command(&ms, &[], "carry down");
+        assert!(r.moves[0].carry);
+        assert_eq!(r.moves[0].workspace, 81);
+        for cmd in [
+            "move bad",
+            "goto 8 0",
+            "goto -1 0",
+            "move left huh",
+            "configure m0 0 8 true 10",
+        ] {
+            assert!(!c.command(&ms, &[], cmd).error.is_empty(), "{cmd}");
+        }
+        let bad = [monitor(0, 2), monitor(1, 92)];
+        assert!(!c.command(&bad, &[], "move left all").error.is_empty());
     }
 }
