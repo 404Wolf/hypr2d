@@ -205,8 +205,8 @@ and plugin lifecycle are exercised by the M0 runtime smoke test.
   its neighbour selection and thresholds are not the Rust grid policy.
   Sources: `src/managers/input/UnifiedWorkspaceSwipeGesture.cpp`.
 - **Textures / overview (M4):** `Render::IHyprRenderer` exposes
-  `beginRender(..., RENDER_MODE_FULL_FAKE, ..., framebuffer)`,
-  `renderWorkspace`, and `endRender`; framebuffers expose textures.
+  `beginFullFakeRender` and `endRender`, with protected workspace-drawing
+  methods (see the M4 prototype findings below); framebuffers expose textures.
   There is no high-level "snapshot workspace" plugin function. This is
   internal renderer integration with GL context, damage, workspace visibility,
   active workspace and feedback state to preserve and restore.
@@ -348,3 +348,120 @@ Final x86_64-linux validation passed:
 
 M1–M3 are implemented. M4 and later milestones remain untouched. No live-session
 plugin load, Home Manager write, remote creation or push was performed.
+
+### M4 rendering prototype (approval gate; full UI is not implemented)
+
+The pinned GL renderer can capture ordinary **and special** workspaces into
+thumbnail-sized framebuffers and compose both monitors' grids in one custom
+`IPassElement`. Rust plans the contact sheet and computes the memory/timing
+report; C++ performs renderer calls. The test-only `probe` command is enabled
+only with `HYPR2D_TESTING=1`; it is not the production overview dispatcher.
+The contact sheet is deliberately a rendering fixture, without navigation,
+hit-testing, physical-layout policy, input grabs or live refresh.
+
+API details established by the prototype:
+
+- The public entry point is `beginFullFakeRender`, which wraps the protected
+  `beginRender(..., RENDER_MODE_FULL_FAKE, ..., simple=true)`. Workspace drawing
+  itself is protected. The shim exposes base member pointers through a derived
+  access class; it never casts the actual renderer to that class, patches a
+  function, or changes access with preprocessor macros. This remains an internal
+  API tied to the exact pinned ABI. Only the GL backend was exercised.
+- Allocate at thumbnail dimensions, set the framebuffer's image description to
+  `monitor->workBufferImageDescription()`, and supply **source-monitor-sized
+  damage** while scaling workspace geometry to the thumbnail. Supplying
+  thumbnail-sized damage incorrectly clips surfaces because surface damage is
+  intersected before render modifiers are applied. Omitting the color description
+  crashes 0.56's shadow renderer; the corrected path renders decorations too.
+- Ordinary captures suppress all specials, including special dim/blur. Special
+  captures use the workspace-window pass directly, with a plain background;
+  otherwise the full workspace path draws specials again in its global specials
+  loop. Both hidden specials and an already-shown special are covered.
+- Capture only between frames. Save and restore the render data/projection,
+  render mode, pass queue, feedback/snapshot flags, framebuffer bindings and
+  viewport, monitor active normal/special pointers, damage ring/history,
+  pending buffer references and blur scheduling flag. Temporarily override
+  workspace alpha/offset **values**, never animation goals, beginnings, timing,
+  callbacks or registrations. Visibility stays untouched; force-rendering is
+  scoped. The test verifies visibility and animation goals/beginnings/active
+  flags for every capture, including capture during a genuine animated move.
+- Composition uses one custom element which returns native rectangle/texture
+  elements at `RENDER_LAST_MOMENT`. Close removes queued custom elements, releases
+  all capture textures/FBOs, and damages/schedules each output to erase the
+  overlay. It must not restore an old damage ring on close and discard damage
+  accumulated while the overview was open. Unload with an open overlay is tested.
+
+**Validation and measurements.** Screenshot comparisons and the repeated
+open/close test run in the existing disposable NixOS VM, whose plugin-free
+parent reliably renders the nested child without a visible host window. The
+host nested window is used only for development and a single hardware capture
+benchmark; its parent may pause frame callbacks, so it is not the screenshot
+or leak-test oracle. Both tests create their own second headless output, eight
+distinct normal-workspace Foot fixtures (four per monitor), and one populated
+special per monitor. Ordinary empty cells are captured too for the capacity test.
+
+The VM captures 130 cells: two complete 8×8 grids plus two specials. At 160×90
+RGBA8, each color attachment holds 57,600 bytes: **3.516 MiB per 8×8 monitor,
+7.031 MiB for both grids, 7.141 MiB including the specials**. The code queries
+actual GL texture dimensions/internal format and rejects a non-RGBA8 attachment
+or an unexpected stencil attachment. No full-resolution per-cell framebuffer
+is allocated. These are measured texture-storage dimensions and their exact
+uncompressed payload, not a claim that driver allocation overhead is zero.
+
+The separate AMD Radeon 780M / radeonsi hardware benchmark used 160×106 for the
+resized Wayland monitor and 160×90 for the headless monitor: **7.776 MiB** of
+color payload for all 130 cells. Allocation, CPU pass construction/submission
+and GPU completion together took **23.38 ms total, 0.180 ms/cell mean,
+0.096 ms median, 3.262 ms maximum**. The eight occupied normal cells had a
+0.620 ms median; the two specials averaged 0.649 ms; empty cells had a 0.091 ms
+median. Timings explicitly include a serialized `glFinish` after each cell;
+they are end-to-end capture costs, not isolated GPU timer-query durations.
+This fixture is much simpler than 128 occupied application workspaces.
+
+AMD `/proc/PID/fdinfo` was sampled before allocation, while open, and after
+close, deduplicated by DRM client ID when interpreting it. The main client's
+resident VRAM changed from 9,792 to 15,928 KiB while GTT residency fell from
+242,536 to 233,916 KiB. Driver BO migration/retirement and allocator caching
+make that delta unsuitable as isolated per-texture resident memory. In
+particular, driver memory need not fall immediately when GL objects are deleted.
+Budget the verified color payload **plus driver/pool overhead**; do not label a
+whole-process VRAM delta as the cache's exact footprint.
+
+The VM checks the actual fixture colors in all ten occupied thumbnails and
+compares full, unmasked screenshots on **both** outputs before/after close.
+It repeats full allocation/capture/composition/close 25 times, checks all capture
+texture/FBO names are gone using `glIsTexture`/`glIsFramebuffer`, bounds warmed
+RSS variation, checks stable file-descriptor counts, and tests plugin unload
+with the overlay open. The final llvmpipe VM run had a warmed mean of 22.81 ms per 130-cell batch
+(0.120 ms median per cell); closed RSS stayed between 267,460 and 271,036 KiB
+and descriptors stayed at 95. Both normal before/after comparisons and the
+already-shown-special comparison changed zero pixels. `nix flake check
+--builders '' -L` passed the plugin build, 16 Rust tests, formatting/Clippy
+and the complete M1–M4-prototype VM suite. No unbounded retained resource
+growth was observed.
+Startup notifications and cursors are disabled/dismissed in the isolated
+fixture so unrelated blinking UI cannot invalidate pixel comparisons.
+
+**Recommended rendering design for the next step:** retain thumbnail-sized
+textures only while open; capture populated visible cells/specials on open and
+use a shared background for empty cells. Capture the first visible content
+before showing the overlay, then budget further captures across compositor
+frames to avoid a synchronous opening stall. Track per-cell dirty generations
+from surface commits and window map/unmap/move/resize/workspace changes;
+monitor damage alone misses hidden workspaces. Coalesce updates and recapture
+only dirty cells displayed in the overview. Send frame callbacks to displayed
+thumbnail clients as needed for animation, with a bounded refresh budget, and
+stop doing work when closed or idle. Keep snapshot feedback suppression,
+render-state guards and explicit close/unload cleanup. Production must not use
+per-cell `glFinish`; rely on same-context ordering and appropriate compositor
+synchronization instead.
+
+No confirmed blocker remains for the tested GL capture/composition path.
+Before calling the full overview production-ready, cover fractional scale,
+rotated/HDR outputs, floating/fullscreen/pinned windows and popups, concurrent
+screensharing, active transformer effects and monitor hotplug. Native transformer
+or blur paths can allocate renderer scratch buffers separately from this color
+cache; the prototype suppresses snapshot blur and does not establish a bound
+for every effect. Vulkan support, damage-driven refresh, frame-callback policy,
+physical monitor layout and input/focus behavior remain work for the full M4
+implementation. Stop here until the user approves that work.

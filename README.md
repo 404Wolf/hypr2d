@@ -227,3 +227,33 @@ window#waybar { background: #000000; color: #abb2bf; }
 }
 tooltip { background: #000000; color: #abb2bf; border: 1px solid #4b5263; }
 ```
+
+## Overview rendering prototype
+
+M4 is paused at its rendering approval gate. The full overview command and UI
+are not implemented. The test-only contact sheet captures both monitors' 8×8
+grids and special workspaces into thumbnail-sized RGBA8 framebuffers.
+
+Run the deterministic screenshot and 25-cycle resource checks in the VM:
+
+```sh
+nix build .#integration --builders '' -L
+```
+
+`result/hypr2d-overview-results/` contains before/after/overlay/diff PNGs,
+per-cell timings, process/DRM memory samples, and the child compositor log.
+`nix flake check --builders '' -L` includes this suite and the M1–M3 regressions.
+The VM shuts down after testing.
+
+For a single hardware capture measurement in a normal development window:
+
+```sh
+HYPR2D_PROBE_RESULTS=/tmp/hypr2d-overview-hardware \
+  nix run .#nested --builders '' -- --overview-benchmark
+```
+
+It creates only its own clients/outputs and closes them and the nested compositor
+when finished. It performs no screenshot comparisons or repeated leak test;
+those belong in the VM, independently of the host's frame callbacks.
+See DESIGN.md §Findings for API constraints, measurements and the recommended
+capture-on-open / per-cell damage-driven design.
