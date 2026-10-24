@@ -37,8 +37,8 @@
         buildInputs = [ compositor ] ++ compositor.buildInputs;
         dontConfigure = true;
         buildPhase = ''
-          ${pkgs.bash}/bin/bash ${pkgs.clang-tools}/bin/clang-format --dry-run -Werror plugin/main.cpp
-          $CXX -std=c++26 -shared -fPIC plugin/main.cpp \
+          ${pkgs.bash}/bin/bash ${pkgs.clang-tools}/bin/clang-format --dry-run -Werror plugin/*.cpp plugin/*.hpp
+          $CXX -std=c++26 -shared -fPIC plugin/*.cpp \
             -I${rust}/include $(pkg-config --cflags hyprland) \
             ${rust}/lib/libhypr2d_core.a -o libhypr2d.so
         '';
@@ -52,14 +52,14 @@
       };
       nested = pkgs.writeShellApplication {
         name = "hypr2d-nested";
-        runtimeInputs = [ compositor pkgs.python3 pkgs.foot pkgs.waybar pkgs.grim ];
-        text = builtins.replaceStrings [ "@PLUGIN@" "@SMOKE@" "@CLI@" "@EXAMPLES@" ] [ "${plugin}/lib/libhypr2d.so" "${./nix/smoke.py}" "${rust}/bin/hypr2d" "${./examples}" ] (builtins.readFile ./nix/nested.sh);
+        runtimeInputs = [ compositor (pkgs.python3.withPackages (p: [ p.pillow ])) pkgs.foot pkgs.waybar pkgs.grim ];
+        text = builtins.replaceStrings [ "@PLUGIN@" "@SMOKE@" "@CLI@" "@EXAMPLES@" "@OVERVIEW@" ] [ "${plugin}/lib/libhypr2d.so" "${./nix/smoke.py}" "${rust}/bin/hypr2d" "${./examples}" "${./nix/overview.py}" ] (builtins.readFile ./nix/nested.sh);
       };
       parentConfig = pkgs.writeText "hypr2d-ci-parent.lua" ''
         hl.monitor({ output = "", mode = "1280x720@60", position = "auto", scale = 1 })
         hl.config({ xwayland = { enabled = false } })
         hl.on("hyprland.start", function()
-          hl.exec_cmd("${nested}/bin/hypr2d-nested --smoke-test >/tmp/hypr2d-test.log 2>&1; echo $? >/tmp/hypr2d-status")
+          hl.exec_cmd("${nested}/bin/hypr2d-nested --smoke-test >/tmp/hypr2d-test.log 2>&1 && ${nested}/bin/hypr2d-nested --overview-test >/tmp/hypr2d-overview.log 2>&1; echo $? >/tmp/hypr2d-status")
         end)
       '';
       integration = pkgs.testers.runNixOSTest {
@@ -84,13 +84,16 @@
           # keep the expected path as an alias for EGL device discovery.
           machine.succeed("rm -f /dev/dri/renderD128; ln -s card0 /dev/dri/renderD128")
           machine.send_chars("Hyprland --i-am-really-stupid --config ${parentConfig} >/tmp/hypr2d-parent.log 2>&1\n")
-          machine.wait_until_succeeds("test -f /tmp/hypr2d-status", timeout=180)
+          machine.wait_until_succeeds("test -f /tmp/hypr2d-status", timeout=300)
           print(machine.succeed("cat /tmp/hypr2d-test.log"))
           machine.succeed("grep 'PASS M1:' /tmp/hypr2d-test.log")
           machine.succeed("grep 'PASS M2:' /tmp/hypr2d-test.log")
           machine.succeed("grep 'PASS M3:' /tmp/hypr2d-test.log")
+          print(machine.succeed("cat /tmp/hypr2d-overview.log"))
+          machine.succeed("grep 'PASS M4 rendering prototype:' /tmp/hypr2d-overview.log")
           machine.succeed("grep '^0$' /tmp/hypr2d-status")
           machine.copy_from_machine("/tmp/hypr2d-test.log")
+          machine.copy_from_machine("/tmp/hypr2d-overview-results")
         '';
       };
     in { default = plugin; cli = rust; inherit plugin nested rust integration; });

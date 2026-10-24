@@ -1,4 +1,5 @@
 #include "hypr2d-core/src/lib.rs.h"
+#include "overview.hpp"
 #include <algorithm>
 #include <chrono>
 #include <hyprland/src/animation/WorkspaceAnimationController.hpp>
@@ -27,6 +28,7 @@ extern "C" {
 static std::optional<rust::Box<hypr2d::Core>> core;
 static CHyprSignalListener workspaceListener;
 static CHyprSignalListener swipeBeginListener, swipeUpdateListener, swipeEndListener, renderListener, monitorListener;
+static bool testingEnabled = false;
 static bool swipeClaimed = false, applyingSwipe = false;
 static std::optional<hypr2d::SwipeFrame> swipeFrame;
 static std::vector<PHLWORKSPACE> swipeVisuals;
@@ -165,6 +167,8 @@ static bool feedSwipe(hypr2d::SwipePhase phase, uint32_t fingers = 0, double dx 
 static std::string execute(const std::string &input) {
     try {
         auto ms = monitors();
+        if (input.starts_with("probe "))
+            return testingEnabled ? OverviewProbe::command(**core, ms, input) : "error: test-only command";
         auto ws = windows();
         auto reply = (*core)->command({ms.data(), ms.size()}, {ws.data(), ws.size()}, input);
         if (!reply.error.empty())
@@ -362,12 +366,18 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         if (swipeMonitor == m)
             cancelSwipe();
     });
-    if (const char *testing = getenv("HYPR2D_TESTING"); testing && std::string(testing) == "1")
+    if (const char *testing = getenv("HYPR2D_TESTING"); testing && std::string(testing) == "1") {
+        testingEnabled = true;
         HyprlandAPI::addLuaFunction(handle, "hypr2d", "_test_swipe", testSwipeLua);
+        OverviewProbe::init();
+    }
     IPC::Socket2::sock()->postEvent({"hypr2d", "ready"});
     return {"hypr2d", "2D workspace grid", "Wolf Mermelstein", "0.2.0"};
 }
 APICALL EXPORT void PLUGIN_EXIT() {
+    if (testingEnabled)
+        OverviewProbe::shutdown();
+    testingEnabled = false;
     IPC::Socket2::sock()->postEvent({"hypr2d", "unloaded"});
     swipeBeginListener.reset();
     swipeUpdateListener.reset();

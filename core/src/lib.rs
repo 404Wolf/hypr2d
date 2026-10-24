@@ -1,4 +1,6 @@
 pub mod grid;
+mod overview;
+use overview::probe_report;
 pub mod swipe;
 use grid::{Cell, Direction, Grid};
 use serde_json::json;
@@ -70,7 +72,36 @@ mod ffi {
         cell_x: u32,
         cell_y: u32,
     }
+    struct ProbeSpecial {
+        monitor: u32,
+        name: String,
+    }
+    struct ProbeCell {
+        monitor: u32,
+        workspace: u32,
+        special: String,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        capture_width: u32,
+        capture_height: u32,
+    }
     extern "Rust" {
+        fn probe_plan(
+            self: &Core,
+            monitors: &[Monitor],
+            specials: &[ProbeSpecial],
+            full: bool,
+        ) -> Vec<ProbeCell>;
+        fn probe_report(
+            cells: &[ProbeCell],
+            times: &[f64],
+            active: bool,
+            deleted: bool,
+            restored: u32,
+            renderer: &str,
+        ) -> String;
         type Core;
         fn new_core() -> Box<Core>;
         fn swipe(self: &mut Core, monitors: &[Monitor], input: SwipeInput) -> SwipeFrame;
