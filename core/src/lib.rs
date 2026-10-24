@@ -216,6 +216,7 @@ impl Core {
             .ok_or("no focused monitor")?;
         let (selected, target, dir, carry, all) = match args.as_slice() {
             [op @ ("move" | "carry"), direction] => (vec![focused],None,Some(Direction::parse(direction)?),*op=="carry",false),
+            ["move", direction, "monitor", name] => (vec![select_monitor(monitors,name)?],None,Some(Direction::parse(direction)?),false,false),
             ["move", direction, "all"] => (monitors.iter().collect(),None,Some(Direction::parse(direction)?),false,true),
             ["goto", x, y] => (vec![focused],Some(Cell{x:number(x)?,y:number(y)?}),None,false,false),
             ["goto", x, y, monitor] => (vec![select_monitor(monitors,monitor)?],Some(Cell{x:number(x)?,y:number(y)?}),None,false,false),
@@ -397,6 +398,10 @@ mod tests {
             r.moves.iter().map(|m| m.workspace).collect::<Vec<_>>(),
             vec![71, 82]
         );
+        let target = c.command(&ms, &[], "move down monitor m1");
+        assert!(target.error.is_empty());
+        assert_eq!(target.moves[0].monitor, 1);
+        assert_eq!(target.moves[0].workspace, 172);
         let r = c.command(&ms, &[], "carry down");
         assert!(r.moves[0].carry);
         assert_eq!(r.moves[0].workspace, 81);

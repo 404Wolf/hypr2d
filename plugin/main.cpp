@@ -364,9 +364,11 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     });
     if (const char *testing = getenv("HYPR2D_TESTING"); testing && std::string(testing) == "1")
         HyprlandAPI::addLuaFunction(handle, "hypr2d", "_test_swipe", testSwipeLua);
+    IPC::Socket2::sock()->postEvent({"hypr2d", "ready"});
     return {"hypr2d", "2D workspace grid", "Wolf Mermelstein", "0.2.0"};
 }
 APICALL EXPORT void PLUGIN_EXIT() {
+    IPC::Socket2::sock()->postEvent({"hypr2d", "unloaded"});
     swipeBeginListener.reset();
     swipeUpdateListener.reset();
     swipeEndListener.reset();
