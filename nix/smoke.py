@@ -73,6 +73,7 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
 
         # Reload can replace the Lua environment; a stale bind must never crash.
         ctl("dispatch", "savedHypr2dMove", check=False)
+        wait_for(lambda: len(state()) > 0, "initial output did not become ready")
         animations_before = ctl("-j", "animations")
         first = state()[0]
         mid = first["id"]
@@ -134,10 +135,78 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         assert cell(mid)["workspace"] == 81 + mid
         assert ctl("-j", "animations") == animations_before
         print("PASS M1: exact numbering/wrap, Lua, IPC/events, axes, 57 rapid moves, two-monitor all/focus, no-wrap, carry")
+        def gesture():
+            return json.loads(ctl("hypr2d", "state", "-j"))["swipe"]
+
+        def synthetic(phase, a=0, b=0, claimed=True):
+            def value(v):
+                return str(v).lower() if isinstance(v, bool) else str(v)
+            expression = f'return hl.plugin.hypr2d._test_swipe("{phase}", {value(a)}, {value(b)}, {value(claimed)})'
+            result = ctl("eval", expression)
+            assert result == "ok", result
+
+        def settle():
+            wait_for(lambda: gesture() is None, "swipe spring did not finish")
+            assert all(abs(v) < 0.01 for v in cell(mid)["offset"])
+
+        command("goto", "0", "0", str(mid))
+        synthetic("begin", 2, claimed=False)
+        synthetic("update", 0, -300, claimed=False)
+        synthetic("end", False, claimed=False)
+        assert gesture() is None
+        synthetic("begin", 3)
+        synthetic("update", -40, 2)
+        assert cell(mid)["offset"] == [-40, 0]
+        synthetic("update", 100, 150)
+        assert cell(mid)["offset"] == [60, 0]
+        assert gesture()["neighbor"] == 71 + mid
+        synthetic("end", True)
+        assert cell(mid)["workspace"] == 1 + mid
+        settle()
+        synthetic("begin", 3)
+        synthetic("update", 0, -150)
+        assert cell(mid)["offset"] == [0, -150]
+        assert gesture()["neighbor"] == 81 + mid
+        synthetic("end", False)
+        assert cell(mid)["workspace"] == 81 + mid
+        settle()
+        command("goto", "0", "0")
+        command("configure", first["name"], "8", "8", "false", "10")
+        synthetic("begin", 3)
+        synthetic("update", 400, 0)
+        assert 0 < cell(mid)["offset"][0] < 200
+        assert gesture()["neighbor"] == 0
+        synthetic("end", False)
+        settle()
+        assert cell(mid)["workspace"] == 1 + mid
+        command("configure", first["name"], "8", "8", "true", "10")
+        # A keyboard move must cancel an in-progress gesture and clear its offsets.
+        synthetic("begin", 3)
+        synthetic("update", -40, 0)
+        command("move", "down")
+        assert gesture() is None
+        synthetic("end", True)
+        assert cell(mid)["workspace"] == 81 + mid
+        # Unloading during tracking releases force-rendering and all callbacks.
+        synthetic("begin", 3)
+        synthetic("update", -40, 0)
+        assert ctl("plugin", "unload", plugin) == "ok"
+        assert ctl("plugin", "load", plugin) == "ok"
+        assert gesture() is None
+        assert cell(mid)["offset"] == [0, 0]
+        command("goto", "0", "0", str(sid))
+        assert cell(sid)["focused"]
+        synthetic("begin", 3)
+        synthetic("update", -40, 0)
+        assert ctl("output", "remove", second["name"]) == "ok"
+        wait_for(lambda: len(state()) == 1, "headless monitor removal did not finish")
+        assert gesture() is None
+        synthetic("end", True)
+        print("PASS M2: production event listeners, cancellation, 1:1 offsets, axis lock/reversal, natural direction, commit/bounce, rubber band, interruption/unload")
         ctl("dispatch", "hl.dsp.exit()")
         child.wait(timeout=10)
         assert child.returncode == 0, child.returncode
-        assert log.read_text().count("hypr2d M0: C++ -> Rust -> C++: 41 -> 42") == 2
+        assert log.read_text().count("hypr2d M0: C++ -> Rust -> C++: 41 -> 42") == 3
         print(f"PASS: nested {instance.name}: config, preload, Rust round trip, unload/reload, clean exit")
     except BaseException:
         output.flush()

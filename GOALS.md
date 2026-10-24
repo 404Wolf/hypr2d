@@ -17,8 +17,9 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Integration test in a headless/nested Hyprland driven by hyprctl (CI-runnable)
 
 ## M2 — Tracked 2D trackpad swipe
-- [ ] 3-finger swipe follows the fingers 1:1 along a locked axis to the neighbouring cell, commits past distance/velocity thresholds, otherwise springs back; rubber-band at non-wrapping edges
-- [ ] Physics/decision logic in Rust with unit tests; C++ only feeds events and applies offsets
+- [x] 3-finger swipe follows the fingers 1:1 along a locked axis to the neighbouring cell, commits past distance/velocity thresholds, otherwise springs back; rubber-band at non-wrapping edges
+- [x] Physics/decision logic in Rust with unit tests; C++ only feeds events and applies offsets
+  - Tested with Rust physics and synthetic events through production listeners in nested Hyprland. Real-trackpad hand-tests remain scheduled by the user; see README §Tracked swipe.
 
 ## M3 — Waybar module
 - [ ] `hypr2d waybar` streams JSON (no polling): minimap around the current cell, occupied/empty/urgent states as CSS classes, tooltip listing windows per occupied cell, click/scroll to move

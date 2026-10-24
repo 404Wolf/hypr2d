@@ -10,11 +10,12 @@ if hl.plugin.hypr2d then
   hl.plugin.hypr2d.configure("WAYLAND-1", {columns=8, rows=8, wrap=true, stride=10})
 end
 LUA
-unset HYPRLAND_INSTANCE_SIGNATURE
+unset HYPRLAND_INSTANCE_SIGNATURE HYPR2D_TESTING
 : "${WAYLAND_DISPLAY:?hypr2d nested requires a Wayland parent}"
 # No seat backend means no DRM/input device access; Wayland fallback remains.
 export LIBSEAT_BACKEND=none
 if [[ "${1:-}" == "--smoke-test" ]]; then
+  export HYPR2D_TESTING=1
   python3 @SMOKE@ "$test_dir/hyprland.lua" "@PLUGIN@"
 else
   Hyprland --config "$test_dir/hyprland.lua" "$@"

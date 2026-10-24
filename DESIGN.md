@@ -283,3 +283,34 @@ buffers; the test aliases that node to its authenticated primary node **inside
 the disposable VM only**. This keeps the exact compositor and plugin ABI while
 allowing software rendering of the nested window. The VM shuts down after the
 suite. Configured Lua binds and a configuration guard are also exercised.
+
+### M2 implementation
+
+`core/src/swipe.rs` owns axis locking, finger-distance tracking, natural
+inversion, velocity smoothing/decay, threshold decisions, bounded edge
+resistance and critically damped release motion. The bridge returns offsets,
+workspace targets and the settlement deadline; C++ only applies them.
+The gesture's logical cell commits on release, so a second gesture during
+settling starts from the already committed cell. Keyboard moves and external
+workspace transitions interrupt tracking. Specials and other finger counts are
+left to native handling.
+
+The shim retains cancellable swipe listeners and a render callback. While
+settling it explicitly schedules the next frame (adding already-full damage
+alone does not schedule one in 0.56). A one-shot Rust-defined deadline finishes
+the spring if output frame callbacks pause. It is cancelled on completion,
+interruption, monitor removal or unload; there is no polling or permanent timer.
+Monitor removal uses `preRemoved`, before output teardown. The tests also caught
+and fixed goto-to-an-already-active-cell failing to focus the selected monitor.
+
+Five physics tests complement the M1 tests. The nested synthetic path emits the
+same EventBus events consumed by production listeners and asserts cancellation,
+actual compositor render offsets, axis reversal, natural up-to-down movement,
+commit/bounce, no-wrap resistance, key interruption, unload/reload during
+tracking and removal of the gesture's monitor. This is synthetic coverage;
+physical trackpad feel and parent input forwarding are not established by it.
+The exact pending hand-test checklist is in README §Tracked swipe.
+
+M2 passed nine Rust tests, formatting/Clippy, and the complete normal nested
+suite, including the monitor-removal and paused-frame settlement regressions.
+Real trackpad testing remains explicitly pending.

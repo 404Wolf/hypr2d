@@ -90,3 +90,60 @@ rapid moves, a second headless output, socket2 events and a real carry client.
 and a plugin-free Hyprland parent, so CI does not need a live desktop. KVM is required for the VM.
 `nix flake check` includes that integration test, Rust tests/lints/formatting,
 C++ formatting and the plugin build. The upstream-main build is non-blocking.
+
+## Tracked swipe
+
+The plugin consumes three-finger swipes before Hyprland's built-in gesture
+handlers. Axis locks after 5 logical pixels; the current and neighbouring
+workspaces follow the fingers 1:1. Swipe up means grid down, matching the current
+natural direction. Release commits at 120 px or 0.8 px/ms in the swipe direction;
+a pause removes stale velocity. Cancellation or a short slow gesture springs
+back. Non-wrapping edges resist further travel.
+
+Optional Lua configuration (inside the same namespace guard as the binds):
+
+```lua
+if hl.plugin.hypr2d then
+    local ok, message = hl.plugin.hypr2d.swipe_config({
+        fingers = 3, distance = 120, velocity = 0.8,
+        axis_lock = 5, natural = true,
+    })
+    assert(ok, message)
+end
+```
+
+Other finger counts and swipes while a special workspace is open remain with
+native handlers. A keyboard grid move interrupts a swipe. Spring motion advances on render callbacks, with a one-shot Rust-defined
+settlement deadline when output frames pause. There is no polling loop. Unload, monitor removal and
+external workspace changes release all plugin-owned rendering offsets.
+
+The nested test path emits synthetic cancellable events through the production
+listeners. `_test_swipe` exists only with `HYPR2D_TESTING=1`, set by
+`nix run .#nested -- --smoke-test`; it never injects input into the parent.
+
+### Real trackpad hand-test (pending, to be scheduled by the user)
+
+No live plugin loading was performed. After arranging a controlled real-input
+test, check each of these:
+
+1. Three fingers: slow horizontal and vertical travel follows fingers at 1:1;
+   swipe up selects grid down and all four directions reach the expected cell.
+2. Diagonal onset locks the dominant axis after the configured distance;
+   perpendicular motion does not change axis. Reverse through the starting
+   point and confirm the opposite neighbour appears without a jump or ghost.
+3. Release below the distance threshold slowly: bounce. Release past it: commit.
+   A short fast flick commits in its travel direction; flick then pause bounces.
+4. Cancel a gesture (including lifting fingers unexpectedly): bounce with no
+   stuck offset. Repeated gestures during spring settling start from the cell
+   already committed. Check both natural=true and natural=false.
+5. With wrap enabled, cross every grid boundary. With wrap disabled, test all
+   four edges: bounded resistance, no invalid workspace, smooth return.
+6. Two-, four-, and five-finger native gestures keep working with default
+   three-finger configuration. An open special workspace keeps native handling.
+   Replace the old three-finger exec gesture when adopting the plugin; verify
+   no duplicate workspace action is triggered.
+7. Check tiled, floating and fullscreen windows, fractional scaling and mixed
+   monitor sizes: no seams, stale decorations, wrong focus or stuck layer alpha.
+8. During tracking and settling, use a grid keybind, switch workspace externally,
+   unplug the gesture's monitor, and unload/reload the plugin. No forced-visible
+   neighbour, orphan callback, crash, or stray animation may remain.
