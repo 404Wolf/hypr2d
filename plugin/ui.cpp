@@ -1,4 +1,5 @@
 #include "ui.hpp"
+#include "doctor.hpp"
 #include "overview.hpp"
 #include <chrono>
 #include <deque>
@@ -366,6 +367,12 @@ static void applyDrop(const hypr2d::UIDrop &drop) {
     auto w = findWindow(std::string(drop.window));
     if (!w || !w->m_workspace)
         return;
+    if (!Doctor::healthy()) {
+        (*ui)->overview_refuse(drop.window, now());
+        LOG(Log::ERR, "hypr2d: drop refused on inconsistent layout; run hyprctl hypr2d doctor");
+        damage();
+        return;
+    }
     const auto sourceWorkspace = w->m_workspace; // Keep its monitor/space alive through both silent swap moves.
     auto source = key(sourceWorkspace);
     auto other = findWindow(std::string(drop.stack.empty() ? drop.swap : drop.stack));
@@ -429,6 +436,8 @@ static void applyDrop(const hypr2d::UIDrop &drop) {
     IPC::Socket2::sock()->postEvent({"hypr2d", std::format("drop>>{},{}", std::string(drop.window), std::string(drop.workspace))});
 }
 std::string place(const hypr2d::ExtensionAction &action) {
+    if (!Doctor::healthy())
+        return "layout inconsistent; run hyprctl hypr2d doctor";
     auto w = findWindow(std::string(action.window));
     if (!w || !w->m_workspace)
         return "window is not mapped";
@@ -676,37 +685,6 @@ void shutdown() {
     if (ui)
         release();
     core = nullptr;
-}
-std::string doctor() {
-    auto address = [](auto w) { return w ? std::format("0x{:x}", reinterpret_cast<uintptr_t>(w.get())) : std::string{}; };
-    std::vector<hypr2d::DoctorWorkspace> spaces;
-    std::vector<hypr2d::DoctorWindow> windows;
-    for (auto &weak : State::Workspace::state()->workspaces()) {
-        auto ws = weak.lock();
-        hypr2d::DoctorWorkspace row{key(ws), static_cast<uint32_t>(ws->getWindowCount()), {}};
-        if (ws->space())
-            for (auto &target : ws->space()->targets())
-                if (target && target->window())
-                    row.targets.push_back(address(target->window()));
-        spaces.push_back(std::move(row));
-    }
-    for (auto &w : Desktop::windowState()->windows())
-        if (w->mapped()) {
-            hypr2d::DoctorWindow row{address(w),
-                                     w->m_workspace ? key(w->m_workspace) : "",
-                                     w->layoutTarget()->workspace() ? key(w->layoutTarget()->workspace()) : "",
-                                     "",
-                                     {},
-                                     ""};
-            if (auto group = w->grouping().group()) {
-                row.group = std::format("0x{:x}", reinterpret_cast<uintptr_t>(group.get()));
-                row.current = address(group->current());
-                for (auto &member : group->windows())
-                    row.members.push_back(address(member.lock()));
-            }
-            windows.push_back(std::move(row));
-        }
-    return std::string(hypr2d::doctor({spaces.data(), spaces.size()}, {windows.data(), windows.size()}));
 }
 std::string command(const std::string &input) {
     if (input == "overview refresh") {

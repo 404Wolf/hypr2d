@@ -1,3 +1,4 @@
+#include "doctor.hpp"
 #include "hypr2d-core/src/lib.rs.h"
 #include "monitors.hpp"
 #include "overview.hpp"
@@ -206,7 +207,13 @@ static std::string execute(const std::string &input) {
         return MonitorPolicy::command(input);
     try {
         if (input == "doctor")
-            return OverviewUI::doctor();
+            return Doctor::report();
+        if (input == "doctor repair") {
+            cancelSwipe();
+            return Doctor::repair();
+        }
+        if (input.starts_with("doctor-test "))
+            return Doctor::test(input);
         if (input == "overview" || input.starts_with("overview ")) {
             cancelSwipe();
             return OverviewUI::command(input);
@@ -225,6 +232,8 @@ static std::string execute(const std::string &input) {
         const auto window = Desktop::focusState()->window();
         // Validate all targets before mutating any monitor.
         for (const auto &move : reply.moves) {
+            if (move.carry && !Doctor::healthy())
+                return "error: layout inconsistent; run hyprctl hypr2d doctor";
             if (move.carry && !window)
                 return "error: no active window";
             const auto target = workspace(move.workspace, monitor(move.monitor));
@@ -459,6 +468,7 @@ APICALL EXPORT void PLUGIN_EXIT() {
     extensionSource = nullptr;
     if (core)
         (*core)->extension_stop();
+    Doctor::shutdown();
     OverviewUI::shutdown();
     MonitorPolicy::shutdown();
     if (testingEnabled)

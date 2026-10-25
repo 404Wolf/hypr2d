@@ -6,6 +6,5 @@ void init(hypr2d::Core *core);
 void shutdown();
 std::string place(const hypr2d::ExtensionAction &action);
 bool active();
-std::string doctor();
 std::string command(const std::string &input);
 } // namespace OverviewUI

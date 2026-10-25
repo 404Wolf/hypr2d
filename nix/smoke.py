@@ -78,6 +78,14 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
 
         # Reload can replace the Lua environment; a stale bind must never crash.
         ctl("dispatch", "savedHypr2dMove", check=False)
+        # A preceding disposable child can retire Aquamarine's bootstrap
+        # Wayland output before its replacement is configured. VM-only fallback
+        # creates a reliable headless output; interactive runs remain windows.
+        bootstrap_deadline=time.monotonic()+2
+        while time.monotonic()<bootstrap_deadline and not state():
+            time.sleep(.05)
+        if not state():
+            assert ctl("output","create","headless","WAYLAND-1")=="ok"
         wait_for(lambda: len(state()) > 0, "initial output did not become ready")
         animations_before = ctl("-j", "animations")
         first = state()[0]

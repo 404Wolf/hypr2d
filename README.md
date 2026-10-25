@@ -406,11 +406,53 @@ those belong in the VM, independently of the host's frame callbacks.
 See DESIGN.md §Findings for API constraints, measurements and the recommended
 capture-on-open / per-cell damage-driven design.
 
-`hyprctl hypr2d doctor` reports read-only window/workspace/layout/group consistency
-as JSON (`ok`, `errors`, `warnings`). A singleton group is reported as a warning
-because Hyprland allows it. The command does not repair compositor state or
-restart clients.
+## Doctor
 
+`hyprctl hypr2d doctor` is a read-only JSON check of mapped windows, layout
+membership, group members/current member, and both effective and member ghost
+spaces. `details` distinguishes a null space from a space whose workspace has
+expired. Singleton groups are warnings: Hyprland permits them.
+
+To repair supported leftover corruption explicitly:
+
+```sh
+hyprctl hypr2d doctor repair
+hyprctl hypr2d doctor
+```
+
+Repair returns `{"queued":true}` and runs after the input/IPC handler returns.
+Query doctor again for `repair.state`: `complete`, `refused`, or `failed`, with an
+error and lists of rebuilt windows/dissolved singleton groups. `ok` describes
+the current invariants; inspect it as well as the repair result. Unloading cancels
+a queued repair. Repeating a completed repair is safe and does no further work.
+
+Supported repairs reattach an existing layout target to the window's existing,
+enabled workspace, including missing membership, a wrong space, a literally
+null target/ghost space, or a space with an expired workspace. All group member
+ghosts are restored **before** target reinsertion or any group dispatcher.
+Orphan layout algorithms are discarded before their unsafe callbacks can run.
+Only after layout consistency is verified are unlocked singleton groups dissolved
+through the public dispatcher. Multi-member groups keep their membership/current
+member, and locked singleton groups remain warnings. Focus, workspace/special
+visibility, fullscreen state and floating positions are retained; rebuilding a
+tiled target can reflow its workspace.
+
+Repair refuses unknown/stale native targets, duplicate targets within one layout
+algorithm, invalid group membership/current index, groups split across workspaces,
+shared targets outside a group, and windows without an authoritative enabled
+workspace/space. Refused plans mutate nothing. A failed repair reports its error
+and skips subsequent group operations if ownership is still inconsistent. No
+client is closed, restarted or moved to another workspace as a repair strategy.
+Drops, carry and extension placement refuse inconsistent state until repaired.
+
+Avoid manual group removal on a corrupt target. In particular, the null-space
+warning alone is not proof of corruption: normal group removal emits it too.
+For explicit Lua window operations always resolve and assert the full selector
+first: `local w = assert(hl.get_window("address:0x…"))`. A bare `0x…` selector can
+return nil, and a nil dispatcher argument falls back to the focused window.
+Generated hypr2d scripts assert every address lookup before dispatching.
+
+## Monitor slots and parking
 
 Monitor numbering uses permanent slots from `$XDG_STATE_HOME/hypr2d/slots.json`
 (default `~/.local/state/hypr2d/slots.json`). `eDP-1` reserves slot 0; new outputs

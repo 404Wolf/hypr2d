@@ -958,3 +958,68 @@ minimap event paths below 50 ms (3.2–26.63 ms), including an 18.83 ms swipe co
 Hotplug/serial rename, parked cards and expansion, grouped normal/special drops,
 software cursor, 1:1 laptop captures and repeated exact before/after screenshots
 remained green. VM clients/compositors exited and the test driver cleaned up.
+
+### Crash postmortem and bounded doctor recovery
+
+The supplied live log ends after `ITarget: assignToSpace with a null space?`,
+without a native backtrace. That warning alone is not proof of a pre-existing
+null space: `CGroup::remove` deliberately clears a singleton member's ghost
+before switching its window target back into the layout. The source and VM
+establish the old swap's causal chain more precisely:
+
+- `Actions::swapWith` → `CLayoutManager::switchTargets(..., true)` →
+  `ITarget::swap` exchanges effective target spaces and calls `onUpdateSpace`.
+- `CWindowGroupTarget::onUpdateSpace` visits member window targets using their
+  old ghost spaces. It does **not** call `CGroup::updateWorkspace`, which is what
+  synchronizes window workspaces and ghosts during normal `assignToSpace` moves.
+- The grouped window stays in its old workspace while its effective target goes
+  to the other workspace. If no window/monitor retains that other workspace, it
+  expires: `ITarget::m_space` is a strong reference but `CSpace::m_parent` is weak.
+  This is an orphan space (non-null space, null workspace), not necessarily a
+  literal null `SP<CSpace>` before removal.
+- Removing the singleton clears its member target normally, then swaps it with
+  the orphan group target. Layout recalculation / window target space updates
+  can dereference the expired workspace. The VM executes the removed old swap,
+  asserts the orphan in doctor, and reproduces a crash using the public
+  `out_of_group` dispatcher in a disposable compositor. This explains the live
+  symptoms; the provided log cannot identify the live faulting instruction.
+
+The same pinned 0.56 source is used throughout: `layout/target/Target.cpp`,
+`WindowGroupTarget.cpp`, `WindowTarget.cpp`, `layout/LayoutManager.cpp`,
+`layout/space/Space.cpp`, `desktop/view/Group.cpp`, and
+`config/shared/actions/ConfigActions.cpp`.
+
+Production drops contain no cross-space target swap: cross-workspace operations
+use silent public moves, same-workspace swaps detach members first, carry uses
+the native workspace-move action (which calls group `assignToSpace`), and
+workspace captures do not mutate layout targets. Doctor now checks raw native
+target identity and member ghost ownership as well as window/workspace counts.
+Drops, carry and extension placement refuse inconsistent state. Unsafe legacy
+operations and corruption fixtures exist only behind `HYPR2D_TESTING`.
+
+Recovery policy and Lua generation live in Rust. A cancellable idle operation
+preflights the whole snapshot and refuses ambiguous membership/targets or absent
+authoritative workspaces before mutation. The native adapter quarantines only
+orphan algorithms, seeds every affected group ghost with a live workspace,
+removes misindexed target references, and forces normal target reinsertion. It
+verifies all invariants before public singleton-detach dispatchers can run. No
+strong native group references span those dispatchers. Locked singleton groups
+remain warnings; multi-member group order/current membership is retained.
+Fullscreen/floating presentation and focus/workspace/special visibility are
+restored. A tiled workspace may reflow. Failed verification stops group work;
+this is bounded recovery of known ownership failures, not arbitrary memory repair.
+
+Every generated window selector uses `address:` and `assert` before a dispatcher
+can run. The VM tests missing source/target lookups with a focused two-member
+sentinel group, then verifies it was untouched. Recovery tests use a single
+2256×1504 scale-1 eDP-1 at (8934,6682), software cursor, normal/special clients,
+singletons and a healthy two-member group. They cover the old orphan, literal
+null target, null ghost, missing membership, fullscreen/floating preservation,
+unchanged mapped clients/workspaces/focus/visibility, normal client unmap and
+zero recovery-compositor exit, and a second idempotent repair.
+
+Validation: all four x86_64 flake checks passed for the recovery batch. The VM
+reproduces the legacy unsafe crash deliberately with core dumps disabled, then
+requires the repaired compositor to unmap all clients normally and exit zero.
+Rust tests, formatting and Clippy pass; the complete existing overview, hotplug,
+swipe, minimap latency, software-cursor and laptop-geometry regressions pass.

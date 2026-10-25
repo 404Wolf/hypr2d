@@ -77,4 +77,6 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Deferred public-dispatcher overview drops, cross-special/group accounting regressions and read-only doctor diagnostics
 - [x] Eight-way tracked swipe: sector hysteresis, 2D tracking/projection/spring, diagonal commands, HM tunables and VM/unit tests
 
+- [x] Crash postmortem: diagnose member/orphan spaces, assert generated Lua selectors, guarded deferred doctor repair and VM crash/recovery regressions
+
 ## Questions

@@ -1,6 +1,6 @@
 //! Public Lua operations only. Never exchange targets between layout spaces.
 use crate::{ffi, guarded};
-fn quote(value: &str) -> String {
+pub(crate) fn quote(value: &str) -> String {
     let mut out = String::from("\"");
     for c in value.chars() {
         match c {
@@ -23,17 +23,17 @@ pub fn script(drop: &ffi::UIDrop, source: &str, x: f64, y: f64) -> String {
         let w = quote(&format!("address:{}", drop.window));
         let t = quote(&format!("address:{target}"));
         let dest = quote(&drop.workspace);
-        let mut code=format!("local w=hl.get_window({w}); if not w or not w.mapped then return end; local function dispatch(d) local result=hl.dispatch(d); assert(result.ok,result.error) end; ");
+        let mut code=format!("local w=assert(hl.get_window({w}),'source window not found'); assert(w.mapped,'source window unmapped'); local function dispatch(d) local result=hl.dispatch(d); assert(result.ok,result.error) end; ");
+        if !target.is_empty() {
+            code.push_str(&format!(
+                "local t=assert(hl.get_window({t}),'target window not found'); assert(t.mapped,'target window unmapped'); "
+            ));
+        }
         code.push_str("local saved={}; local focus=hl.get_active_monitor(); for _,m in ipairs(hl.get_monitors()) do saved[#saved+1]={monitor=m,workspace=m.active_workspace,special=m.active_special_workspace} end; local success,failure=pcall(function() ");
         code.push_str(&format!(
             "dispatch(hl.dsp.focus({{monitor={}}})); ",
             drop.monitor
         ));
-        if !target.is_empty() {
-            code.push_str(&format!(
-                "local t=hl.get_window({t}); if not t or not t.mapped then return end; "
-            ));
-        }
         code.push_str(
             "local function detach(win) if win.group then dispatch(hl.dsp.window.move({window=win,out_of_group=true})) end end; local function move(win,ws) dispatch(hl.dsp.window.move({window=win,workspace=ws,follow=false})); detach(win) end; detach(w); ",
         );
@@ -74,6 +74,9 @@ mod tests {
         let s = script(&d, "21", 0., 0.);
         assert!(s.contains("move(w,") && s.contains("move(t,\"21\")"));
         assert!(!s.contains("window.swap"));
+        assert!(s.contains("assert(hl.get_window(\"address:0xa\")"));
+        assert!(s.contains("assert(hl.get_window(\"address:0xb\")"));
+        assert!(!s.contains("window=nil"));
         assert!(s.contains("special:a\\\"\\\\\\010"));
         assert_eq!(quote("λ"), "\"λ\"");
     }

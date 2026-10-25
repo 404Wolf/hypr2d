@@ -50,15 +50,26 @@ mod ffi {
     struct DoctorWorkspace {
         key: String,
         reported: u32,
+        usable: bool,
         targets: Vec<String>,
     }
     struct DoctorWindow {
         id: String,
         workspace: String,
         target_workspace: String,
+        ghost_workspace: String,
+        target: String,
+        target_space: bool,
+        ghost_space: bool,
+        locked: bool,
         group: String,
         members: Vec<String>,
         current: String,
+    }
+    struct DoctorPlan {
+        rebuild: Vec<String>,
+        dissolve: Vec<String>,
+        error: String,
     }
     struct Move {
         monitor: u32,
@@ -326,6 +337,15 @@ mod ffi {
         fn new_core() -> Box<Core>;
         fn drop_script(drop: &UIDrop, source: &str, x: f64, y: f64) -> String;
         fn doctor(workspaces: &[DoctorWorkspace], windows: &[DoctorWindow]) -> String;
+        fn doctor_ok(workspaces: &[DoctorWorkspace], windows: &[DoctorWindow]) -> bool;
+        fn doctor_plan(workspaces: &[DoctorWorkspace], windows: &[DoctorWindow]) -> DoctorPlan;
+        fn doctor_repair_script(windows: &[String]) -> String;
+        fn doctor_result(
+            state: &str,
+            error: &str,
+            rebuilt: &[String],
+            dissolved: &[String],
+        ) -> String;
         fn swipe(self: &mut Core, monitors: &[Monitor], input: SwipeInput) -> SwipeFrame;
         fn spike_round_trip(value: u32) -> u32;
         fn command(self: &mut Core, monitors: &[Monitor], windows: &[Window], input: &str)
@@ -388,6 +408,23 @@ fn drop_script(drop: &ffi::UIDrop, source: &str, x: f64, y: f64) -> String {
 }
 fn doctor(workspaces: &[ffi::DoctorWorkspace], windows: &[ffi::DoctorWindow]) -> String {
     doctor::report(workspaces, windows)
+}
+fn doctor_ok(workspaces: &[ffi::DoctorWorkspace], windows: &[ffi::DoctorWindow]) -> bool {
+    guarded(|| doctor::analyze(workspaces, windows).errors.is_empty())
+}
+fn doctor_plan(
+    workspaces: &[ffi::DoctorWorkspace],
+    windows: &[ffi::DoctorWindow],
+) -> ffi::DoctorPlan {
+    guarded(|| doctor::plan(workspaces, windows))
+}
+fn doctor_repair_script(windows: &[String]) -> String {
+    guarded(|| doctor::repair_script(windows))
+}
+fn doctor_result(state: &str, error: &str, rebuilt: &[String], dissolved: &[String]) -> String {
+    guarded(|| {
+        json!({"state":state,"error":error,"rebuilt":rebuilt,"dissolved":dissolved}).to_string()
+    })
 }
 fn new_core() -> Box<Core> {
     guarded(|| Box::new(Core::default()))
