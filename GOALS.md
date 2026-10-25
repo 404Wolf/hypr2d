@@ -19,6 +19,7 @@ changed; flag anything that blocks you at the bottom under "Questions".
 ## M2 — Tracked 2D trackpad swipe
 - [x] 3-finger swipe follows the fingers 1:1 along a locked axis to the neighbouring cell, commits past distance/velocity thresholds, otherwise springs back; rubber-band at non-wrapping edges
 - [x] Physics/decision logic in Rust with unit tests; C++ only feeds events and applies offsets
+  - Upgraded to eight sectors with deliberate re-targeting and projected 2D spring release; see the completed extension below.
   - Tested with Rust physics and synthetic events through production listeners in nested Hyprland. Real-trackpad hand-tests remain scheduled by the user; see README §Tracked swipe.
 
 ## M3 — Waybar module
@@ -74,6 +75,6 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Drop-on-window stacks, Shift-drop swaps, locked-group refusal and immediate empty-special cleanup; VM regressions
 
 - [x] Deferred public-dispatcher overview drops, cross-special/group accounting regressions and read-only doctor diagnostics
-- [ ] Eight-way tracked swipe: sector hysteresis, 2D tracking/projection/spring, diagonal commands, HM tunables and VM/unit tests
+- [x] Eight-way tracked swipe: sector hysteresis, 2D tracking/projection/spring, diagonal commands, HM tunables and VM/unit tests
 
 ## Questions

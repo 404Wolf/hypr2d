@@ -82,13 +82,17 @@ module; the hypr2d waybar module streams instead, so that goes away.
 
 ## Tracked swipe (M2)
 
-Begin: lock axis after a few px. Update: render current + neighbour workspace
-offset 1:1 with finger travel (same mechanism as Hyprland's own workspace
-swipe render offsets). End: commit if distance > threshold or velocity >
-threshold in the swipe direction, else spring back; rubber-band resistance at
-non-wrapping edges. Reversal mid-swipe just follows the fingers. Config:
-fingers, thresholds, natural/inverted. Pure logic (axis lock, progress,
-velocity estimate, commit/bounce, spring curve) in Rust with tests.
+Begin: accumulate 2D travel and select one of eight sectors after axis-lock
+distance. Use 50 ms exponential displacement/velocity estimates, diagonal sectors
+±15° (cardinals ±30°), and 8° plus sustained-distance hysteresis for re-targeting.
+Track at 1:1 with up to four workspace offsets (current, horizontal, vertical,
+diagonal); pure cardinal motion uses two. Resist blocked axes independently.
+Release: project velocity with constant deceleration, normalize by viewport width
+and height, and choose the nearest origin/eight-neighbour target. Each diagonal
+axis must independently exceed midpoint and minimum distance; clamped axes degrade
+to valid cardinal motion. Settle with a critically damped 2D spring starting at
+release velocity. Rust owns all decisions, geometry and physics; C++ applies the
+workspace list and offsets. See README for tunables and physical hand-tests.
 
 ## Overview (M4/M5)
 
@@ -921,3 +925,36 @@ headless backend to avoid parent Wayland configure/frame dependencies. The
 existing rendering/group/cursor/resource checks and clean exit pass as well;
 overview-drop minimap latency measured 25.77 ms. Nested development isolates
 config and state directories so it cannot write the live slot registry.
+
+### Eight-way tracked swipe extension
+
+The Rust sector lock uses accumulated displacement smoothed over 50 ms, wider
+cardinal sectors, and a candidate interior margin plus sustained travel. An
+analytic critical bias spring eases newly enabled/disabled axes during deliberate
+re-targeting without a position jump. Release uses vector deceleration projection
+and independent normalized axis thresholds. Its analytic critical spring starts
+at the actual displayed position and velocity. Rendering selects the currently
+visible quadrant rather than the committed target, including when projected
+inertia reverses across the origin; no diagonal corner is uncovered. The shim
+forces at most four visible workspaces, schedules settling frames, cancels stale
+deadline callbacks, and emits the same immediate cell event on diagonal commits.
+
+Home Manager exposes diagonalWidth (15°), hysteresis (8°), hysteresisDistance
+(12 px), projectionDecel (0.0006 px/ms²), and springStiffness (576 s⁻²).
+Move/carry/all and the CLI accept four hyphenated diagonal names. Numbering,
+wrapping and per-axis clamping remain Rust grid operations. No diagonal binds
+are installed. Unit tests cover sector margins, sustained re-targeting, all eight
+snaps, viewport normalization, edge fallback, projection reversal coverage and
+spring position/velocity continuity. VM synthetic events exercise the production
+listeners in all eight directions, plus sloppy horizontal, bounce, retargeting,
+diagonal carry/all and existing cancellation/unload/monitor-removal paths.
+Real trackpad feel remains the user's scheduled hand-test.
+
+Validation: all four x86_64 flake checks passed; 51 Rust tests and Clippy passed.
+The complete VM suite took 200 s. The four-colour diagonal screenshot was
+inspected and all four sampled workspace regions matched their client colours.
+The same run retained the 17 px automatic Waybar height and measured all nine
+minimap event paths below 50 ms (3.2–26.63 ms), including an 18.83 ms swipe commit.
+Hotplug/serial rename, parked cards and expansion, grouped normal/special drops,
+software cursor, 1:1 laptop captures and repeated exact before/after screenshots
+remained green. VM clients/compositors exited and the test driver cleaned up.

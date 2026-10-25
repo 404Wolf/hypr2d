@@ -104,6 +104,8 @@
           machine.wait_until_succeeds("test -f /tmp/hypr2d-status", timeout=300)
           print(machine.succeed("cat /tmp/hypr2d-test.log"))
           machine.succeed("grep 'PASS M1:' /tmp/hypr2d-test.log")
+          machine.succeed("grep 'PASS eight-way:' /tmp/hypr2d-test.log")
+          machine.copy_from_machine("/tmp/hypr2d-swipe-results")
           machine.succeed("grep 'PASS M2:' /tmp/hypr2d-test.log")
           machine.succeed("grep 'PASS M3:' /tmp/hypr2d-test.log")
           machine.succeed("grep 'PASS Waybar minimap:' /tmp/hypr2d-test.log")

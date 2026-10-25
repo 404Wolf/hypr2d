@@ -629,6 +629,9 @@ with (artifacts / "compositor.log").open("w+") as log:
             configured=json.loads(ctl("hypr2d","state","-j"))
             assert configured["overview_config"]["font_size"]==18 and configured["overview_config"]["rounding"]==2
             assert configured["swipe_config"]["fingers"]==4 and not configured["swipe_config"]["natural"]
+            assert configured["swipe_config"]["diagonal_width"]==14 and configured["swipe_config"]["hysteresis"]==7
+            assert configured["swipe_config"]["hysteresis_distance"]==16 and configured["swipe_config"]["projection_decel"]==0.0008
+            assert configured["swipe_config"]["spring_stiffness"]==625
             assert configured["swipe_enabled"]
             configured_grid=next(m["grid"] for m in configured["monitors"] if m["name"]=="WAYLAND-1")
             assert configured_grid["rows"]==9 and not configured_grid["wrap"]

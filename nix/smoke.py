@@ -164,15 +164,15 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         synthetic("begin", 3)
         synthetic("update", -40, 2)
         assert cell(mid)["offset"] == [-40, 0]
-        synthetic("update", 100, 150)
+        synthetic("update", 100, 0)
         assert cell(mid)["offset"] == [60, 0]
         assert gesture()["neighbor"] == 71 + slot
         synthetic("end", True)
         assert cell(mid)["workspace"] == 1 + slot
         settle()
         synthetic("begin", 3)
-        synthetic("update", 0, -150)
-        assert cell(mid)["offset"] == [0, -150]
+        synthetic("update", 0, -600)
+        assert cell(mid)["offset"] == [0, -600]
         assert gesture()["neighbor"] == 81 + slot
         synthetic("end", False)
         assert cell(mid)["workspace"] == 81 + slot
@@ -187,6 +187,98 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         settle()
         assert cell(mid)["workspace"] == 1 + slot
         command("configure", first["name"], "8", "8", "true", "10")
+        # Eight sectors use the actual logical viewport, including independent axes.
+        viewport = next(m for m in json.loads(ctl("-j", "monitors")) if m["id"] == mid)
+        width, height = viewport["width"] / viewport["scale"], viewport["height"] / viewport["scale"]
+        directions = [("left", -1, 0), ("right", 1, 0), ("up", 0, -1), ("down", 0, 1),
+                      ("up-left", -1, -1), ("up-right", 1, -1), ("down-left", -1, 1), ("down-right", 1, 1)]
+        for direction, x, y in directions:
+            command("goto", "3", "3", str(mid))
+            synthetic("begin", 3)
+            dx, dy = -x * max(width,height) * .7, -y * max(width,height) * .7
+            synthetic("update", dx, dy)
+            tracked = gesture()
+            assert len(tracked["views"]) == (4 if x and y else 2), tracked
+            assert all(abs(a-b)<.01 for a,b in zip(cell(mid)["offset"], [max(-width,min(width,dx)),max(-height,min(height,dy))])), tracked
+            synthetic("end", False)
+            assert cell(mid)["workspace"] == 10*((3+y)*8+3+x)+slot+1, (direction, gesture())
+            settle()
+        command("goto", "3", "3", str(mid))
+        synthetic("begin", 3)
+        synthetic("update", -width*.7, -height*.12)
+        assert gesture()["axis"] == "Horizontal" and len(gesture()["views"]) == 2, gesture()
+        synthetic("end", False)
+        assert cell(mid)["workspace"] == 10*(3*8+4)+slot+1
+        settle()
+        # Slow travel below the midpoint bounces; pause removes stale flick velocity.
+        command("goto", "3", "3", str(mid))
+        synthetic("begin", 3)
+        synthetic("update", -40, 0)
+        time.sleep(.3)
+        synthetic("end", False)
+        assert cell(mid)["workspace"] == 10*(3*8+3)+slot+1
+        settle()
+        # A deliberate direction change retargets without jumping at the switch.
+        synthetic("begin", 3)
+        synthetic("update", -80, 0)
+        time.sleep(.08)
+        synthetic("update", 0, -height*.8)
+        assert gesture()["sector"] == "Down", gesture()
+        time.sleep(.35)
+        synthetic("end", False)
+        assert cell(mid)["workspace"] == 10*(4*8+3)+slot+1
+        settle()
+        # Public diagonal command and carry, across both grids, preserve numbering.
+        command("goto", "0", "0", str(mid))
+        command("goto", "0", "0", str(sid))
+        command("move", "up-left", "all")
+        assert cell(mid)["workspace"] == 631+slot and cell(sid)["workspace"] == 631+cell(sid)["slot"]
+        command("goto", "0", "1", str(mid))
+        command("carry", "down-right")
+        assert cell(mid)["workspace"] == 171+slot
+        assert any(w["app_id"] == "hypr2d-test" for c in cell(mid)["cells"] if c["workspace"] == 171+slot for w in c["windows"])
+        command("carry", "up-left")
+        command("goto", "0", "0", str(mid))
+        print("PASS eight-way: all 8 native synthetic directions, 2/4 views, sloppy horizontal, bounce, retarget, diagonal all/carry")
+        # Four real workspace clients prove native diagonal rendering has no blank corner.
+        quad_clients=[]
+        quad_colors=["701010","107010","101070","707010"]
+        for (x,y),color in zip([(3,3),(4,3),(3,4),(4,4)],quad_colors):
+            command("goto",str(x),str(y),str(mid))
+            app=f"hypr2d-quad-{x}-{y}"
+            process=subprocess.Popen(["foot","--config=/dev/null",f"--app-id={app}","--override=cursor.blink=no",f"--override=colors-dark.background={color}","sh","-c","printf '\\033[?25l'; sleep 120"],env=env,stdout=output,stderr=output,start_new_session=True)
+            clients.append(process)
+            quad_clients.append(process)
+            wait_for(lambda:any(w["class"]==app for w in json.loads(ctl("-j","clients"))),"quadrant client map")
+        command("goto","3","3",str(mid))
+        time.sleep(.3)
+        synthetic("begin",3)
+        pan=min(width,height)*.5
+        synthetic("update",-pan,-pan)
+        assert len(gesture()["views"])==4
+        screenshots=Path("/tmp/hypr2d-swipe-results")
+        screenshots.mkdir(exist_ok=True)
+        shot=subprocess.Popen(["grim","-o",first["name"],str(screenshots/"diagonal-four-views.png")],env=env,stdout=output,stderr=output)
+        try:
+            ctl("eval",'hl.config({debug={damage_tracking=0}})')
+            shot.wait(timeout=10)
+        finally:
+            if shot.poll() is None:
+                shot.kill()
+                shot.wait()
+        image=Image.open(screenshots/"diagonal-four-views.png").convert("RGB")
+        points=[((width-pan)/2,(height-pan)/2),(width-pan/2,(height-pan)/2),((width-pan)/2,height-pan/2),(width-pan/2,height-pan/2)]
+        for point,color in zip(points,quad_colors):
+            pixel=image.getpixel(tuple(round(v*viewport["scale"]) for v in point))
+            expected=tuple(bytes.fromhex(color))
+            assert max(abs(a-b) for a,b in zip(pixel,expected))<5,(point,pixel,expected,gesture())
+        synthetic("end",True)
+        settle()
+        for process in quad_clients:
+            process.terminate()
+            process.wait(timeout=10)
+        wait_for(lambda:not any(w["class"].startswith("hypr2d-quad-") for w in json.loads(ctl("-j","clients"))),"quadrant cleanup")
+        command("goto","0","0",str(mid))
         # A keyboard move must cancel an in-progress gesture and clear its offsets.
         synthetic("begin", 3)
         synthetic("update", -40, 0)
@@ -210,7 +302,7 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         wait_for(lambda: len(state()) == 1, "headless monitor removal did not finish")
         assert gesture() is None
         synthetic("end", True)
-        print("PASS M2: production event listeners, cancellation, 1:1 offsets, axis lock/reversal, natural direction, commit/bounce, rubber band, interruption/unload")
+        print("PASS M2: production event listeners, cancellation, 1:1 offsets, sector lock/reversal, natural direction, commit/bounce, rubber band, interruption/unload")
         def cli_command(*args):
             result = subprocess.run([cli, "--instance", instance.name, *args], check=True, capture_output=True, text=True, timeout=10)
             return result.stdout.strip()
@@ -273,7 +365,7 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         latency = MinimapLatency(instance, cli, output)
         command("goto", "0", "0", str(mid))
         synthetic("begin", 3)
-        synthetic("update", -300, 0)
+        synthetic("update", -width*.7, 0)
         latency.expect("tracked-swipe", lambda:synthetic("end", False), lambda r:r["alt"]=="1,0",event="workspace")
         settle()
         command("goto","0","1",str(mid))

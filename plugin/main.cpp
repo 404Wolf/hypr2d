@@ -33,7 +33,7 @@ static CHyprSignalListener workspaceListener;
 static CHyprSignalListener swipeBeginListener, swipeUpdateListener, swipeEndListener, renderListener, monitorListener;
 static bool testingEnabled = false;
 static bool swipeClaimed = false, applyingSwipe = false;
-static std::optional<hypr2d::SwipeFrame> swipeFrame;
+static bool swipeAnimating = false;
 static std::vector<PHLWORKSPACE> swipeVisuals;
 static PHLMONITOR swipeMonitor;
 static SP<CEventLoopTimer> settleTimer;
@@ -96,7 +96,7 @@ static void releaseVisuals() {
     if (swipeMonitor)
         g_pHyprRenderer->damageMonitor(swipeMonitor);
     swipeMonitor.reset();
-    swipeFrame.reset();
+    swipeAnimating = false;
 }
 static void cancelSwipe() {
     if (core) {
@@ -117,44 +117,57 @@ static void applySwipe(const hypr2d::SwipeFrame &frame) {
         cancelSwipe();
         return;
     }
-    const auto current = workspace(frame.current, m);
-    const auto neighbor = frame.neighbor ? workspace(frame.neighbor, m) : nullptr;
-    if (!current || current->m_monitor != m || (neighbor && neighbor->m_monitor != m)) {
+    // Rust supplies the visible quadrant, at most four workspaces.
+    std::vector<std::pair<PHLWORKSPACE, hypr2d::SwipeView>> views;
+    for (const auto &view : frame.views) {
+        auto w = workspace(view.workspace, m);
+        if (!w || w->m_monitor != m) {
+            cancelSwipe();
+            return;
+        }
+        views.emplace_back(w, view);
+    }
+    auto target = frame.commit ? workspace(frame.commit, m) : nullptr;
+    if (frame.commit && (!target || target->m_monitor != m)) {
         cancelSwipe();
         return;
     }
     swipeMonitor = m;
-    if (frame.commit) {
+    if (target) {
+        if (std::ranges::find(swipeVisuals, target) == swipeVisuals.end())
+            swipeVisuals.push_back(target);
         applyingSwipe = true;
-        m->changeWorkspace(neighbor, false, true);
+        m->changeWorkspace(target, false, true);
         applyingSwipe = false;
         IPC::Socket2::sock()->postEvent({"hypr2d", std::format("cell>>{},{},{}", frame.monitor, frame.cell_x, frame.cell_y)});
     }
-    // Hide a previous neighbour when the fingers reverse direction.
+    // A projected snap can reverse direction. Hide its active target until it
+    // enters the visible quadrant; render only the four supplied views.
     for (const auto &w : swipeVisuals) {
-        if (w != current && w != neighbor) {
+        if (std::ranges::none_of(views, [&](const auto &v) { return v.first == w; })) {
             w->m_forceRendering = false;
             w->m_renderOffset->setValueAndWarp(Vector2D{});
             w->m_alpha->setValueAndWarp(0.f);
         }
     }
-    auto offset = [&](PHLWORKSPACE w, double x, double y) {
-        if (!w)
-            return;
+    for (const auto &[w, view] : views) {
         if (std::ranges::find(swipeVisuals, w) == swipeVisuals.end())
             swipeVisuals.push_back(w);
         w->m_forceRendering = true;
         w->m_alpha->setValueAndWarp(1.f);
-        w->m_renderOffset->setValueAndWarp(Vector2D{x, y});
+        w->m_renderOffset->setValueAndWarp(Vector2D{view.x, view.y});
         w->updateWindowDecos();
-    };
-    offset(current, frame.current_x, frame.current_y);
-    offset(neighbor, frame.neighbor_x, frame.neighbor_y);
-    swipeFrame = frame;
+    }
+    swipeAnimating = frame.settling;
     g_pHyprRenderer->damageMonitor(m);
     if (frame.settling)
         m->scheduleFrame(Aquamarine::IOutput::AQ_SCHEDULE_DAMAGE);
     if (frame.finish_after_ms > 0) {
+        if (settleTimer) {
+            settleTimer->cancel();
+            g_pEventLoopManager->removeTimer(settleTimer);
+            settleTimer.reset();
+        }
         settleTimer = makeShared<CEventLoopTimer>(
             std::chrono::duration_cast<Time::steady_dur>(std::chrono::duration<double, std::milli>{frame.finish_after_ms}),
             [](SP<CEventLoopTimer>, void *) { feedSwipe(hypr2d::SwipePhase::Tick, 0, 0, 0, false); }, nullptr);
@@ -321,7 +334,10 @@ static int swipeConfigLua(lua_State *L) {
     lua_getfield(L, 1, "natural");
     const bool natural = lua_isnil(L, -1) || lua_toboolean(L, -1);
     lua_pop(L, 1);
-    const auto result = execute(std::format("swipe-config {} {} {} {} {}", fingers, distance, velocity, natural ? "true" : "false", lock));
+    const auto result =
+        execute(std::format("swipe-config {} {} {} {} {} {} {} {} {} {}", fingers, distance, velocity, natural ? "true" : "false", lock,
+                            number("diagonal_width", 15), number("hysteresis", 8), number("hysteresis_distance", 12),
+                            number("projection_decel", 0.0006), number("spring_stiffness", 576)));
     lua_pushboolean(L, !result.starts_with("error:"));
     lua_pushlstring(L, result.data(), result.size());
     return 2;
@@ -410,7 +426,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         swipeClaimed = false;
     });
     renderListener = Event::bus()->m_events.render.pre.listen([](PHLMONITOR m) {
-        if (swipeFrame && swipeFrame->settling && swipeMonitor == m)
+        if (swipeAnimating && swipeMonitor == m)
             feedSwipe(hypr2d::SwipePhase::Tick);
     });
     monitorListener = Event::bus()->m_events.monitor.preRemoved.listen([](PHLMONITOR m) {

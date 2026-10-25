@@ -132,7 +132,7 @@ hyprctl hypr2d overview-config '{"fit":true,"background":"#000000","cell":"#3030
 
 Colours use `#RRGGBB`; font size is 10–40 output pixels and rounding is 0–4 px.
 These defaults match base16 OneDark Extra Dark. Runtime changes apply while
-open. Grid capture size stays at 160 pixels wide, independent of layout size.
+open. Captures resize to the displayed cell size × monitor scale, within the cache budget.
 
 Overview cells and special tiles default to flush spacing with one-pixel inset
 borders. Set `programs.hypr2d.overview.gap` (0–32, before layout scaling) to
@@ -212,12 +212,20 @@ C++ formatting and the plugin build. The upstream-main build is non-blocking.
 
 ## Tracked swipe
 
-The plugin consumes three-finger swipes before Hyprland's built-in gesture
-handlers. Axis locks after 5 logical pixels; the current and neighbouring
-workspaces follow the fingers 1:1. Swipe up means grid down, matching the current
-natural direction. Release commits at 120 px or 0.8 px/ms in the swipe direction;
-a pause removes stale velocity. Cancellation or a short slow gesture springs
-back. Non-wrapping edges resist further travel.
+The plugin consumes three-finger swipes before Hyprland's built-in handlers.
+After 5 logical pixels of accumulated travel, its smoothed angle selects one of
+eight sectors. Diagonal sectors span ±15°; the wider cardinal sectors span ±30°,
+so sloppy straight swipes stay straight. Re-targeting requires 8° inside another
+sector and 12 px of sustained travel. Current, horizontal, vertical and diagonal
+workspaces follow the fingers at 1:1; a cardinal swipe renders only two.
+
+Swipe up means grid down with natural direction enabled. Release projects the
+50 ms smoothed velocity with constant deceleration, then chooses the nearest
+neighbour in viewport-normalized coordinates. Each committed axis must pass
+half its viewport and the minimum distance (120 px). Projection starts above
+0.8 px/ms; pausing removes stale velocity. A critically damped 2D spring preserves
+release velocity. Non-wrapping edges resist per axis; blocked diagonal axes fall
+back to a valid cardinal. Cancellation bounces.
 
 Optional Lua configuration (inside the same namespace guard as the binds):
 
@@ -226,10 +234,17 @@ if hl.plugin.hypr2d then
     local ok, message = hl.plugin.hypr2d.swipe_config({
         fingers = 3, distance = 120, velocity = 0.8,
         axis_lock = 5, natural = true,
+        diagonal_width = 15, hysteresis = 8, hysteresis_distance = 12,
+        projection_decel = 0.0006, spring_stiffness = 576,
     })
     assert(ok, message)
 end
 ```
+
+Home Manager exposes the same settings under `programs.hypr2d.gestures`, with
+`diagonalWidth`, `hysteresis`, `hysteresisDistance`, `projectionDecel` and
+`springStiffness` for the new tunables. Deceleration uses px/ms²; stiffness uses
+s⁻². No diagonal keybinds are installed.
 
 Other finger counts and swipes while a special workspace is open remain with
 native handlers. A keyboard grid move interrupts a swipe. Spring motion advances on render callbacks, with a one-shot Rust-defined
@@ -245,18 +260,20 @@ listeners. `_test_swipe` exists only with `HYPR2D_TESTING=1`, set by
 No live plugin loading was performed. After arranging a controlled real-input
 test, check each of these:
 
-1. Three fingers: slow horizontal and vertical travel follows fingers at 1:1;
-   swipe up selects grid down and all four directions reach the expected cell.
-2. Diagonal onset locks the dominant axis after the configured distance;
-   perpendicular motion does not change axis. Reverse through the starting
-   point and confirm the opposite neighbour appears without a jump or ghost.
-3. Release below the distance threshold slowly: bounce. Release past it: commit.
-   A short fast flick commits in its travel direction; flick then pause bounces.
+1. Three fingers: slow travel follows fingers at 1:1 in all eight directions.
+   Natural swipe up selects grid down. Diagonal pans cover every corner without
+   seams; slightly crooked horizontal swipes stay horizontal.
+2. Hover around a sector boundary: no flicker. Clearly curve into another sector:
+   it re-targets without a jump. Reverse through the origin smoothly.
+3. Release slowly before the viewport midpoint: bounce; past it: commit. Check
+   both axes on the laptop's 3:2 display. A diagonal with only one axis past its
+   threshold becomes cardinal. A short fast flick commits; flick then pause
+   bounces. Check spring continuity and tune the exposed settings if needed.
 4. Cancel a gesture (including lifting fingers unexpectedly): bounce with no
    stuck offset. Repeated gestures during spring settling start from the cell
    already committed. Check both natural=true and natural=false.
 5. With wrap enabled, cross every grid boundary. With wrap disabled, test all
-   four edges: bounded resistance, no invalid workspace, smooth return.
+   four edges and corners: diagonal fallback, bounded resistance, no invalid workspace, smooth return.
 6. Two-, four-, and five-finger native gestures keep working with default
    three-finger configuration. An open special workspace keeps native handling.
    Replace the old three-finger exec gesture when adopting the plugin; verify
@@ -270,7 +287,9 @@ test, check each of these:
 ## Waybar
 
 The built package includes `bin/hypr2d` (also `nix build .#cli`). Run
-`hypr2d state`, `hypr2d move left`, `hypr2d carry down`, or `hypr2d goto 2 3`.
+`hypr2d state`, `hypr2d move left`, `hypr2d carry down-right`, or `hypr2d goto 2 3`.
+Moves/carries accept `up-left`, `up-right`, `down-left`, `down-right`;
+`hypr2d move up-left all` steps every connected grid independently.
 The CLI talks directly to Hyprland's Unix socket; it starts no subprocesses.
 It uses `HYPRLAND_INSTANCE_SIGNATURE` and `XDG_RUNTIME_DIR`, or accepts an exact
 `--instance SIGNATURE`. Tests always supply their own nested signature.

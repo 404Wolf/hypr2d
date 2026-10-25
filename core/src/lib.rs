@@ -90,7 +90,13 @@ mod ffi {
         now: f64,
         cancelled: bool,
     }
+    struct SwipeView {
+        workspace: u32,
+        x: f64,
+        y: f64,
+    }
     struct SwipeFrame {
+        views: Vec<SwipeView>,
         claimed: bool,
         active: bool,
         settling: bool,
@@ -504,16 +510,29 @@ impl Core {
             self.gesture = None;
             return Ok(reply);
         }
-        if let ["swipe-config", fingers, distance, velocity, natural, axis_lock] = args.as_slice() {
-            let config = swipe::Config {
-                fingers: number(fingers)?,
-                distance: distance.parse().map_err(|_| "invalid distance")?,
-                velocity: velocity.parse().map_err(|_| "invalid velocity")?,
-                natural: natural.parse().map_err(|_| "natural must be true/false")?,
-                axis_lock: axis_lock.parse().map_err(|_| "invalid axis lock")?,
+        if args.first() == Some(&"swipe-config") {
+            if args.len() != 6 && args.len() != 11 {
+                return Err("swipe-config requires FINGERS DISTANCE VELOCITY NATURAL LOCK [DIAGONAL_WIDTH HYSTERESIS HYSTERESIS_DISTANCE PROJECTION_DECEL SPRING_STIFFNESS]".into());
             }
-            .validate()?;
-            self.swipe_config = config;
+            let mut config = swipe::Config {
+                fingers: number(args[1])?,
+                distance: args[2].parse().map_err(|_| "invalid distance")?,
+                velocity: args[3].parse().map_err(|_| "invalid velocity")?,
+                natural: args[4].parse().map_err(|_| "natural must be true/false")?,
+                axis_lock: args[5].parse().map_err(|_| "invalid axis lock")?,
+                ..Default::default()
+            };
+            if args.len() == 11 {
+                config.diagonal_width = args[6].parse().map_err(|_| "invalid diagonal width")?;
+                config.hysteresis = args[7].parse().map_err(|_| "invalid hysteresis")?;
+                config.hysteresis_distance =
+                    args[8].parse().map_err(|_| "invalid hysteresis distance")?;
+                config.projection_decel =
+                    args[9].parse().map_err(|_| "invalid projection decel")?;
+                config.spring_stiffness =
+                    args[10].parse().map_err(|_| "invalid spring stiffness")?;
+            }
+            self.swipe_config = config.validate()?;
             return Ok(reply);
         }
         let focused = monitors
@@ -594,6 +613,7 @@ fn select_monitor<'a>(ms: &'a [ffi::Monitor], s: &str) -> Result<&'a ffi::Monito
 impl Default for ffi::SwipeFrame {
     fn default() -> Self {
         Self {
+            views: vec![],
             claimed: false,
             active: false,
             settling: false,
@@ -667,11 +687,20 @@ impl Core {
             }
             let (current, neighbor) = gesture.offsets();
             let result = ffi::SwipeFrame {
+                views: gesture
+                    .views()
+                    .into_iter()
+                    .map(|(workspace, p)| ffi::SwipeView {
+                        workspace,
+                        x: p[0],
+                        y: p[1],
+                    })
+                    .collect(),
                 claimed: true,
                 active: !gesture.finished,
                 settling: gesture.settling(),
                 finish_after_ms: if phase == ffi::SwipePhase::End && !gesture.finished {
-                    swipe::MAX_SETTLE_MS + 1.
+                    gesture.deadline() + 1.
                 } else {
                     0.
                 },
