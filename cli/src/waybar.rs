@@ -1,3 +1,4 @@
+mod updates;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, BufRead, Write};
@@ -43,7 +44,7 @@ pub struct GridCell {
     pub workspace: u32,
     pub windows: Vec<Window>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct Window {
     #[serde(default)]
     pub address: String,
@@ -406,20 +407,42 @@ fn refresh(
     out: &mut impl Write,
     last: &mut String,
     view: &View<'_>,
+    snapshot: &mut Option<Snapshot>,
 ) -> io::Result<bool> {
     let (record, ready) = match fetch() {
         Ok(state) => {
             let record = render_view(&state, view);
             let ready = record.alt != "unavailable";
+            *snapshot = Some(state);
             (record, ready)
         }
-        Err(_) => (
-            unavailable("Waiting for Hyprland / hypr2d; retrying"),
-            false,
-        ),
+        Err(_) => {
+            *snapshot = None;
+            (
+                unavailable("Waiting for Hyprland / hypr2d; retrying"),
+                false,
+            )
+        }
     };
     emit(out, last, record)?;
     Ok(ready)
+}
+fn refresh_frame(
+    fetch: &mut impl FnMut() -> Result<Snapshot, String>,
+    out: &mut impl Write,
+    last: &mut String,
+    view: &View<'_>,
+    snapshot: &mut Option<Snapshot>,
+    updates: &mut updates::Updates,
+) -> io::Result<bool> {
+    let cached = snapshot.as_mut().is_some_and(|s| updates.apply(s));
+    *updates = updates::Updates::default();
+    if cached {
+        emit(out, last, render_view(snapshot.as_ref().unwrap(), view))?;
+        Ok(true)
+    } else {
+        refresh(fetch, out, last, view, snapshot)
+    }
 }
 // A blocking socket reader feeds readiness events. Idle means recv(), never a
 // timeout or snapshot request. A fixed 16ms deadline coalesces each burst without
@@ -448,7 +471,9 @@ pub fn stream_view(
     });
     let mut last = String::new();
     let mut backoff = crate::reconnect::Backoff::default();
-    let ready = refresh(&mut fetch, &mut out, &mut last, view)?;
+    let mut snapshot = None;
+    let mut updates = updates::Updates::default();
+    let ready = refresh(&mut fetch, &mut out, &mut last, view, &mut snapshot)?;
     let mut loaded = ready;
     let mut retry = if ready {
         None
@@ -459,7 +484,14 @@ pub fn stream_view(
     loop {
         let now = Instant::now();
         if pending.is_some_and(|t| now >= t) || retry.is_some_and(|t| now >= t) {
-            let ready = refresh(&mut fetch, &mut out, &mut last, view)?;
+            let ready = refresh_frame(
+                &mut fetch,
+                &mut out,
+                &mut last,
+                view,
+                &mut snapshot,
+                &mut updates,
+            )?;
             pending = None;
             if ready {
                 loaded = true;
@@ -483,7 +515,14 @@ pub fn stream_view(
         };
         let Some(line) = next else {
             if pending.is_some() && loaded {
-                refresh(&mut fetch, &mut out, &mut last, view)?;
+                refresh_frame(
+                    &mut fetch,
+                    &mut out,
+                    &mut last,
+                    view,
+                    &mut snapshot,
+                    &mut updates,
+                )?;
             }
             break;
         };
@@ -493,6 +532,8 @@ pub fn stream_view(
         };
         if event == "hypr2d" && data == "unloaded" {
             loaded = false;
+            snapshot = None;
+            updates = updates::Updates::default();
             pending = None;
             backoff.reset();
             retry = Some(Instant::now() + backoff.next());
@@ -505,8 +546,11 @@ pub fn stream_view(
             if event == "hypr2d" && data == "ready" {
                 loaded = true;
             }
-            if loaded && relevant(event) && pending.is_none() {
-                pending = Some(Instant::now() + Duration::from_millis(16));
+            if loaded && relevant(event) {
+                updates.observe(event, data);
+                if pending.is_none() {
+                    pending = Some(Instant::now() + Duration::from_millis(16));
+                }
             }
         }
     }
@@ -544,6 +588,76 @@ mod tests {
     use super::*;
     fn fixture() -> Snapshot {
         serde_json::from_str(r#"{"version":1,"monitors":[{"id":0,"name":"DP<&","focused":true,"workspace":1,"grid":{"columns":2,"rows":1,"wrap":true},"cell":{"x":0,"y":0},"cells":[{"x":0,"y":0,"workspace":1,"windows":[]},{"x":1,"y":0,"workspace":11,"windows":[{"title":"<b>unsafe & title</b>","app_id":"app<","urgent":true}]}]}]}"#).unwrap()
+    }
+    #[test]
+    fn completed_drop_uses_known_moves_without_a_second_ipc_query() {
+        let mut calls = 0;
+        let mut out = Vec::new();
+        stream(
+            std::io::Cursor::new(
+                "createworkspacev2>>1,1\nmovewindowv2>>abc,1,1\nhypr2d>>drop>>0xabc,1\n",
+            ),
+            || {
+                calls += 1;
+                let mut s = fixture();
+                s.monitors[0].cells[1].windows[0].address = "0xabc".into();
+                Ok(s)
+            },
+            &mut out,
+            None,
+            1,
+            1,
+            &Colors::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            calls, 1,
+            "completed drops must not wait behind compositor rendering for IPC"
+        );
+        assert_eq!(String::from_utf8(out).unwrap().lines().count(), 2);
+    }
+    #[test]
+    fn cached_drop_is_conservative_and_handles_swap_and_special_departure() {
+        let mut base = fixture();
+        base.monitors[0].cells[1].windows[0].address = "0xabc".into();
+        let mut other = base.monitors[0].cells[1].windows[0].clone();
+        other.address = "0xdef".into();
+        base.monitors[0].cells[0].windows.push(other);
+        let mut change = updates::Updates::default();
+        change.observe("movewindowv2", "abc,1,1");
+        change.observe("movewindowv2", "def,11,11");
+        change.observe("hypr2d", "drop>>0xabc,1");
+        assert!(change.apply(&mut base));
+        assert_eq!(base.monitors[0].cells[0].windows[0].address, "0xabc");
+        assert_eq!(base.monitors[0].cells[1].windows[0].address, "0xdef");
+        let mut special = updates::Updates::default();
+        special.observe("movewindowv2", "abc,-99,special:chat");
+        special.observe("hypr2d", "drop>>0xabc,special:chat");
+        assert!(special.apply(&mut base));
+        assert!(base.monitors[0].cells[0].windows.is_empty());
+        for event in [
+            "workspacev2",
+            "focusedmon",
+            "windowtitlev2",
+            "activewindow",
+            "activewindowv2",
+            "closewindow",
+            "openwindow",
+            "urgent",
+            "monitorremoved",
+            "hypr2d",
+        ] {
+            let mut rejected = updates::Updates::default();
+            rejected.observe("movewindowv2", "def,1,1");
+            rejected.observe("hypr2d", "drop>>0xdef,1");
+            rejected.observe(event, "changed");
+            assert!(!rejected.apply(&mut base), "{event} must fetch fresh state");
+            assert!(base.monitors[0].cells[0].windows.is_empty());
+        }
+        let mut unknown = updates::Updates::default();
+        unknown.observe("movewindowv2", "aaa,1,1");
+        unknown.observe("hypr2d", "drop>>0xaaa,1");
+        assert!(!unknown.apply(&mut base));
     }
     #[test]
     fn full_axes_anchor_each_column_and_row_including_wrap_and_small_grids() {

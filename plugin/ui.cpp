@@ -401,6 +401,7 @@ static void applyDrop(const hypr2d::UIDrop &drop) {
     }
     auto focus = Desktop::focusState()->monitor();
     const auto savedPointer = Pointer::mgr()->position();
+    bool committed = false;
     Hyprutils::Utils::CScopeGuard restore([&] {
         if (focus)
             (void)Config::Actions::focusMonitor(focus);
@@ -413,6 +414,8 @@ static void applyDrop(const hypr2d::UIDrop &drop) {
         mark(std::string(drop.workspace));
         rebuild = true;
         damage();
+        if (committed)
+            IPC::Socket2::sock()->postEvent({"hypr2d", std::format("drop>>{},{}", std::string(drop.window), std::string(drop.workspace))});
     });
     PHLMONITOR mon;
     for (auto &m : State::monitorState()->monitors())
@@ -433,7 +436,7 @@ static void applyDrop(const hypr2d::UIDrop &drop) {
         return;
     }
     core->extension_event("drop", drop.workspace, drop.window);
-    IPC::Socket2::sock()->postEvent({"hypr2d", std::format("drop>>{},{}", std::string(drop.window), std::string(drop.workspace))});
+    committed = true;
 }
 std::string place(const hypr2d::ExtensionAction &action) {
     if (!Doctor::healthy())
