@@ -149,7 +149,7 @@ labels take precedence.
 
 The backdrop captures each monitor's BACKGROUND and BOTTOM layer surfaces
 (including hyprpaper), without windows, top layers or cursor. Default darkening
-is 35%; empty desktops reuse the same texture at 55% darkening. No additional
+is 35%; empty desktops are transparent outlines over this continuous image. No additional
 blur pass is added. Wallpapers refresh on layer surface commits/map/unmap.
 Without mapped lower layers, the flat theme fallback needs no backdrop texture.
 
@@ -165,11 +165,18 @@ programs.hypr2d.overview = {
 Captures use the simple full-fake path directly into supersampled physical
 framebuffers, then generate mipmaps for trilinear minification. There is no
 full-output export resample. Only visible occupied cells get individual
-textures; empty cells share their monitor backdrop. The budget reserves 25%
+textures; empty cells allocate nothing and show the continuous backdrop. The budget reserves 25%
 for backdrops and 75% for thumbnails, including mipmap payload. Resize retires
 old mip levels. Refreshes remain damage-driven with a 2 ms queue budget; one
 capture is indivisible. GPU/driver bookkeeping and text textures are outside
-the RGBA capture payload cap.
+the RGBA capture payload cap. The first overview frame uses placeholders with no
+captures; subsequent frames drain the queue. Pending client frame callbacks are
+completed at native frame completion, separately from capture. Callback-only
+commits do not dirty thumbnails; actual visual changes still refresh them.
+The capture count is cumulative for the open session, not the number of allocated
+textures. Diagnostics include `opening_dispatch_ms`, `first_frame_ms` and
+`first_frame_capture_ms`; software-VM total frame time is not a Radeon latency
+guarantee.
 `hyprctl hypr2d overview state` reports capture payload, timing, framebuffer and drawn physical dimensions;
 layout changes log both. `hyprctl hypr2d overview cursor` reports cursor-image
 availability and native software/hardware state for hardware diagnostics.

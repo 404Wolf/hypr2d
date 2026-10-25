@@ -88,4 +88,7 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Overview wallpaper/empty desktops, budgeted supersampling and subtle animated tile polish; VM screenshots and 2256×1504 9×9 timing
   - Software-rendered VM timing is recorded in DESIGN.md; Radeon frame pacing remains a user-owned live verification.
 
+- [x] Live full-grid regression: fit five-special strip inside the 2256×1504 output, continuous empty-cell backdrop, no capture feedback, deferred opening frame; Rust and VM checks
+  - First frame captures zero thumbnails; the software VM still exceeds 30 ms total frame time. Radeon opening feel remains a user-owned live check.
+
 ## Questions

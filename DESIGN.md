@@ -1219,3 +1219,59 @@ Post-warmup ten-cycle RSS floors were 269132, 269824, 269184 and 269252 KiB
 hotplug, doctor recovery, drag/group/special and minimap regressions passed;
 the overview-drop minimap update measured 20.98 ms. VM processes exited and the
 driver cleaned up. aarch64 builds and physical GPU/trackpad tests were not run.
+
+### Live full-grid fitting, continuous wallpaper and capture scheduling
+
+The special header previously began directly at the last grid row when gap=0.
+It now reserves an independent physical 8 px separation, followed by its measured
+text height and another 8 px gap to the strip. The existing whole-composition
+fit scales grid cells and strip together using all visible cell/header bounds,
+with output margins. Diagnostics now use the already-fitted frame directly,
+avoiding a second header-fit transform when reporting geometry. The Rust
+regression uses eDP-1 at (8934,6682), 2256×1504, full 9×9, five specials and
+scales 1/1.5/2: every header/cell stays within 12 px margins, both strip gaps are
+8×scale and cells retain the 3:2 monitor aspect ratio. VM screenshots and bounds
+assertions exercise the five-special full-grid layout too.
+
+Empty cells now reveal the single dimmed screen backdrop with only outlines;
+they have no repeated wallpaper UVs, texture draws or opaque fill. Zero-gap
+panel outlines remain O(rows+columns). Supersampling for occupied cells and
+specials is unchanged. The four-quadrant wallpaper test asserts an empty cell's
+colour using its absolute screen location, catching miniature wallpaper repeats.
+
+The prior planner already excluded empty cells. The capture counter is
+cumulative over an opening, including repeated dirty refreshes; 447 does not
+mean 447 allocated cells. Previously capture completion explicitly sent client
+frame callbacks, coupling captures to further client commits. Simply removing
+those callbacks failed the hidden-client content-change regression: some clients
+need a pending callback delivered before they submit their changed frame.
+Callbacks are now delivered at native frame completion for cached workspaces,
+independently of capture. Commit listeners inspect the native updated bits:
+callback-only/input-region commits do not dirty thumbnails; buffer/damage and
+visual state changes do. Pending callbacks can wake the native frame clock.
+This retains real hidden-client refresh without capturing protocol-only commits.
+
+Opening schedules a first placeholder frame with no capture work. A completed
+native frame unlocks the capture queue; subsequent frames retain the 2 ms queue
+budget (an individual capture remains indivisible). New diagnostics distinguish
+opening dispatcher duration, full first native frame duration and first-frame
+capture work. The VM asserts dispatch below 30 ms, zero first-frame capture,
+exactly eight occupied captures plus one backdrop and no idle recapture, alongside
+the existing genuine hidden-client redraw test.
+
+Validation: all 68 Rust tests, formatting/Clippy and all four x86_64 flake checks
+passed; the full VM took 353.64 s, including 60 clean UI cycles, pinch/focus/group
+preservation, cursor pixels, doctor recovery, hotplug, drags and minimap latency.
+Inspected the full 9×9/five-special screenshot: all tiles fit and the backdrop is
+continuous. With three occupied normal cells, five specials, supersample=2 and
+fit=false, capture_ms was 102.59 ms asynchronously / 111.05 ms with GPU completion,
+for 8 workspace captures + 1 backdrop, no empty captures. Image payload was
+26.94 MiB. Normal captures were 398×266 for drawn 199×133; specials were 690×460
+for drawn 345×230. Static idle did not increase the count.
+
+Opening dispatch was 0.55 ms and first-frame capture was 0 ms, but total first
+native frame time was 99.32 ms (93.62 ms in the GPU-profile run) in the software
+VM. Thus the requested <30 ms whole-frame target and instant hardware feel are
+**not verified**, rather than being inferred from the fast dispatcher. The
+Radeon deployment check remains user-owned; no live compositor or Home Manager
+checkout was modified. All VM processes exited and the driver cleaned up.

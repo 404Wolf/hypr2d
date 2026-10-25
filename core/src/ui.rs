@@ -422,7 +422,7 @@ impl Overview {
         if let Some((r, _)) = self.headers.last_mut() {
             *r = Rect {
                 x: left,
-                y: bottom + self.gap,
+                y: bottom + self.header_gap,
                 w: right - left,
                 h: self.header_height,
             };
@@ -457,7 +457,7 @@ impl Overview {
             let w = ((special_right - left - self.gap * (n - 1.)) / n).clamp(1., 150.);
             c.rect = Rect {
                 x,
-                y: bottom + header + self.gap,
+                y: bottom + header + self.header_gap,
                 w,
                 h: w * ratio,
             };
@@ -476,7 +476,7 @@ impl Overview {
             }
             let card = Rect {
                 x: special_right + 8. + index as f64 * (card_width + 8.),
-                y: bottom + 2. * header + self.gap,
+                y: bottom + 2. * header + self.header_gap,
                 w: card_width,
                 h: 110.,
             };
@@ -720,7 +720,7 @@ impl Overview {
     }
     fn state_frame(&self, width: f64, height: f64, now: f64) -> String {
         guarded(|| {
-            let f = self.overview_frame(width, height, now);
+            let f = self.frame(width, height, now);
             let (s, ox, oy) = self.transform(width, height);
             serde_json::json!({"expanded_parked":self.expanded.map(|g|self.panel_names[g].clone()),"cards":self.cards.iter().map(|(g,r)|serde_json::json!({"name":self.panel_names[*g],"rect":[r.x*s+ox,r.y*s+oy,r.w*s,r.h*s]})).collect::<Vec<_>>(),"labels":f.labels.iter().map(|l|serde_json::json!({"text":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>(),"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"drop_mode":f.drop_mode,"refused":f.refused,"last_refused":self.refused,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":f.labels.iter().take(self.headers.iter().enumerate().filter(|(g,_)|self.header_visible(*g)).count()).map(|l|serde_json::json!({"label":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>()}).to_string()
         })
@@ -1742,6 +1742,74 @@ mod tests {
             0.,
         );
         assert_eq!(ui.cells[0].rect, other.cells[0].rect);
+    }
+    #[test]
+    fn full_laptop_grid_and_five_specials_fit_with_headers() {
+        let mut core = Core {
+            theme: crate::theme::Theme {
+                fit: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(core
+            .command(&[], &[], "configure 0 9 9 true 10")
+            .error
+            .is_empty());
+        let laptop = ffi::UIOutput {
+            name: "eDP-1".into(),
+            width: 2256.,
+            height: 1504.,
+            ..output(0, 8934., 6682.)
+        };
+        let specials: Vec<_> = (0..5)
+            .map(|i| ffi::UISpecial {
+                name: format!("special:{i}"),
+                monitor: 0,
+                shown: false,
+            })
+            .collect();
+        let ui = core.overview_new(&[laptop], &specials, &[], 0.);
+        for scale in [1., 1.5, 2.] {
+            let f = ui.overview_frame_scaled(2256., 1504., scale, 1000.);
+            assert_eq!(f.cells.len(), 86);
+            for r in f
+                .cells
+                .iter()
+                .map(|c| &c.rect)
+                .chain(f.labels.iter().map(|l| &l.rect))
+            {
+                assert!(r.x >= 12. - 1e-6 && r.y >= 12. - 1e-6);
+                assert!(
+                    r.x + r.width <= 2244. + 1e-6 && r.y + r.height <= 1492. + 1e-6,
+                    "overflow: {},{} {}x{}",
+                    r.x,
+                    r.y,
+                    r.width,
+                    r.height
+                );
+            }
+            let bottom = f
+                .cells
+                .iter()
+                .filter(|c| !c.key.starts_with("special:"))
+                .map(|c| c.rect.y + c.rect.height)
+                .fold(0., f64::max);
+            let header = f
+                .labels
+                .iter()
+                .find(|l| l.text == "Special workspaces")
+                .unwrap();
+            let top = f
+                .cells
+                .iter()
+                .filter(|c| c.key.starts_with("special:"))
+                .map(|c| c.rect.y)
+                .fold(f64::INFINITY, f64::min);
+            assert!((header.rect.y - bottom - 8. * scale).abs() < 0.01);
+            assert!((top - header.rect.y - header.rect.height - 8. * scale).abs() < 0.01);
+            assert!((f.cells[0].rect.width / f.cells[0].rect.height - 1.5).abs() < 1e-6);
+        }
     }
     #[test]
     fn capture_cache_budget_and_largest_scaled_output() {

@@ -1033,6 +1033,12 @@ with (artifacts / "compositor.log").open("w+") as log:
             if stale["address"] not in keep:
                 lua(f'hl.dsp.window.close({{window=assert(hl.get_window("address:{stale["address"]}"))}})')
         wait(lambda:{w["address"] for w in mapped()}==keep,"single-grid benchmark clients")
+        # Match the live strip width: five specials alongside the full 9x9.
+        for i in range(4):
+            lua(f'hl.dsp.workspace.toggle_special("visual-{i}")')
+            laptop_fixture(f"visual-special-{i}")
+            lua(f'hl.dsp.workspace.toggle_special("visual-{i}")')
+        lua(f'hl.dsp.focus({{window="address:{first}"}})')
         # Visual upgrade: real layer-shell wallpaper, 2256x1504, 9x9 grid.
         wallpaper=Image.new("RGB",(2256,1504))
         from PIL import ImageDraw
@@ -1056,6 +1062,14 @@ with (artifacts / "compositor.log").open("w+") as log:
             open_ui()
             state=ui_state()
             state["open_wall_ms"]=(time.monotonic()-began)*1000
+            assert state["first_frame_capture_ms"]==0,"first overview frame must not capture"
+            assert state["opening_dispatch_ms"]<30,"overview opening must defer heavy work"
+            assert state["captures"]==8 and state["backdrop_captures"]==1,state
+            time.sleep(.3)
+            assert ui_state()["captures"]==state["captures"],"static clients must not enter a capture/frame-callback loop"
+            for rect in [c["rect"] for c in state["ui"]["cells"]]+[l["rect"] for l in state["ui"]["labels"]]:
+                x,y,w,h=rect
+                assert x>=11.9 and y>=11.9 and x+w<=2244.1 and y+h<=1492.1,rect
             assert state["max_frame_ms"]>0,"native frame timing must be measured after render data reset"
             assert state["gpu_bytes_bound"]<=128*1024*1024,state
             assert state["backdrop_captures"]>=1
@@ -1068,7 +1082,9 @@ with (artifacts / "compositor.log").open("w+") as log:
             assert sum(image.getpixel((10,10)))>50,image.getpixel((10,10))
             empty=next(c for c in state["ui"]["cells"] if not c["occupied"] and not c["shown"])
             x,y,w,h=empty["rect"]
-            assert sum(image.getpixel((round(x+w*.25),round(y+h*.25))))>20,"empty desktop wallpaper"
+            px,py=round(x+w*.25),round(y+h*.25)
+            colour=(64,96,128) if px<1128 and py<752 else (128,80,64) if py<752 else (64,96,80) if px<1128 else (96,64,128)
+            assert all(abs(a-b*.65)<5 for a,b in zip(image.getpixel((px,py)),colour)),"empty cells must show continuous screen wallpaper"
             if not full_grid and not completed_gpu:
                 target=next(c for c in state["ui"]["cells"] if c["occupied"] and not c["shown"])
                 x,y,w,h=target["rect"]
@@ -1088,7 +1104,7 @@ with (artifacts / "compositor.log").open("w+") as log:
             time.sleep(.2)
             resized=ui_state()
             assert any(i["width"]!=original_widths.get(i["key"]) for i in resized["images"]),"layout changes must resize supersampled targets"
-            visual_metrics.append({k:state[k] for k in ("max_frame_ms","opening_max_frame_gap_ms","completed_gpu","gpu_rgba_bytes","gpu_bytes_bound","captures","backdrop_captures","capture_ms","max_capture_ms","max_refresh_ms","open_wall_ms")}|{"full_grid":full_grid,"images":state["images"]})
+            visual_metrics.append({k:state[k] for k in ("opening_dispatch_ms","first_frame_ms","first_frame_capture_ms","max_frame_ms","opening_max_frame_gap_ms","completed_gpu","gpu_rgba_bytes","gpu_bytes_bound","captures","backdrop_captures","capture_ms","max_capture_ms","max_refresh_ms","open_wall_ms")}|{"full_grid":full_grid,"images":state["images"]})
             keypress("Escape");wait(lambda:ui_state().get("open") is False,"visual close")
             assert ui_state()["deleted_gl_objects"],"backdrop and mipmap resources deleted"
             assert invariants()==visual_before,"wallpaper/supersampling preserve focus/group/workspace state"
