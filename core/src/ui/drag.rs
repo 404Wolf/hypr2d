@@ -27,7 +27,7 @@ impl Overview {
             h: w.rect.h / height * cell.rect.h,
         })
     }
-    fn visible_window_rect(&self, w: &Window) -> Option<Rect> {
+    pub(super) fn visible_window_rect(&self, w: &Window) -> Option<Rect> {
         let r = self.window_rect(w)?;
         let c = &self
             .cells
@@ -45,7 +45,7 @@ impl Overview {
             h: bottom - y,
         })
     }
-    fn hit_window(&self, ignore: Option<&str>) -> Option<&Window> {
+    pub(super) fn hit_window(&self, ignore: Option<&str>) -> Option<&Window> {
         let cell = self.cells.get(self.hover?)?;
         // The overlaid workspace caption is a move target, even when a
         // fullscreen window occupies every pixel below it.

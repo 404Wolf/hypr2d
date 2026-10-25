@@ -3,6 +3,7 @@
 #include "ui.hpp"
 #include <algorithm>
 #include <chrono>
+#include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/animation/WorkspaceAnimationController.hpp>
 #include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 #include <hyprland/src/debug/log/Logger.hpp>
@@ -164,6 +165,25 @@ static bool feedSwipe(hypr2d::SwipePhase phase, uint32_t fingers = 0, double dx 
         releaseVisuals();
     applySwipe(frame);
     return frame.claimed;
+}
+static wl_event_source *extensionSource = nullptr;
+static int extensionReady(int, uint32_t, void *) {
+    auto ms = monitors();
+    auto batch = (*core)->extension_drain({ms.data(), ms.size()});
+    for (auto &a : batch.actions) {
+        std::string error;
+        try {
+            error = OverviewUI::place(a);
+        } catch (const std::exception &e) {
+            error = e.what();
+        }
+        (*core)->extension_result(a.token, error);
+    }
+    if (batch.changed) {
+        OverviewUI::command("overview refresh");
+        IPC::Socket2::sock()->postEvent({"hypr2d", "extensions"});
+    }
+    return 0;
 }
 static std::string execute(const std::string &input) {
     try {
@@ -339,7 +359,9 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
                                                           return execute(pos == std::string::npos ? "state" : req.command.substr(pos + 1));
                                                       }}))
         throw std::runtime_error("hypr2d: failed IPC registration");
-    workspaceListener = Event::bus()->m_events.workspace.active.listen([](PHLWORKSPACE) {
+    workspaceListener = Event::bus()->m_events.workspace.active.listen([](PHLWORKSPACE w) {
+        if (w && w->numberedID())
+            (*core)->extension_event("activate", std::to_string(*w->numberedID()), "");
         if (!applyingSwipe)
             cancelSwipe();
         IPC::Socket2::sock()->postEvent({"hypr2d", "changed"});
@@ -390,10 +412,26 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         OverviewProbe::init();
     }
     OverviewUI::init(&**core);
+    const auto runtime = getenv("XDG_RUNTIME_DIR"), signature = getenv("HYPRLAND_INSTANCE_SIGNATURE");
+    if (!runtime || !signature)
+        throw std::runtime_error("hypr2d: missing instance environment");
+    auto fd = (*core)->extension_start(std::format("{}/hypr/{}/hypr2d.sock", runtime, signature));
+    if (fd < 0)
+        throw std::runtime_error("hypr2d: extension socket failed");
+    extensionSource = wl_event_loop_add_fd(g_pCompositor->m_wlEventLoop, fd, WL_EVENT_READABLE, extensionReady, nullptr);
+    if (!extensionSource) {
+        (*core)->extension_stop();
+        throw std::runtime_error("hypr2d: extension event source failed");
+    }
     IPC::Socket2::sock()->postEvent({"hypr2d", "ready"});
     return {"hypr2d", "2D workspace grid", "Wolf Mermelstein", "0.2.0"};
 }
 APICALL EXPORT void PLUGIN_EXIT() {
+    if (extensionSource)
+        wl_event_source_remove(extensionSource);
+    extensionSource = nullptr;
+    if (core)
+        (*core)->extension_stop();
     OverviewUI::shutdown();
     if (testingEnabled)
         OverviewProbe::shutdown();

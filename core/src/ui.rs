@@ -53,9 +53,12 @@ struct CellView {
     occupied: bool,
     shown: bool,
     visible: bool,
+    annotated: bool,
 }
 #[derive(Default)]
 pub struct Overview {
+    annotations: std::collections::BTreeMap<String, hypr2d_client::Annotation>,
+    regions: Vec<(u32, u32, String)>,
     fit: bool,
     panels: Vec<Rect>,
     windows: Vec<Window>,
@@ -159,6 +162,7 @@ impl Core {
                                 occupied,
                                 shown: m.workspace == id,
                                 visible: true,
+                                annotated: false,
                             });
                         }
                     }
@@ -193,7 +197,37 @@ impl Core {
                     occupied: windows.iter().any(|win| win.workspace == s.name),
                     shown: s.shown,
                     visible: true,
+                    annotated: false,
                 });
+            }
+            for c in &mut ui.cells {
+                let target = if c.key.starts_with("special:") {
+                    hypr2d_client::Target::Special {
+                        name: c.key.clone(),
+                    }
+                } else {
+                    hypr2d_client::Target::Cell {
+                        monitor: c.monitor,
+                        x: c.x,
+                        y: c.y,
+                    }
+                };
+                if let Some(a) = self.extensions.annotation(&target) {
+                    ui.annotations.insert(c.key.clone(), a.clone());
+                    c.annotated = true;
+                }
+            }
+            for w in windows {
+                if let Some(a) = self.extensions.annotation(&hypr2d_client::Target::Window {
+                    address: w.id.clone(),
+                }) {
+                    ui.annotations.insert(w.id.clone(), a.clone());
+                }
+            }
+            for m in outputs {
+                for (row, title) in self.extensions.row_titles(m.id) {
+                    ui.regions.push((m.id, row, title));
+                }
             }
             ui.reflow();
             Box::new(ui)
@@ -213,7 +247,16 @@ impl Overview {
             let rows = cells.iter().map(|(_, c)| c.y + 1).max().unwrap_or(1);
             let used: Vec<_> = cells
                 .iter()
-                .filter(|(i, c)| c.occupied || c.shown || *i == self.selected)
+                .filter(|(i, c)| {
+                    c.occupied
+                        || c.shown
+                        || c.annotated
+                        || self
+                            .regions
+                            .iter()
+                            .any(|(m, y, _)| *m == c.monitor && *y == c.y)
+                        || *i == self.selected
+                })
                 .collect();
             let bounds = |axis: bool, n: u32| {
                 if !self.fit {
@@ -331,7 +374,7 @@ impl Overview {
         guarded(|| {
             let f = self.overview_frame(width, height, now);
             let (s, ox, oy) = self.transform(width, height);
-            serde_json::json!({"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":self.headers.iter().map(|(r,t)|serde_json::json!({"label":t,"rect":[r.x,r.y,r.w,r.h]})).collect::<Vec<_>>()}).to_string()
+            serde_json::json!({"labels":f.labels.iter().map(|l|serde_json::json!({"text":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>(),"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":self.headers.iter().map(|(r,t)|serde_json::json!({"label":t,"rect":[r.x,r.y,r.w,r.h]})).collect::<Vec<_>>()}).to_string()
         })
     }
     pub fn overview_frame(&self, width: f64, height: f64, now: f64) -> ffi::UIFrame {
@@ -365,7 +408,13 @@ impl Overview {
                         key: c.key.clone(),
                         monitor: c.monitor,
                         rect: convert(c.rect),
-                        label: c.label.clone(),
+                        label: annotation_text(&c.label, self.annotations.get(&c.key)),
+                        colour: self
+                            .annotations
+                            .get(&c.key)
+                            .and_then(|a| a.colour.as_deref())
+                            .map(parse_colour)
+                            .unwrap_or(0),
                         selected: i == self.selected,
                         hovered: self.hover == Some(i),
                         occupied: c.occupied,
@@ -378,10 +427,113 @@ impl Overview {
                     .map(|(r, text)| ffi::UILabel {
                         rect: convert(*r),
                         text: text.clone(),
+                        colour: 0,
+                        band: false,
                     })
+                    .chain(self.annotation_labels(convert))
                     .collect(),
             }
         })
+    }
+    fn annotation_labels(&self, convert: impl Fn(Rect) -> ffi::UIRect) -> Vec<ffi::UILabel> {
+        let mut labels = vec![];
+        for c in self.cells.iter().filter(|c| c.visible) {
+            if let Some(a) = self.annotations.get(&c.key) {
+                let text = badge(a);
+                if !text.trim().is_empty() {
+                    let w = c.rect.w.min(60.);
+                    let h = c.rect.h.min(16.);
+                    labels.push(ffi::UILabel {
+                        rect: convert(Rect {
+                            x: c.rect.x + c.rect.w - w,
+                            y: c.rect.y + c.rect.h - h,
+                            w,
+                            h,
+                        }),
+                        text,
+                        colour: a.colour.as_deref().map(parse_colour).unwrap_or(0),
+                        band: true,
+                    });
+                }
+            }
+        }
+        for w in &self.windows {
+            if let Some(a) = self.annotations.get(&w.id) {
+                if let Some(r) = self.visible_window_rect(w) {
+                    let tag = badge(a);
+                    if !tag.trim().is_empty() {
+                        let width = r.w.min(60.);
+                        let h = r.h.min(16.);
+                        labels.push(ffi::UILabel {
+                            rect: convert(Rect {
+                                x: r.x + r.w - width,
+                                y: r.y + r.h - h,
+                                w: width,
+                                h,
+                            }),
+                            text: tag,
+                            colour: a.colour.as_deref().map(parse_colour).unwrap_or(0),
+                            band: true,
+                        });
+                    }
+                    labels.push(ffi::UILabel {
+                        rect: convert(Rect { h: 18., ..r }),
+                        text: annotation_text("", Some(a)),
+                        colour: a.colour.as_deref().map(parse_colour).unwrap_or(0),
+                        band: true,
+                    });
+                }
+            }
+        }
+        for (m, row, title) in &self.regions {
+            if let Some(c) = self
+                .cells
+                .iter()
+                .find(|c| c.visible && c.monitor == *m && c.y == *row)
+            {
+                labels.push(ffi::UILabel {
+                    rect: convert(Rect {
+                        w: self
+                            .cells
+                            .iter()
+                            .filter(|o| o.visible && o.monitor == *m && o.y == *row)
+                            .map(|o| o.rect.w + 3.)
+                            .sum::<f64>()
+                            - 3.,
+                        h: 18.,
+                        ..c.rect
+                    }),
+                    text: title.clone(),
+                    colour: 0,
+                    band: true,
+                });
+            }
+        }
+        if let Some(c) = self.hover.and_then(|i| self.cells.get(i)) {
+            if let Some(t) = self
+                .hit_window(None)
+                .and_then(|w| self.annotations.get(&w.id))
+                .and_then(|a| a.tooltip.as_ref())
+                .or_else(|| {
+                    self.annotations
+                        .get(&c.key)
+                        .and_then(|a| a.tooltip.as_ref())
+                })
+            {
+                labels.push(ffi::UILabel {
+                    rect: convert(Rect {
+                        x: 24.,
+                        y: self.canvas_height - 22.,
+                        w: 950.,
+                        h: 20.,
+                    }),
+                    text: t.clone(),
+                    colour: 0,
+                    band: true,
+                });
+            }
+        }
+        labels
     }
     fn transform(&self, width: f64, height: f64) -> (f64, f64, f64) {
         let s = (width / WIDTH).min(height / self.canvas_height.max(1.0));
@@ -521,6 +673,7 @@ fn owned_label(windows: &[Window], key: &str) -> String {
     let ws: Vec<_> = windows.iter().filter(|w| w.workspace == key).collect();
     match ws.len() {
         0 => "0".into(),
+        1 if ws[0].title.is_empty() => "1 window".into(),
         1 => ws[0].title.clone(),
         n => format!("{n} windows"),
     }
@@ -529,11 +682,31 @@ fn cell_label(windows: &[ffi::UIWindow], key: &str) -> String {
     let ws: Vec<_> = windows.iter().filter(|w| w.workspace == key).collect();
     match ws.len() {
         0 => "0".into(),
+        1 if ws[0].title.is_empty() => "1 window".into(),
         1 => ws[0].title.clone(),
         n => format!("{n} windows"),
     }
 }
 
+fn parse_colour(s: &str) -> u32 {
+    u32::from_str_radix(s.trim_start_matches('#'), 16).unwrap_or(0) | 0x1000000
+}
+fn annotation_text(base: &str, a: Option<&hypr2d_client::Annotation>) -> String {
+    a.and_then(|a| a.label.clone())
+        .unwrap_or_else(|| base.into())
+}
+fn badge(a: &hypr2d_client::Annotation) -> String {
+    format!(
+        "{}{}",
+        a.badge
+            .as_deref()
+            .unwrap_or("")
+            .chars()
+            .take(4)
+            .collect::<String>(),
+        if a.dot { " ●" } else { "" }
+    )
+}
 #[cfg(test)]
 mod tests {
     use super::*;

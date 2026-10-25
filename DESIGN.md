@@ -573,3 +573,38 @@ screenshots cover default fit, `a` full grid, and changed font/size/border/round
 The tests assert reduced fit cell count, nonnumeric app labels, full-grid toggle,
 minimum fit size and cell aspect ratio; existing M1–M5 interaction, screenshot
 and repeated-cleanup tests remain passing.
+
+### M6 extension service and client
+
+`hypr2d-client` defines the typed v1 JSON-lines messages and a synchronous Unix
+client that preserves callbacks received before a correlated reply. The Rust
+core owns connection-scoped annotations, reservations and subscriptions. A
+bounded readiness-driven socket worker passes only owned bytes to the compositor
+thread through a channel and socket-pair notification. One Wayland fd listener
+drains those messages; native placement happens on that thread and is acknowledged
+only after success. Idle connections use no timer, polling interval or subprocess.
+The socket is mode 0600, scoped to the compositor instance, removed on unload,
+and deliberately never replaces a pre-existing socket. Protocol limits and
+failure/reconnect semantics are in `docs/protocol.md`.
+
+Annotations cover cells, specials and window addresses. Captions, independent
+badge/dot footers, colours and hover tooltips are drawn by the existing pass;
+window annotations are projected through the same clipped window geometry as
+dragging. Native text rendering treats text as plain text; Waybar escapes Pango
+metadata and displays annotation states/tooltips on socket2 changes. Titled row
+reservations participate in fit bounds and reject overlaps. Optional skip applies
+to directional move/carry commands; explicit goto, drop and placement remain
+available. Activate/drop callbacks are restricted to each subscriber's reserved
+rows. Window and monitor identifiers are ephemeral, not ownership capabilities.
+Disconnect removes all session state and redraws the overview/Waybar.
+
+VM checks cover invalid versions/coordinates/colours, overlap rejection, all
+three annotation target kinds, overview labels and independent badge/dot space,
+Waybar escaping, successful and failed native placement, owned-region callbacks,
+row skipping and disconnect cleanup. Rust tests also cover protocol round trips,
+event-before-reply ordering, session precedence, fragmented transport frames,
+permissions, disconnect notification and shutdown/socket removal. Repeated UI
+cleanup retains the original 16 MiB warmed-RSS bound, stable descriptors and
+explicit GL deletion checks. Closed RSS is sampled after the existing test-only
+probe completion barrier; without it, deferred renderer retirement produced
+transient spikes which subsequently fell back. Production still uses no glFinish.

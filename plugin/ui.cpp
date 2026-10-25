@@ -181,11 +181,10 @@ static void activate(const std::string &target) {
 static CHyprColor color(uint32_t rgb, double alpha) {
     return CHyprColor(((rgb >> 16) & 255) / 255.0, ((rgb >> 8) & 255) / 255.0, (rgb & 255) / 255.0, alpha);
 }
-static SP<Render::ITexture> text(const std::string &str, int fontSize, int width) {
-    auto key = std::format("{}:{}:{}", fontSize, width, str);
+static SP<Render::ITexture> text(const std::string &str, int fontSize, int width, uint32_t labelColor) {
+    auto key = std::format("{}:{}:{}:{}", fontSize, width, labelColor, str);
     if (!textCache.contains(key))
-        textCache[key] =
-            g_pHyprRenderer->renderText(str, color(core->ui_style().label, 1), fontSize, false, std::string(core->ui_style().font), width);
+        textCache[key] = g_pHyprRenderer->renderText(str, color(labelColor, 1), fontSize, false, std::string(core->ui_style().font), width);
     return textCache[key];
 }
 // The ghost samples a cropped region of an existing thumbnail; no extra capture.
@@ -229,8 +228,9 @@ class Pass final : public IPassElement {
             items.push_back(makeUnique<CRectPassElement>(
                 CRectPassElement::SRectData{.box = box, .color = color, .round = static_cast<int>(style.rounding)}));
         };
-        auto label = [&](const std::string &str, const CBox &box, float opacity = 1.f) {
-            auto tex = text(str, static_cast<int>(style.font_size), std::clamp(static_cast<int>(box.w), 1, 500));
+        auto label = [&](const std::string &str, const CBox &box, float opacity = 1.f, uint32_t labelColor = 0) {
+            auto tex = text(str, static_cast<int>(style.font_size), std::clamp(static_cast<int>(box.w), 1, 1000),
+                            labelColor ? labelColor : style.label);
             if (tex)
                 items.push_back(makeUnique<CTexPassElement>(
                     CTexPassElement::SRenderData{.tex = tex,
@@ -245,7 +245,7 @@ class Pass final : public IPassElement {
                                      : c.selected                                    ? color(style.current, frame.alpha)
                                      : c.hovered                                     ? color(style.hover, frame.alpha)
                                      : c.shown                                       ? color(style.current, frame.alpha)
-                                                                                     : color(style.border, frame.alpha);
+                                               : color(c.colour ? c.colour : style.border, frame.alpha);
             rect(box.copy().expand(2), borderColor);
             rect(box, color(style.cell, frame.alpha));
             if (auto it = cache.find(std::string(c.key)); it != cache.end())
@@ -260,8 +260,12 @@ class Pass final : public IPassElement {
                        std::min(static_cast<double>(style.font_size + 6), box.h * 0.45)},
                       c.occupied ? 1.f : 0.45f);
         }
-        for (auto &l : frame.labels)
-            label(std::string(l.text), {l.rect.x, l.rect.y, l.rect.width, l.rect.height});
+        for (auto &l : frame.labels) {
+            CBox b{l.rect.x, l.rect.y, l.rect.width, l.rect.height};
+            if (l.band)
+                rect(b, color(style.cell, frame.alpha));
+            label(std::string(l.text), b, 1.f, l.colour);
+        }
         for (auto &w : frame.windows)
             if (w.target) {
                 CBox b{w.rect.x, w.rect.y, w.rect.width, w.rect.height};
@@ -345,7 +349,39 @@ static void applyDrop(const hypr2d::UIDrop &drop) {
         if (drop.floating && w->isFloating())
             (void)Config::Actions::move(mon->m_position + Vector2D{drop.x, drop.y}, false, w);
     }
+    core->extension_event("drop", drop.workspace, drop.window);
     IPC::Socket2::sock()->postEvent({"hypr2d", std::format("drop>>{},{}", std::string(drop.window), std::string(drop.workspace))});
+}
+std::string place(const hypr2d::ExtensionAction &action) {
+    auto w = findWindow(std::string(action.window));
+    if (!w || !w->m_workspace)
+        return "window is not mapped";
+    PHLMONITOR mon;
+    PHLWORKSPACE target;
+    for (auto &ws : State::Workspace::state()->workspaces())
+        if (key(ws.lock()) == std::string(action.workspace))
+            target = ws.lock();
+    for (auto &m : State::monitorState()->monitors())
+        if (m->m_id == action.monitor)
+            mon = m;
+    if (action.monitor == UINT32_MAX && target)
+        mon = target->m_monitor.lock();
+    if (!mon)
+        return "destination monitor/special is unavailable";
+    if (!target && !std::string(action.workspace).starts_with("special:"))
+        target = State::Workspace::state()->createNumbered(
+            Workspace::SWorkspaceNumberedID{static_cast<uint32_t>(std::stoul(std::string(action.workspace)))}, mon);
+    if (!target || target->m_monitor != mon)
+        return "destination belongs to another monitor";
+    auto source = key(w->m_workspace);
+    if (!Config::Actions::moveToWorkspace(target, true, w))
+        return "native placement failed";
+    mark(source);
+    mark(std::string(action.workspace));
+    rebuild = active();
+    core->extension_event("drop", action.workspace, action.window);
+    IPC::Socket2::sock()->postEvent({"hypr2d", std::format("drop>>{},{}", std::string(action.window), std::string(action.workspace))});
+    return "";
 }
 // phase 0=motion, 1=press, 2=release; Rust owns the drag state machine.
 static void movePointer(Vector2D global, int phase) {

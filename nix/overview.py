@@ -3,13 +3,14 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
 import select
 import subprocess
 import sys
 import time
 from PIL import Image, ImageChops
 
-config, plugin = sys.argv[1:]
+config, plugin, cli = sys.argv[1:]
 benchmark = os.environ.get("HYPR2D_PROBE_BENCHMARK") == "1"
 artifacts = Path(os.environ.get("HYPR2D_PROBE_RESULTS", "/tmp/hypr2d-overview-results"))
 artifacts.mkdir(parents=True, exist_ok=True)
@@ -392,6 +393,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         for cycle in range(20):
             open_ui();keypress("Escape");wait(lambda:ui_state().get("open") is False,"UI repeat close")
             assert ui_state()["deleted_gl_objects"],"production capture/label GL objects released"
+            probe("close")  # Test-only GPU retirement barrier before closed RSS sampling.
             ui_runs.append(process_memory())
         screenshot("ui-clean-after");compare("ui-clean-after","ui-clean-before")
         rss=[int(r["rss"].split()[1]) for r in ui_runs[5:]]
@@ -399,6 +401,59 @@ with (artifacts / "compositor.log").open("w+") as log:
         assert len({r["fds"] for r in ui_runs[5:]})==1
         ptr.stdin.write(b"quit\n");ptr.stdin.flush();ptr.wait(timeout=10)
         print("PASS M5: real pointer drags, cross-monitor moves/swaps, specials, fullscreen swap, floating placement, ghost/target, two-stage Esc, disappearing source, 20 clean UI cycles")
+        # M6 protocol, native placement, event routing and rendered annotations.
+        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as ext, socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as foreign:
+            ext.connect(str(instance / "hypr2d.sock"));foreign.connect(str(instance / "hypr2d.sock"))
+            ext.settimeout(10);foreign.settimeout(10)
+            reader=ext.makefile("r"); other=foreign.makefile("r"); callbacks=[];seq=0
+            def rpc(op,peer=ext,stream=reader,**fields):
+                request={"v":1,"id":time.monotonic_ns(),"op":op,**fields}
+                peer.sendall((json.dumps(request)+"\n").encode())
+                while True:
+                    reply=json.loads(stream.readline())
+                    if reply.get("id")==request["id"]:return reply
+                    callbacks.append(reply)
+            assert not rpc("state",v=99)["ok"]
+            assert not rpc("annotate",key="bad",target={"kind":"cell","monitor":mons[0]["id"],"x":99,"y":0},annotation={"label":"bad"})["ok"]
+            assert not rpc("annotate",key="bad",target={"kind":"cell","monitor":mons[0]["id"],"x":0,"y":0},annotation={"colour":"bad"})["ok"]
+            assert rpc("reserve",key="tools",monitor=mons[0]["id"],row=7,rows=1,title="Tools row",skip=True)["ok"]
+            assert not rpc("reserve",peer=foreign,stream=other,key="conflict",monitor=mons[0]["id"],row=7,rows=1,title="Conflict")["ok"]
+            for peer,stream in [(ext,reader),(foreign,other)]:assert rpc("subscribe",peer=peer,stream=stream,events=["activate","drop"])["ok"]
+            target={"kind":"cell","monitor":mons[0]["id"],"x":1,"y":0}
+            assert rpc("annotate",key="cell",target=target,annotation={"label":"Build <safe>","badge":"2","dot":True,"colour":"#FFCB6B","tooltip":"Jobs & checks"})["ok"]
+            assert rpc("annotate",key="special",target={"kind":"special","name":"special:probe-0"},annotation={"label":"Chat","badge":"1","dot":True})["ok"]
+            editor=next(w["address"] for w in mapped() if w["class"]=="hypr2d-probe-0-2")
+            assert rpc("annotate",key="window",target={"kind":"window","address":editor},annotation={"label":"Editor","badge":"W","colour":"#82AAFF"})["ok"]
+            assert len(rpc("state")["data"]["annotations"])==3
+            module=subprocess.Popen([cli,"--instance",instance.name,"waybar","--monitor",mons[0]["name"]],stdout=subprocess.PIPE,stderr=log,start_new_session=True)
+            clients.append(module)
+            assert select.select([module.stdout],[],[],10)[0]
+            record=json.loads(module.stdout.readline())
+            assert "annotated" in record["class"] and "Build &lt;safe&gt;" in record["tooltip"] and "Jobs &amp; checks" in record["tooltip"] and "Editor" in record["tooltip"] and "Chat" in record["tooltip"],record
+            open_ui()
+            wait(lambda:any("Build <safe>" in cell["label"] for cell in ui_state()["ui"]["cells"]),"extension cell caption")
+            assert any(l["text"]=="2 ●" for l in ui_state()["ui"]["labels"]),"badge/dot has independent space"
+            screenshot("ui-extensions")
+            keypress("Escape");wait(lambda:ui_state().get("open") is False,"close extensions UI")
+            assert not rpc("place",window="0x1234",target=target)["ok"]
+            assert not rpc("place",window=b,target={"kind":"special","name":"special:absent"})["ok"]
+            placement={"kind":"cell","monitor":mons[0]["id"],"x":0,"y":7}
+            assert rpc("place",window=b,target=placement)["ok"]
+            wait(lambda:real_window(b)["workspace"]["id"]==561+mons[0]["id"],"extension placement")
+            assert any(r.get("event")=="drop" and r["data"]["regions"]==["tools"] for r in callbacks),callbacks
+            ok("hypr2d","goto","0","7",str(mons[0]["id"]))
+            assert rpc("state")["ok"]
+            assert any(r.get("event")=="activate" for r in callbacks),callbacks
+            assert not select.select([foreign],[],[],0.1)[0],"callbacks are restricted to owned regions"
+            ok("hypr2d","goto","0","6",str(mons[0]["id"]))
+            ok("hypr2d","move","down","monitor",str(mons[0]["id"]))
+            assert next(m for m in monitors() if m["id"]==mons[0]["id"])["activeWorkspace"]["id"]==1+mons[0]["id"],"reserved row skipped"
+            assert rpc("clear",key="special")["ok"]
+            reader.close();other.close()
+        wait(lambda:not json.loads(ctl("hypr2d","state","-j"))["extensions"]["annotations"],"disconnect annotations cleanup")
+        assert not json.loads(ctl("hypr2d","state","-j"))["extensions"]["regions"]
+        module.terminate();module.wait(timeout=10)
+        print("PASS M6: versioned socket, annotations in overview/waybar, reservations, native placement, owned callbacks, disconnect cleanup")
         # One IPC eval performs a real animated transition followed immediately
         # by the capture, without allowing the animation to settle first.
         ok("eval", 'hl.config({animations={enabled=true}}); hl.dispatch(hl.plugin.hypr2d.move("right")); hl.plugin.hypr2d._execute("probe open")')

@@ -123,6 +123,16 @@ Colours use `#RRGGBB`; font size is 10–40 output pixels and rounding is 0–4 
 These defaults match base16 OneDark Extra Dark. Runtime changes apply while
 open. Grid capture size stays at 160 pixels wide, independent of layout size.
 
+## Extension clients
+
+The plugin serves a versioned, connection-scoped JSON-lines protocol at
+`$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/hypr2d.sock` (0600).
+Clients can annotate cells/specials/windows, reserve titled rows, place windows,
+and subscribe to activation/drop callbacks on their rows. Disconnect removes
+all session state. Overview and Waybar update on events, without polling.
+See [the protocol](docs/protocol.md) for schema, limits, ownership and examples;
+[`hypr2d-client`](client/src/lib.rs) supplies the typed Rust client.
+
 ## Validation
 
 `nix develop --command cargo test --workspace` runs the pure Rust tests.

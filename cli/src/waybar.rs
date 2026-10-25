@@ -5,6 +5,10 @@ use std::io::{self, BufRead, Write};
 #[derive(Deserialize)]
 pub struct Snapshot {
     pub version: u32,
+    #[serde(default)]
+    pub extensions: serde_json::Value,
+    #[serde(default)]
+    pub overview_config: serde_json::Value,
     pub monitors: Vec<Monitor>,
 }
 #[derive(Deserialize)]
@@ -37,6 +41,8 @@ pub struct GridCell {
 }
 #[derive(Deserialize)]
 pub struct Window {
+    #[serde(default)]
+    pub address: String,
     pub title: String,
     pub app_id: String,
     pub urgent: bool,
@@ -138,13 +144,57 @@ pub fn render(snapshot: &Snapshot, selected: Option<&str>, radius: u32) -> Recor
             let (glyph, color) = if urgent {
                 ("!", "#e06c75")
             } else if active {
-                ("●", "#61afef")
+                (
+                    "●",
+                    snapshot.overview_config["current"]
+                        .as_str()
+                        .unwrap_or("#82AAFF"),
+                )
             } else if occupied {
-                ("◉", "#98c379")
+                (
+                    "◉",
+                    snapshot.overview_config["label"]
+                        .as_str()
+                        .unwrap_or("#EEFFFF"),
+                )
             } else {
-                ("·", "#4b5263")
+                (
+                    "·",
+                    snapshot.overview_config["border"]
+                        .as_str()
+                        .unwrap_or("#353535"),
+                )
             };
-            text.push_str(&format!("<span foreground=\"{color}\">{glyph}</span>"));
+            let annotation = snapshot.extensions["annotations"]
+                .as_array()
+                .and_then(|items| {
+                    items.iter().rev().find(|a| {
+                        let t = &a["target"];
+                        t["kind"] == "cell"
+                            && t["monitor"].as_u64() == Some(m.id.into())
+                            && t["x"].as_u64() == Some(xy.0.into())
+                            && t["y"].as_u64() == Some(xy.1.into())
+                    })
+                })
+                .map(|a| &a["annotation"]);
+            if let Some(a) = annotation {
+                classes.insert("annotated");
+                let col = a["colour"].as_str().unwrap_or(color);
+                let badge = a["badge"].as_str().or(a["label"].as_str());
+                let value = badge.map(escape).unwrap_or_else(|| {
+                    if a["dot"] == true {
+                        "●".into()
+                    } else {
+                        glyph.into()
+                    }
+                });
+                text.push_str(&format!(
+                    "<span foreground=\"{}\">{value}</span>",
+                    escape(col)
+                ));
+            } else {
+                text.push_str(&format!("<span foreground=\"{color}\">{glyph}</span>"));
+            }
         }
     }
     text.push_str("</span>");
@@ -170,6 +220,56 @@ pub fn render(snapshot: &Snapshot, selected: Option<&str>, radius: u32) -> Recor
                 escape(&w.title),
                 escape(&w.app_id)
             ));
+        }
+    }
+    if let Some(items) = snapshot.extensions["annotations"].as_array() {
+        for item in items {
+            let t = &item["target"];
+            let a = &item["annotation"];
+            let relevant = match t["kind"].as_str() {
+                Some("cell") => t["monitor"].as_u64() == Some(m.id.into()),
+                Some("window") => m.cells.iter().any(|c| {
+                    c.windows
+                        .iter()
+                        .any(|w| Some(w.address.as_str()) == t["address"].as_str())
+                }),
+                Some("special") => true,
+                _ => false,
+            };
+            if relevant {
+                classes.insert("annotated");
+                let mut bits = vec![];
+                for field in ["label", "badge", "tooltip"] {
+                    if let Some(s) = a[field].as_str() {
+                        bits.push(escape(s));
+                    }
+                }
+                if a["dot"] == true {
+                    bits.push("●".into());
+                }
+                let line = bits.join(" · ");
+                if let Some(col) = a["colour"].as_str() {
+                    tooltip.push_str(&format!(
+                        "\n<span foreground=\"{}\">{line}</span>",
+                        escape(col)
+                    ));
+                } else {
+                    tooltip.push_str(&format!("\n{line}"));
+                }
+            }
+        }
+    }
+    if let Some(items) = snapshot.extensions["regions"].as_array() {
+        for item in items {
+            let r = &item["region"];
+            if r["monitor"].as_u64() == Some(m.id.into()) {
+                tooltip.push_str(&format!(
+                    "\n{} (rows {} + {})",
+                    escape(r["title"].as_str().unwrap_or("")),
+                    r["row"],
+                    r["rows"]
+                ));
+            }
         }
     }
     Record {

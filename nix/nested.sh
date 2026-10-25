@@ -16,10 +16,10 @@ unset HYPRLAND_INSTANCE_SIGNATURE HYPR2D_TESTING
 export LIBSEAT_BACKEND=none
 if [[ "${1:-}" == "--overview-benchmark" ]]; then
   export HYPR2D_TESTING=1 HYPR2D_PROBE_BENCHMARK=1
-  python3 @OVERVIEW@ "$test_dir/hyprland.lua" "@PLUGIN@"
+  python3 @OVERVIEW@ "$test_dir/hyprland.lua" "@PLUGIN@" "@CLI@"
 elif [[ "${1:-}" == "--overview-test" ]]; then
   export HYPR2D_TESTING=1
-  python3 @OVERVIEW@ "$test_dir/hyprland.lua" "@PLUGIN@"
+  python3 @OVERVIEW@ "$test_dir/hyprland.lua" "@PLUGIN@" "@CLI@"
 elif [[ "${1:-}" == "--smoke-test" ]]; then
   export HYPR2D_TESTING=1
   python3 @SMOKE@ "$test_dir/hyprland.lua" "@PLUGIN@" "@CLI@" "@EXAMPLES@"

@@ -40,8 +40,8 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Configurable OneDark Extra Dark palette/fonts, subtle rounding, readable app/count cell labels; verified in VM screenshots
 
 ## M6 — Extension socket (no agent-specific code in this repo)
-- [ ] Versioned JSON-lines socket: annotations (label/badge/dot/colour/tooltip on cells, specials, windows), reserved regions (rows with titles), placement, activate/drop callbacks, session-scoped cleanup on disconnect
-- [ ] `hypr2d-client` Rust crate + protocol docs; overview and waybar render annotations
+- [x] Versioned JSON-lines socket: annotations (label/badge/dot/colour/tooltip on cells, specials, windows), reserved regions (rows with titles), placement, activate/drop callbacks, session-scoped cleanup on disconnect
+- [x] `hypr2d-client` Rust crate + protocol docs; overview and waybar render annotations
 
 ## M7 — Home Manager integration
 - [ ] `homeManagerModules.default`: loads the plugin, writes grid config, provides the waybar module

@@ -1,6 +1,8 @@
+mod extension;
 pub mod grid;
 mod overview;
 mod theme;
+mod transport;
 mod ui;
 use overview::probe_report;
 use ui::Overview;
@@ -134,11 +136,23 @@ mod ffi {
         font_size: u32,
         rounding: u32,
     }
+    struct ExtensionAction {
+        token: u64,
+        window: String,
+        workspace: String,
+        monitor: u32,
+    }
+    #[derive(Default)]
+    struct ExtensionBatch {
+        changed: bool,
+        actions: Vec<ExtensionAction>,
+    }
     struct UICell {
         key: String,
         monitor: u32,
         rect: UIRect,
         label: String,
+        colour: u32,
         selected: bool,
         hovered: bool,
         occupied: bool,
@@ -147,6 +161,8 @@ mod ffi {
     struct UILabel {
         rect: UIRect,
         text: String,
+        colour: u32,
+        band: bool,
     }
     struct UIDrop {
         window: String,
@@ -184,6 +200,11 @@ mod ffi {
     }
     extern "Rust" {
         type Overview;
+        fn extension_start(self: &mut Core, path: &str) -> i32;
+        fn extension_stop(self: &mut Core);
+        fn extension_drain(self: &mut Core, monitors: &[Monitor]) -> ExtensionBatch;
+        fn extension_result(self: &mut Core, token: u64, error: &str);
+        fn extension_event(self: &mut Core, event: &str, workspace: &str, window: &str);
         fn ui_style(self: &Core) -> UIStyle;
         fn overview_press(self: &mut Overview, width: f64, height: f64, x: f64, y: f64);
         fn overview_release(self: &mut Overview, width: f64, height: f64, x: f64, y: f64)
@@ -233,6 +254,8 @@ mod ffi {
     }
 }
 pub struct Core {
+    extensions: extension::Extensions,
+    extension_grids: HashMap<u32, Grid>,
     theme: theme::Theme,
     grids: HashMap<String, Grid>,
     stride: u32,
@@ -242,6 +265,8 @@ pub struct Core {
 impl Default for Core {
     fn default() -> Self {
         Self {
+            extensions: extension::Extensions::default(),
+            extension_grids: HashMap::new(),
             theme: theme::Theme::default(),
             grids: HashMap::new(),
             stride: 10,
@@ -324,7 +349,7 @@ impl Core {
             error: String::new(),
         };
         if matches!(args.as_slice(), ["state"] | ["state", "-j"]) {
-            reply.output = json!({"version":1,"overview_config":self.theme,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
+            reply.output = json!({"version":1,"extensions":self.extensions.snapshot(),"overview_config":self.theme,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
                 let g = self.grid(m);
                 json!({"id":m.id,"name":m.name,"workspace":m.workspace,"focused":m.focused,"grid":g,"cell":g.cell(m.workspace,m.id),"offset":[m.offset_x,m.offset_y],
                     "cells":(0..g.rows).flat_map(|y|(0..g.columns).map(move |x|Cell{x,y})).filter_map(|c|g.id(c,m.id).ok().map(|id|json!({"x":c.x,"y":c.y,"workspace":id,"windows":windows.iter().filter(|w|w.workspace==id).map(|w|json!({"address":w.address,"title":w.title,"app_id":w.app_id,"urgent":w.urgent})).collect::<Vec<_>>()}))).collect::<Vec<_>>()})
@@ -359,6 +384,7 @@ impl Core {
             }
             self.stride = g.stride;
             self.grids.insert((*name).to_string(), g);
+            self.extension_grids.insert(id, g);
             return Ok(reply);
         }
         if let ["swipe-config", fingers, distance, velocity, natural, axis_lock] = args.as_slice() {
@@ -393,7 +419,23 @@ impl Core {
             } else {
                 let c =
                     current.ok_or("active workspace is outside this monitor's grid; use goto")?;
-                g.step(c, dir.ok_or("missing direction")?).unwrap_or(c)
+                let direction = dir.ok_or("missing direction")?;
+                let mut next = g.step(c, direction).unwrap_or(c);
+                for _ in 0..g.rows * g.columns {
+                    if !self.extensions.skip(m.id, next.y) {
+                        break;
+                    }
+                    let Some(step) = g.step(next, direction) else {
+                        next = c;
+                        break;
+                    };
+                    next = step;
+                }
+                if self.extensions.skip(m.id, next.y) {
+                    c
+                } else {
+                    next
+                }
             };
             let d = dir.unwrap_or_else(|| {
                 let old = current.unwrap_or(c);
