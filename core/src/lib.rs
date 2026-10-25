@@ -3,6 +3,7 @@ mod drop_script;
 mod extension;
 pub mod grid;
 mod overview;
+mod slots;
 mod theme;
 mod transport;
 mod ui;
@@ -15,8 +16,16 @@ use std::collections::HashMap;
 
 #[cxx::bridge(namespace = "hypr2d")]
 mod ffi {
+    struct MonitorIdentity {
+        id: u32,
+        name: String,
+        make: String,
+        model: String,
+        serial: String,
+    }
     struct Monitor {
         id: u32,
+        slot: u32,
         name: String,
         workspace: u32,
         focused: bool,
@@ -25,8 +34,14 @@ mod ffi {
         width: f64,
         height: f64,
     }
+    struct UnplugPlan {
+        focus: u32,
+        workspaces: Vec<Move>,
+        notification: String,
+    }
     struct Window {
         workspace: u32,
+        monitor: u32,
         address: String,
         title: String,
         app_id: String,
@@ -115,6 +130,9 @@ mod ffi {
     }
     struct UIOutput {
         id: u32,
+        slot: u32,
+        parked: bool,
+        backing: u32,
         name: String,
         x: f64,
         y: f64,
@@ -172,6 +190,7 @@ mod ffi {
         selected: bool,
         hovered: bool,
         occupied: bool,
+        dimmed: bool,
         shown: bool,
     }
     struct UILabel {
@@ -226,6 +245,19 @@ mod ffi {
         fn extension_event(self: &mut Core, event: &str, workspace: &str, window: &str);
         fn ui_header_width(self: &mut Core, text: &str, width: f64);
         fn ui_font_height(self: &mut Core, height: f64);
+        fn slots_init(self: &mut Core) -> String;
+        fn slots_update(self: &mut Core, monitors: &[MonitorIdentity]) -> String;
+        fn monitor_slot(self: &Core, name: &str) -> u32;
+        fn monitor_observe(self: &mut Core, monitors: &[Monitor]);
+        fn unplug(self: &mut Core, id: u32, monitors: &[Monitor], windows: &[Window])
+            -> UnplugPlan;
+        fn restore_workspace(self: &Core, monitor: &Monitor) -> u32;
+        fn owns_workspace(self: &Core, monitor: &Monitor, workspace: u32) -> bool;
+        fn parked_panels(
+            self: &mut Core,
+            outputs: &[UIOutput],
+            windows: &[UIWindow],
+        ) -> Vec<UIOutput>;
         fn ui_style(self: &Core) -> UIStyle;
         fn overview_modifiers(self: &mut Overview, shift: bool);
         fn overview_refuse(self: &mut Overview, window: &str, now: f64);
@@ -267,6 +299,7 @@ mod ffi {
             click: bool,
         ) -> String;
         fn overview_key(self: &mut Overview, key: u32, shift: bool, now: f64) -> String;
+        fn overview_parked(self: &mut Overview);
         fn overview_close(self: &mut Overview, now: f64);
 
         fn probe_plan(
@@ -296,8 +329,13 @@ mod ffi {
 pub struct Core {
     ui_font_height: Option<f64>,
     ui_header_widths: HashMap<String, f64>,
+    slots: slots::Slots,
+    connected_slots: HashMap<String, u32>,
+    remembered_cells: HashMap<u32, u32>,
+    parked_counts: HashMap<u32, usize>,
     extensions: extension::Extensions,
     extension_grids: HashMap<u32, Grid>,
+    extension_slots: HashMap<u32, u32>,
     theme: theme::Theme,
     grids: HashMap<String, Grid>,
     stride: u32,
@@ -310,8 +348,13 @@ impl Default for Core {
         Self {
             extensions: extension::Extensions::default(),
             extension_grids: HashMap::new(),
+            extension_slots: HashMap::new(),
             ui_font_height: None,
             ui_header_widths: HashMap::new(),
+            slots: slots::Slots::default(),
+            connected_slots: HashMap::new(),
+            remembered_cells: HashMap::new(),
+            parked_counts: HashMap::new(),
             theme: theme::Theme::default(),
             grids: HashMap::new(),
             stride: 10,
@@ -357,15 +400,24 @@ impl Default for ffi::Reply {
 }
 impl Core {
     fn grid(&self, m: &ffi::Monitor) -> Grid {
+        self.slot_grid(m.slot, &m.name)
+    }
+    fn slot_grid(&self, slot: u32, name: &str) -> Grid {
         self.grids
-            .get(m.name.as_str())
-            .or_else(|| self.grids.get(&m.id.to_string()))
+            .get(name)
+            .or_else(|| self.grids.get(&slot.to_string()))
+            .or_else(|| {
+                self.slots
+                    .aliases(slot)
+                    .find_map(|alias| self.grids.get(alias))
+            })
             .copied()
             .unwrap_or(Grid {
                 stride: self.stride,
                 ..Grid::default()
             })
     }
+
     fn command(
         &mut self,
         monitors: &[ffi::Monitor],
@@ -401,27 +453,27 @@ impl Core {
             error: String::new(),
         };
         if matches!(args.as_slice(), ["state"] | ["state", "-j"]) {
-            reply.output = json!({"version":1,"extensions":self.extensions.snapshot(),"swipe_enabled":self.swipe_enabled,"overview_config":self.theme,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
+            reply.output = json!({"version":1,"parked":self.parked_snapshot(windows),"extensions":self.extensions.snapshot(),"swipe_enabled":self.swipe_enabled,"overview_config":self.theme,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
                 let g = self.grid(m);
-                json!({"id":m.id,"name":m.name,"workspace":m.workspace,"focused":m.focused,"grid":g,"cell":g.cell(m.workspace,m.id),"offset":[m.offset_x,m.offset_y],
-                    "cells":(0..g.rows).flat_map(|y|(0..g.columns).map(move |x|Cell{x,y})).filter_map(|c|g.id(c,m.id).ok().map(|id|json!({"x":c.x,"y":c.y,"workspace":id,"windows":windows.iter().filter(|w|w.workspace==id).map(|w|json!({"address":w.address,"title":w.title,"app_id":w.app_id,"urgent":w.urgent})).collect::<Vec<_>>()}))).collect::<Vec<_>>()})
+                json!({"id":m.id,"slot":m.slot,"name":m.name,"workspace":m.workspace,"focused":m.focused,"grid":g,"cell":g.cell(m.workspace,m.slot),"offset":[m.offset_x,m.offset_y],
+                    "cells":(0..g.rows).flat_map(|y|(0..g.columns).map(move |x|Cell{x,y})).filter_map(|c|g.id(c,m.slot).ok().map(|id|json!({"x":c.x,"y":c.y,"workspace":id,"windows":windows.iter().filter(|w|w.workspace==id).map(|w|json!({"address":w.address,"title":w.title,"app_id":w.app_id,"urgent":w.urgent})).collect::<Vec<_>>()}))).collect::<Vec<_>>()})
             }).collect::<Vec<_>>()}).to_string();
             return Ok(reply);
         }
         if let ["configure", name, columns, rows, wrap, stride] = args.as_slice() {
-            let id = monitors
+            let matched = monitors
                 .iter()
-                .find(|m| m.name == *name || m.id.to_string() == *name)
-                .map_or(0, |m| m.id);
+                .find(|m| m.name == *name || m.slot.to_string() == *name);
+            let id = matched.map_or(0, |m| m.id);
             let g = Grid {
                 columns: number(columns)?,
                 rows: number(rows)?,
                 wrap: wrap.parse().map_err(|_| "wrap must be true/false")?,
                 stride: number(stride)?,
             }
-            .validate(id)?;
-            if monitors.iter().any(|other| other.id >= g.stride) {
-                return Err("stride must exceed every monitor id".into());
+            .validate(monitors.iter().find(|m| m.id == id).map_or(0, |m| m.slot))?;
+            if monitors.iter().any(|other| other.slot >= g.stride) {
+                return Err("stride must exceed every monitor slot".into());
             }
             // Stride is shared: distinct monitor residues must never collide.
             for config in self.grids.values() {
@@ -435,8 +487,16 @@ impl Core {
                 config.stride = g.stride;
             }
             self.stride = g.stride;
-            self.grids.insert((*name).to_string(), g);
-            self.extension_grids.insert(id, g);
+            self.grids.insert(
+                matched
+                    .map(|m| m.name.clone())
+                    .unwrap_or_else(|| (*name).to_string()),
+                g,
+            );
+            if let Some(m) = matched {
+                self.extension_grids.insert(m.id, g);
+                self.extension_slots.insert(m.id, m.slot);
+            }
             return Ok(reply);
         }
         if let ["swipe-enabled", enabled] = args.as_slice() {
@@ -469,8 +529,8 @@ impl Core {
             _ => return Err("expected move DIR [all], carry DIR, goto X Y [MONITOR], state, or configure MONITOR COLS ROWS WRAP STRIDE".into())
         };
         for m in selected {
-            let g = self.grid(m).validate(m.id)?;
-            let current = g.cell(m.workspace, m.id);
+            let g = self.grid(m).validate(m.slot)?;
+            let current = g.cell(m.workspace, m.slot);
             let c = if let Some(c) = target {
                 c
             } else {
@@ -510,7 +570,7 @@ impl Core {
             });
             reply.moves.push(ffi::Move {
                 monitor: m.id,
-                workspace: g.id(c, m.id)?,
+                workspace: g.id(c, m.slot)?,
                 x: c.x,
                 y: c.y,
                 vertical: d.vertical(),
@@ -581,13 +641,16 @@ impl Core {
                     return ffi::SwipeFrame::default();
                 };
                 self.gesture = swipe::Swipe::new(
-                    m.id,
+                    m.slot,
                     m.workspace,
                     self.grid(m),
                     [m.width, m.height],
                     self.swipe_config,
                     now,
                 );
+                if let Some(g) = &mut self.gesture {
+                    g.monitor = m.id;
+                }
             }
             let Some(mut gesture) = self.gesture.take() else {
                 return ffi::SwipeFrame::default();
@@ -692,6 +755,7 @@ mod tests {
     fn monitor(id: u32, ws: u32) -> ffi::Monitor {
         ffi::Monitor {
             id,
+            slot: id,
             name: format!("m{id}"),
             workspace: ws,
             focused: id == 0,
@@ -700,6 +764,59 @@ mod tests {
             width: 1280.,
             height: 720.,
         }
+    }
+    #[test]
+    fn rename_preserves_grid_settings_and_parking_remembers_own_cell() {
+        let mut core = Core::default();
+        let slot = core
+            .slots
+            .resolve("Dock-A", "Make", "Model", "serial", &[])
+            .unwrap();
+        let mut dock = monitor(3, 92);
+        dock.slot = slot;
+        dock.name = "Dock-A".into();
+        dock.focused = true;
+        assert!(core
+            .command(
+                std::slice::from_ref(&dock),
+                &[],
+                "configure Dock-A 4 6 true 10"
+            )
+            .error
+            .is_empty());
+        assert_eq!(
+            core.slots
+                .resolve("Dock-B", "Make", "Model", "serial", &[])
+                .unwrap(),
+            slot
+        );
+        dock.name = "Dock-B".into();
+        assert_eq!(core.grid(&dock).columns, 4);
+        let mut live = monitor(0, 11);
+        live.focused = false;
+        core.monitor_observe(&[live, dock]);
+        let mut live = monitor(0, 92);
+        live.focused = false;
+        let mut dock = monitor(3, 92);
+        dock.slot = slot;
+        dock.focused = true;
+        let plan = core.unplug(3, &[live, dock], &[]);
+        assert_eq!(plan.focus, 0);
+        assert_eq!(
+            plan.workspaces[0].workspace, 11,
+            "a parked workspace must not replace the host's own current cell"
+        );
+    }
+    #[test]
+    fn numbering_slot_is_independent_of_native_monitor_id() {
+        let mut core = Core::default();
+        let mut m = monitor(2, 8);
+        m.slot = 7;
+        m.focused = true;
+        let reply = core.command(&[m], &[], "move right");
+        assert!(reply.error.is_empty());
+        assert_eq!(reply.moves[0].monitor, 2);
+        assert_eq!(reply.moves[0].workspace, 18);
     }
     #[test]
     fn panic_and_round_trip() {

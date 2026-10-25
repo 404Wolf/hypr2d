@@ -2,6 +2,8 @@ export HYPR2D_LATENCY_HELPER="@LATENCY@"
 # An isolated config; never inherit the live instance signature for IPC.
 test_dir=$(mktemp -d -t hypr2d-nested.XXXXXX)
 trap 'rm -rf "$test_dir"' EXIT
+export XDG_STATE_HOME="$test_dir/state" XDG_CONFIG_HOME="$test_dir/config"
+mkdir -p "$XDG_CONFIG_HOME"
 cat > "$test_dir/hyprland.lua" <<'LUA'
 hl.monitor({ output = "", mode = "1280x720@60", position = "auto", scale = 1 })
 hl.config({ debug = { disable_logs = false, enable_stdout_logs = true }, misc = { disable_watchdog_warning = true, disable_hyprland_logo = true, disable_splash_rendering = true }, xwayland = { enabled = false } })

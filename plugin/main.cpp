@@ -1,4 +1,5 @@
 #include "hypr2d-core/src/lib.rs.h"
+#include "monitors.hpp"
 #include "overview.hpp"
 #include "ui.hpp"
 #include <algorithm>
@@ -44,18 +45,20 @@ static std::vector<hypr2d::Monitor> monitors() {
     for (const auto &m : State::monitorState()->monitors()) {
         const auto ws = m->m_activeWorkspace;
         const auto off = ws ? ws->m_renderOffset->value() : Vector2D{};
-        result.push_back({static_cast<uint32_t>(m->m_id), m->m_name, ws && ws->numberedID() ? *ws->numberedID() : 0,
-                          m == Desktop::focusState()->monitor(), off.x, off.y, m->m_size.x, m->m_size.y});
+        result.push_back({static_cast<uint32_t>(m->m_id), (*core)->monitor_slot(m->m_name), m->m_name,
+                          ws && ws->numberedID() ? *ws->numberedID() : 0, m == Desktop::focusState()->monitor(), off.x, off.y, m->m_size.x,
+                          m->m_size.y});
     }
     return result;
 }
 static std::vector<hypr2d::Window> windows() {
     std::vector<hypr2d::Window> result;
     for (const auto &w : Desktop::windowState()->windows()) {
-        if (!w->mapped() || !w->m_workspace || !w->m_workspace->numberedID())
+        if (!w->mapped() || !w->m_workspace || !w->m_monitor)
             continue;
-        result.push_back({*w->m_workspace->numberedID(), std::format("0x{:x}", reinterpret_cast<uintptr_t>(w.get())), w->metadata().title(),
-                          w->metadata().appID(), bool(w->m_hints & Desktop::View::WINDOW_HINT_URGENT)});
+        result.push_back({w->m_workspace->numberedID() ? *w->m_workspace->numberedID() : 0, static_cast<uint32_t>(w->m_monitor->m_id),
+                          std::format("0x{:x}", reinterpret_cast<uintptr_t>(w.get())), w->metadata().title(), w->metadata().appID(),
+                          bool(w->m_hints & Desktop::View::WINDOW_HINT_URGENT)});
     }
     return result;
 }
@@ -186,6 +189,8 @@ static int extensionReady(int, uint32_t, void *) {
     return 0;
 }
 static std::string execute(const std::string &input) {
+    if (input.starts_with("monitor-test "))
+        return MonitorPolicy::command(input);
     try {
         if (input == "doctor")
             return OverviewUI::doctor();
@@ -275,6 +280,7 @@ static int moveLua(lua_State *L) {
     }
     return dispatcher(L, cmd);
 }
+static int parkedLua(lua_State *L) { return dispatcher(L, "overview parked"); }
 static int overviewLua(lua_State *L) { return dispatcher(L, "overview"); }
 static int carryLua(lua_State *L) { return dispatcher(L, "carry " + std::string(luaL_checkstring(L, 1))); }
 static int gotoLua(lua_State *L) {
@@ -345,10 +351,12 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     if (HyprlandAPI::getHyprlandVersion(handle).hash != GIT_COMMIT_HASH)
         throw std::runtime_error("hypr2d: compositor build does not match plugin");
     core.emplace(hypr2d::new_core());
+    MonitorPolicy::init(&**core, handle);
     LOG(Log::INFO, "hypr2d M0: C++ -> Rust -> C++: 41 -> {}", hypr2d::spike_round_trip(41));
     for (const auto &[name, fn] : std::vector<std::pair<std::string, PLUGIN_LUA_FN>>{{"move", moveLua},
                                                                                      {"carry", carryLua},
                                                                                      {"overview", overviewLua},
+                                                                                     {"parked", parkedLua},
                                                                                      {"goto_cell", gotoLua},
                                                                                      {"configure", configureLua},
                                                                                      {"_execute", invoke},
@@ -436,6 +444,7 @@ APICALL EXPORT void PLUGIN_EXIT() {
     if (core)
         (*core)->extension_stop();
     OverviewUI::shutdown();
+    MonitorPolicy::shutdown();
     if (testingEnabled)
         OverviewProbe::shutdown();
     testingEnabled = false;

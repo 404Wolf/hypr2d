@@ -24,6 +24,7 @@ pub fn script(drop: &ffi::UIDrop, source: &str, x: f64, y: f64) -> String {
         let t = quote(&format!("address:{target}"));
         let dest = quote(&drop.workspace);
         let mut code=format!("local w=hl.get_window({w}); if not w or not w.mapped then return end; local function dispatch(d) local result=hl.dispatch(d); assert(result.ok,result.error) end; ");
+        code.push_str("local saved={}; local focus=hl.get_active_monitor(); for _,m in ipairs(hl.get_monitors()) do saved[#saved+1]={monitor=m,workspace=m.active_workspace,special=m.active_special_workspace} end; local success,failure=pcall(function() ");
         code.push_str(&format!(
             "dispatch(hl.dsp.focus({{monitor={}}})); ",
             drop.monitor
@@ -55,6 +56,7 @@ pub fn script(drop: &ffi::UIDrop, source: &str, x: f64, y: f64) -> String {
                 ));
             }
         }
+        code.push_str(&format!("end); for _,s in ipairs(saved) do local m=s.monitor; if m and m.enabled then if m.active_workspace~=s.workspace and s.workspace then dispatch(hl.dsp.focus({{monitor=m}})); dispatch(hl.dsp.focus({{workspace=s.workspace}})) end; local wanted=s.special; if wanted and wanted.is_empty and wanted.addressable_name=={} then wanted=nil end; if m.active_special_workspace~=wanted then dispatch(hl.dsp.focus({{monitor=m}})); if m.active_special_workspace then dispatch(hl.dsp.workspace.toggle_special(m.active_special_workspace.addressable_name:sub(9))) end; if wanted then dispatch(hl.dsp.workspace.toggle_special(wanted.addressable_name:sub(9))) end end end end; if focus then dispatch(hl.dsp.focus({{monitor=focus}})) end; if not success then error(failure) end; ",quote(source)));
         code
     })
 }

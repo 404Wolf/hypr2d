@@ -883,3 +883,41 @@ The final VM run passes with `group:focus_removed_window=false`, verifies native
 unmap of all fixtures and a zero compositor exit status, and observes no client
 process exit or unmap during drops. Rust tests and Clippy pass. Stack/swap outlines
 and immediate special-strip shrink were inspected in the VM screenshots.
+
+### Stable slots and parked grids
+
+Numbering now uses persistent slots while IPC addresses remain native monitor
+IDs. `eDP-1` reserves slot 0 even when absent. The atomic, private
+`$XDG_STATE_HOME/hypr2d/slots.json` registry keeps every name/identity assignment;
+a unique inactive make/model/serial match adds a renamed-port alias. Slots are
+never recycled. Pins apply to new assignments and conflicts fail rather than
+renumber existing workspaces. The stride must exceed all assigned slots; cells
+outside its capacity are refused to prevent residue collisions. Numeric grid
+configuration keys are slots; movement/IPC monitor selectors remain native IDs.
+Per-output grid settings follow identity aliases across renamed ports.
+
+Native unplug already retains workspace numbers. Rust records each monitor's
+own current cell, restores the surviving monitors' cells after unplug, and
+reattaches every workspace in the reconnected slot. Parked residues never enter
+another monitor's grid/minimap. Notifications count all normal-window members,
+including inactive group members. Waybar lists parked grids in its tooltip.
+The overview shows occupied miniature cells and total window count in dimmed
+cards beside specials, with keyboard/card expansion, disconnected headers,
+live/parked tabs, and drags between cards/expanded grids, live grids and specials.
+
+Public group dispatchers may focus a remaining group member and reveal its
+workspace. Drop transactions now retain original active spaces and restore
+normal/special visibility through public dispatchers, including on error;
+empty source specials are closed instead of reopened. This keeps a parked
+source from taking over the live monitor's current cell. No native group objects
+are retained through detach operations.
+
+The VM passes two-output headless create/remove, focus fallback, a two-member
+parked group, exact workspace-number/current-cell reattachment, reversed plug
+order, renamed-port identity injection, minimap exclusion/tooltip, card/expanded
+screenshots, Tab order, first-motion tab switching, and drags to live cells and
+specials. Replacement outputs (including the 2256×1504 eDP regression) use the
+headless backend to avoid parent Wayland configure/frame dependencies. The
+existing rendering/group/cursor/resource checks and clean exit pass as well;
+overview-drop minimap latency measured 25.77 ms. Nested development isolates
+config and state directories so it cannot write the live slot registry.

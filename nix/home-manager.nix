@@ -25,6 +25,8 @@ let
         -- Replace an existing group-next chord instead of dispatching both.
         hl.unbind("SUPER + TAB")
         hl.bind("SUPER + TAB", hl.plugin.hypr2d.overview())
+        hl.unbind("SUPER + ALT + TAB")
+        hl.bind("SUPER + ALT + TAB", hl.plugin.hypr2d.parked())
       ''}
     end
   '';
@@ -50,10 +52,15 @@ in {
   options.programs.hypr2d = {
     enable = mkEnableOption "hypr2d for Lua Hyprland 0.56";
     package = mkOption { type = types.package; default = flake.packages.${pkgs.stdenv.hostPlatform.system}.plugin; description = "Plugin and CLI built against the compositor flake input."; };
-    grid.stride = mkOption { type = types.ints.between 1 1000; default = 10; description = "Workspace numbering stride; must exceed every monitor id."; };
+    monitorSlots = mkOption {
+      type = types.attrsOf (types.ints.between 0 999);
+      default = {};
+      description = "Permanent output-name to slot pins for new identities. Slot 0 is reserved for eDP-1; persisted slots cannot be reassigned.";
+    };
+    grid.stride = mkOption { type = types.ints.between 1 1000; default = 10; description = "Workspace numbering stride; must exceed every assigned monitor slot."; };
     grids = mkOption {
       default = { "0" = {}; };
-      description = "Per-output grid configuration, keyed by output name or monitor id. Unlisted outputs use 8x8 wrapping with the shared stride.";
+      description = "Per-output grid configuration, keyed by output name or stable monitor slot. Unlisted outputs use 8x8 wrapping with the shared stride.";
       type = types.attrsOf (types.submodule { options = {
         columns = mkOption { type = types.ints.between 1 64; default = 8; description = "Grid columns."; };
         rows = mkOption { type = types.ints.between 1 64; default = 8; description = "Grid rows."; };
@@ -103,6 +110,9 @@ in {
   };
   config = mkIf cfg.enable {
     assertions = [
+      { assertion = lib.all (slot: slot < cfg.grid.stride) (builtins.attrValues cfg.monitorSlots); message = "hypr2d monitor slots must be less than the shared stride."; }
+      { assertion = builtins.length (lib.unique (builtins.attrValues cfg.monitorSlots)) == builtins.length (builtins.attrValues cfg.monitorSlots); message = "hypr2d pinned monitor slots must be unique."; }
+      { assertion = lib.all (name: if name == "eDP-1" then cfg.monitorSlots.${name} == 0 else cfg.monitorSlots.${name} != 0) (builtins.attrNames cfg.monitorSlots); message = "hypr2d slot 0 is reserved for eDP-1."; }
       { assertion = config.wayland.windowManager.hyprland.configType == "lua"; message = "hypr2d requires Hyprland configType = lua."; }
       { assertion = cfg.gestures.axisLock <= cfg.gestures.distance && cfg.gestures.velocity >= 0; message = "hypr2d gesture axisLock must not exceed distance; velocity must be non-negative."; }
       { assertion = cfg.theme.font != "" && builtins.stringLength cfg.theme.font <= 128; message = "hypr2d theme font must be nonempty and at most 128 bytes."; }
@@ -116,7 +126,7 @@ in {
       plugins = [ cfg.package ];
       extraConfig = lib.mkAfter lua;
     };
-    xdg.configFile."hypr/hypr2d.json".text = builtins.toJSON { version = 1; inherit theme; grid = { inherit (cfg.grid) stride; monitors = cfg.grids; }; gestures = cfg.gestures; };
+    xdg.configFile."hypr/hypr2d.json".text = builtins.toJSON { version = 1; inherit theme; monitorSlots = cfg.monitorSlots; grid = { inherit (cfg.grid) stride; monitors = cfg.grids; }; gestures = cfg.gestures; };
     programs.waybar = mkIf cfg.waybar.enable {
       enable = lib.mkDefault true;
       settings.${cfg.waybar.bar} = {

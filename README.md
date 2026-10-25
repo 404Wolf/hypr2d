@@ -79,6 +79,7 @@ hl.bind("SUPER + ALT + K", function()
 end)
 hl.unbind("SUPER + TAB") -- replace an existing group-next bind
 hl.bind("SUPER + TAB", hl.plugin.hypr2d.overview())
+hl.bind("SUPER + ALT + TAB", hl.plugin.hypr2d.parked())
 end
 ```
 
@@ -173,10 +174,11 @@ inputs.hypr2d.inputs.hyprland.follows = "hyprland";
 Import `inputs.hypr2d.homeManagerModules.default` in your Home Manager modules,
 then enable `programs.hypr2d`. See [the complete option example](examples/home-manager.nix).
 Options cover `grid.stride`, per-output `grids`, `overview.fit`/`overview.bind`,
-`theme`, `gestures`, and `waybar`. The module loads the plugin through Home
+`monitorSlots`, `theme`, `gestures`, and `waybar`. The module loads the plugin through Home
 Manager's Lua plugin support, appends configuration Lua, installs the CLI and
 writes `~/.config/hypr/hypr2d.json` as a readable record of generated settings.
-The plugin is configured by the generated Lua; it does not watch that JSON file.
+The plugin is configured by generated Lua. It reads monitor slot pins from that
+JSON at plugin load; it does not watch the file.
 Lua `configType` is required. The module defaults the Hyprland package to the
 same pinned flake input; an explicit package override must preserve that ABI. Unlisted outputs retain an 8×8 wrapping grid with
 the shared stride. Output names can be configured before hotplug.
@@ -389,3 +391,23 @@ capture-on-open / per-cell damage-driven design.
 as JSON (`ok`, `errors`, `warnings`). A singleton group is reported as a warning
 because Hyprland allows it. The command does not repair compositor state or
 restart clients.
+
+
+Monitor numbering uses permanent slots from `$XDG_STATE_HOME/hypr2d/slots.json`
+(default `~/.local/state/hypr2d/slots.json`). `eDP-1` reserves slot 0; new outputs
+get unused slots which are never recycled. Output name is primary; a unique
+make/model/serial match reconnects a renamed port to its previous slot. With the
+default grid the formula remains `10*(y*8+x)+slot+1`. IPC monitor IDs remain
+Hyprland IDs; numeric `grids`/`configure` keys refer to stable slots. Configure
+output names when possible. `programs.hypr2d.monitorSlots = { "eDP-1" = 0;
+"DP-1" = 2; };` pins initial assignments; conflicting persisted assignments are
+refused rather than silently renumbered. The shared stride must exceed all slots.
+
+Unplugged normal workspaces keep their numbers on a remaining output. They are
+excluded from that output's grid and minimap; its tooltip lists parked grids.
+The overview shows compact dimmed cards beside specials. Click a card or use
+Tab then Enter to expand it, Esc to return, and the live/parked tabs to switch.
+Drag from a card into a live cell, or from an expanded parked grid over the live
+tab and into a cell. `SUPER+ALT+Tab` (above) and `hyprctl hypr2d overview parked`
+open the parked view directly. Replug restores workspaces and the saved active
+cell to the same monitor slot.

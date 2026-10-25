@@ -36,7 +36,7 @@ impl Core {
                         x: i % grid.columns,
                         y: i / grid.columns,
                     };
-                    if let Ok(id) = grid.id(cell, m.id) {
+                    if let Ok(id) = grid.id(cell, m.slot) {
                         push(id, String::new(), cell.x, cell.y);
                     }
                 }
@@ -84,6 +84,7 @@ mod tests {
     fn two_monitor_budget_and_special_strip() {
         let monitors = [0, 1].map(|id| ffi::Monitor {
             id,
+            slot: id,
             name: id.to_string(),
             workspace: id + 1,
             focused: id == 0,

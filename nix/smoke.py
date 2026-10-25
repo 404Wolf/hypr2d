@@ -82,20 +82,21 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         animations_before = ctl("-j", "animations")
         first = state()[0]
         mid = first["id"]
+        slot = first["slot"]
         command("goto", "0", "0", str(mid))
-        assert cell(mid)["workspace"] == mid + 1
+        assert cell(mid)["workspace"] == slot + 1
         # socket2 is connected before the move: no missed initial event.
         events = socket.socket(socket.AF_UNIX)
         events.settimeout(5)
         events.connect(str(instance / ".socket2.sock"))
         lua('hl.plugin.hypr2d.move("left")')
-        assert cell(mid)["workspace"] == 71 + mid
+        assert cell(mid)["workspace"] == 71 + slot
         data = b""
         while f"hypr2d>>cell>>{mid},7,0\n".encode() not in data:
             data += events.recv(65536)
         events.close()
         lua('hl.plugin.hypr2d.move("up")')
-        assert cell(mid)["workspace"] == 631 + mid
+        assert cell(mid)["workspace"] == 631 + slot
         command("goto", "0", "0")
         command("move", "down")
         offset = cell(mid)["offset"]
@@ -108,22 +109,23 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             list(pool.map(lambda d: command("move", d), ["right"] * 40 + ["down"] * 17))
         assert cell(mid)["cell"] == {"x": 0, "y": 1}
-        assert cell(mid)["workspace"] == 81 + mid
+        assert cell(mid)["workspace"] == 81 + slot
         assert ctl("output", "create", "headless") == "ok"
         wait_for(lambda: len(state()) == 2, "second nested output did not appear")
         second = next(m for m in state() if m["id"] != mid)
         sid = second["id"]
+        sslot = second["slot"]
         command("goto", "2", "3", str(sid))
         command("goto", "7", "7", str(mid))
         lua('hl.plugin.hypr2d.move("right", {all=true})')
-        assert cell(mid)["workspace"] == 561 + mid
-        assert cell(sid)["workspace"] == 271 + sid
+        assert cell(mid)["workspace"] == 561 + slot
+        assert cell(sid)["workspace"] == 271 + sslot
         assert cell(mid)["focused"] and not cell(sid)["focused"]
         lua('hl.plugin.hypr2d.goto_cell(0, 0)')
         result = ctl("eval", f'return hl.plugin.hypr2d.configure("{first["name"]}", {{columns=8, rows=8, wrap=false}})')
         assert result == "ok", result
         command("move", "left")
-        assert cell(mid)["workspace"] == mid + 1
+        assert cell(mid)["workspace"] == slot + 1
         command("configure", first["name"], "8", "8", "true", "10")
         # A real nested client proves carry changes the window and follows it.
         env = dict(os.environ)
@@ -133,11 +135,11 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
             return [w for m in state() for c in m["cells"] for w in c["windows"] if w["app_id"] == "hypr2d-test"]
         wait_for(lambda: len(test_windows()) == 1, "nested test client did not map")
         lua('hl.plugin.hypr2d.carry("down")')
-        assert cell(mid)["workspace"] == 81 + mid
-        carried = next(c for c in cell(mid)["cells"] if c["workspace"] == 81 + mid)
+        assert cell(mid)["workspace"] == 81 + slot
+        carried = next(c for c in cell(mid)["cells"] if c["workspace"] == 81 + slot)
         assert any(w["app_id"] == "hypr2d-test" for w in carried["windows"])
         assert ctl("hypr2d", "goto", "8", "0", check=False).startswith("error:")
-        assert cell(mid)["workspace"] == 81 + mid
+        assert cell(mid)["workspace"] == 81 + slot
         assert ctl("-j", "animations") == animations_before
         print("PASS M1: exact numbering/wrap, Lua, IPC/events, axes, 57 rapid moves, two-monitor all/focus, no-wrap, carry")
         def gesture():
@@ -164,16 +166,16 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         assert cell(mid)["offset"] == [-40, 0]
         synthetic("update", 100, 150)
         assert cell(mid)["offset"] == [60, 0]
-        assert gesture()["neighbor"] == 71 + mid
+        assert gesture()["neighbor"] == 71 + slot
         synthetic("end", True)
-        assert cell(mid)["workspace"] == 1 + mid
+        assert cell(mid)["workspace"] == 1 + slot
         settle()
         synthetic("begin", 3)
         synthetic("update", 0, -150)
         assert cell(mid)["offset"] == [0, -150]
-        assert gesture()["neighbor"] == 81 + mid
+        assert gesture()["neighbor"] == 81 + slot
         synthetic("end", False)
-        assert cell(mid)["workspace"] == 81 + mid
+        assert cell(mid)["workspace"] == 81 + slot
         settle()
         command("goto", "0", "0")
         command("configure", first["name"], "8", "8", "false", "10")
@@ -183,7 +185,7 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         assert gesture()["neighbor"] == 0
         synthetic("end", False)
         settle()
-        assert cell(mid)["workspace"] == 1 + mid
+        assert cell(mid)["workspace"] == 1 + slot
         command("configure", first["name"], "8", "8", "true", "10")
         # A keyboard move must cancel an in-progress gesture and clear its offsets.
         synthetic("begin", 3)
@@ -191,7 +193,7 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         command("move", "down")
         assert gesture() is None
         synthetic("end", True)
-        assert cell(mid)["workspace"] == 81 + mid
+        assert cell(mid)["workspace"] == 81 + slot
         # Unloading during tracking releases force-rendering and all callbacks.
         synthetic("begin", 3)
         synthetic("update", -40, 0)
@@ -244,7 +246,7 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         assert not select.select([module.stdout], [], [], 0.2)[0], "Waybar emitted duplicate idle records"
         cli_command("move", "right", "--monitor", first["name"])
         record_when(lambda r: r["alt"] == "1,0")
-        assert cell(mid)["workspace"] == 11 + mid
+        assert cell(mid)["workspace"] == 11 + slot
         # Window titles arrive on native socket2 events and must be markup-escaped.
         title_env = dict(env)
         title_client = subprocess.Popen(["foot", "--config=/dev/null", "--app-id=hypr2d-title-test", "sh", "-c", "printf '\033]2;hypr2d <title> & text\007'; sleep 120"], env=title_env, stdout=output, stderr=output, start_new_session=True)
@@ -279,17 +281,17 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         # Current carried window supplies an unambiguous title on a hidden cell.
         win=next(w for w in json.loads(ctl("-j","clients")) if w["class"]=="hypr2d-test")
         address=win["address"]
-        target=21+mid
+        target=21+slot
         latency.expect("external-workspace-focus", lambda:lua(f'hl.dsp.focus({{workspace={target}}})'), lambda r:r["alt"]=="2,0",event="workspace")
         latency.expect("focused-monitor", lambda:lua(f'hl.dsp.focus({{monitor="{second["name"]}"}})'), lambda r:second["name"] in r["tooltip"],event="focusedmon")
         lua(f'hl.dsp.focus({{monitor="{first["name"]}"}})')
         # Move into/out of special changes occupancy in the grid tooltip.
         latency.expect("window-to-special", lambda:lua(f'hl.dsp.window.move({{window="address:{address}",workspace="special:latency",follow=false}})'),
             lambda r:"hypr2d-test" not in r["tooltip"], event="movewindowv2")
-        latency.expect("window-from-special", lambda:lua(f'hl.dsp.window.move({{window="address:{address}",workspace={81+mid},follow=false}})'),
+        latency.expect("window-from-special", lambda:lua(f'hl.dsp.window.move({{window="address:{address}",workspace={81+slot},follow=false}})'),
             lambda r:"hypr2d-test" in r["tooltip"], event="movewindowv2")
         # A new client is assigned to a different cell before mapping.
-        ok_rule=ctl("eval",f'hl.window_rule({{match={{class="^hypr2d-latency-open$"}},workspace="{31+mid} silent"}})')
+        ok_rule=ctl("eval",f'hl.window_rule({{match={{class="^hypr2d-latency-open$"}},workspace="{31+slot} silent"}})')
         assert ok_rule=="ok",ok_rule
         def map_latency():
             client=subprocess.Popen(["foot","--config=/dev/null","--app-id=hypr2d-latency-open","sh","-c","sleep 120"],env=env,stdout=output,stderr=output,start_new_session=True)

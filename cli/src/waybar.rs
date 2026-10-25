@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 pub struct Snapshot {
     pub version: u32,
     #[serde(default)]
+    pub parked: serde_json::Value,
+    #[serde(default)]
     pub extensions: serde_json::Value,
     #[serde(default)]
     pub overview_config: serde_json::Value,
@@ -200,6 +202,15 @@ pub fn render(
         current.y,
         m.workspace
     );
+    if let Some(parked) = snapshot.parked.as_array() {
+        for grid in parked {
+            tooltip.push_str(&format!(
+                "\nParked: {} · {} windows (SUPER+ALT+Tab)",
+                escape(grid["name"].as_str().unwrap_or("monitor")),
+                grid["windows"]
+            ));
+        }
+    }
     for c in &m.cells {
         if c.windows.is_empty() {
             continue;

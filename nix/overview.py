@@ -54,7 +54,8 @@ with (artifacts / "compositor.log").open("w+") as log:
         def lua(expression):
             ok("dispatch", expression)
         def monitors():
-            return json.loads(ctl("-j", "monitors"))
+            slots={m["id"]:m["slot"] for m in json.loads(ctl("hypr2d","state","-j"))["monitors"]}
+            return [dict(m,slot=slots.get(m["id"],0)) for m in json.loads(ctl("-j", "monitors"))]
         def probe(action):
             return json.loads(ctl("hypr2d", "probe", action))
         # Aquamarine occasionally retires its bootstrap fallback before making
@@ -92,7 +93,7 @@ with (artifacts / "compositor.log").open("w+") as log:
                 clients.append(subprocess.Popen(["foot", "--config=/dev/null", f"--app-id={app}", "--override=cursor.blink=no", f"--override=colors-dark.background={colors[panel*5+x]}", "sh", "-c", f"printf '\\033[?25lmonitor {panel} workspace {x}'; sleep 600"], env=env, stdout=log, stderr=log, start_new_session=True))
                 fixture_count += 1
                 wait(lambda: len(mapped()) == fixture_count, "fixture map")
-                target = 10*x + m["id"] + 1
+                target = 10*x + m["slot"] + 1
                 lua(f'hl.dsp.window.move({{window="class:^{app}$", workspace={target}, follow=false}})')
                 wait(lambda: any(w["class"] == app and w["workspace"]["id"] == target and w["monitor"] == m["id"] for w in mapped()), "fixture placement")
             # A separately populated special on each output, then hide it.
@@ -258,7 +259,7 @@ with (artifacts / "compositor.log").open("w+") as log:
             wait(lambda:any(w["class"]=="org.mozilla.firefox" and w["address"] not in before for w in mapped()),"label fixture mapped")
             address=next(w["address"] for w in mapped() if w["class"]=="org.mozilla.firefox" and w["address"] not in before)
             label_windows.append(address)
-            lua(f'hl.dsp.window.move({{window="address:{address}",workspace={mons[0]["id"]+1},follow=false}})')
+            lua(f'hl.dsp.window.move({{window="address:{address}",workspace={mons[0]["slot"]+1},follow=false}})')
         wait(lambda:any(c["label"]=="firefox +3" for c in ui_state()["ui"]["cells"]) and ui_state()["pending"]==0,"short main app plus extra window count")
         time.sleep(0.2);screenshot("ui-short-labels")
         check_composition(ui_state()["ui"])
@@ -278,7 +279,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         screenshot("ui-open")
         ui_image=Image.open(artifacts / "ui-open-0.png").convert("RGB")
         for panel,m in enumerate(mons):
-            keys=[str(10*x+m["id"]+1) for x in range(4)]+[f"special:probe-{panel}"]
+            keys=[str(10*x+m["slot"]+1) for x in range(4)]+[f"special:probe-{panel}"]
             for j,k in enumerate(keys):
                 c=next(c for c in ui["cells"] if c["key"]==k)
                 x,y,w,h=c["rect"]
@@ -309,12 +310,12 @@ with (artifacts / "compositor.log").open("w+") as log:
         assert ui_state()["captures"] <= old_capture_count+3,"only the changed cell should refresh"
         screenshot("ui-live")
         live=Image.open(artifacts / "ui-live-0.png").convert("RGB")
-        changed=next(c for c in ui_state()["ui"]["cells"] if c["key"]==str(31+mons[0]["id"]))
+        changed=next(c for c in ui_state()["ui"]["cells"] if c["key"]==str(31+mons[0]["slot"]))
         x,y,w,h=changed["rect"]
         assert live.getpixel((round(x+w/2),round(y+h/2)))==(32,112,64)
         assert next(w["title"] for w in mapped() if w["address"]==hidden["address"])==hidden["title"]
         keypress("l")
-        wait(lambda: any(c["selected"] and c["key"] in ("11","12") for c in ui_state()["ui"]["cells"]), "keyboard right")
+        wait(lambda: any(c["selected"] and c["key"] in [str(11+m["slot"]) for m in mons] for c in ui_state()["ui"]["cells"]), "keyboard right")
         for _ in range(3):
             before=next(c["key"] for c in ui_state()["ui"]["cells"] if c["selected"])
             keypress("Tab")
@@ -329,13 +330,13 @@ with (artifacts / "compositor.log").open("w+") as log:
         ok("eval",'return hl.plugin.hypr2d._test_swipe("update",20,0,true)')
         ok("eval",'return hl.plugin.hypr2d._test_swipe("end",true,0,true)')
         open_ui()
-        target = next(c for c in ui_state()["ui"]["cells"] if c["key"] == str(mons[-1]["id"]+81))
+        target = next(c for c in ui_state()["ui"]["cells"] if c["key"] == str(mons[-1]["slot"]+81))
         x,y,w,h = target["rect"]
         focused = next(m for m in monitors() if m["focused"])
         lua(f'hl.dsp.cursor.move({{x={focused["x"]+x+w/2},y={focused["y"]+y+h/2}}})')
         subprocess.run(["wlrctl", "pointer", "click", "left"], env=env, check=True, timeout=10)
         wait(lambda: ui_state().get("open") is False, "click activates cell")
-        assert any(m["activeWorkspace"]["id"] == mons[-1]["id"]+81 for m in monitors())
+        assert any(m["activeWorkspace"]["id"] == mons[-1]["slot"]+81 for m in monitors())
         open_ui()
         ok("hypr2d", "overview", "close")
         wait(lambda: ui_state().get("open") is False, "close animation completes")
@@ -397,38 +398,38 @@ with (artifacts / "compositor.log").open("w+") as log:
         exec(Path(os.environ["HYPR2D_LATENCY_HELPER"]).read_text())
         drag_latency = MinimapLatency(instance, cli, log)
         open_ui()
-        begin_drag(a);move_drag(cell_point(str(81+mons[0]["id"])))
+        begin_drag(a);move_drag(cell_point(str(81+mons[0]["slot"])))
         screenshot("ui-drag-ghost")
         ghost_image=Image.open(artifacts / "ui-drag-ghost-0.png").convert("RGB")
-        gx,gy=cell_point(str(81+mons[0]["id"]))
+        gx,gy=cell_point(str(81+mons[0]["slot"]))
         gp=ghost_image.getpixel((round(gx),round(gy)))
         assert gp[0]>gp[1]+20 and gp[0]>40,("ghost must render source pixels",gp)
-        assert ui_state()["ui"]["target"]==str(81+mons[0]["id"])
+        assert ui_state()["ui"]["target"]==str(81+mons[0]["slot"])
         drag_latency.expect("overview-drop",lambda:pointer_command("up"),
-            lambda r:f'workspace {81+mons[0]["id"]}</b>\n' in r["tooltip"] and "hypr2d-probe-0-0" in r["tooltip"],event="movewindowv2")
+            lambda r:f'workspace {81+mons[0]["slot"]}</b>\n' in r["tooltip"] and "hypr2d-probe-0-0" in r["tooltip"],event="movewindowv2")
         (artifacts/"minimap-drag-latency.json").write_text(json.dumps(drag_latency.results,indent=2))
         drag_latency.close()
         wait(lambda:ui_state()["pending"]==0,"latency drop settles")
-        wait(lambda:real_window(a)["workspace"]["id"]==81+mons[0]["id"],"same-monitor drop")
-        begin_drag(a);move_drag(cell_point(str(81+mons[1]["id"])),display=1);finish_drag()
-        wait(lambda:real_window(a)["workspace"]["id"]==81+mons[1]["id"] and real_window(a)["monitor"]==mons[1]["id"],"cross-monitor drop")
+        wait(lambda:real_window(a)["workspace"]["id"]==81+mons[0]["slot"],"same-monitor drop")
+        begin_drag(a);move_drag(cell_point(str(81+mons[1]["slot"])),display=1);finish_drag()
+        wait(lambda:real_window(a)["workspace"]["id"]==81+mons[1]["slot"] and real_window(a)["monitor"]==mons[1]["id"],"cross-monitor drop")
         begin_drag(a);move_drag(cell_point("special:probe-0",0.02,0.02));finish_drag()
         wait(lambda:real_window(a)["workspace"]["name"]=="special:probe-0","drop into special")
-        begin_drag(a);move_drag(cell_point(str(171+mons[0]["id"])));finish_drag()
-        wait(lambda:real_window(a)["workspace"]["id"]==171+mons[0]["id"],"drop out of special")
+        begin_drag(a);move_drag(cell_point(str(171+mons[0]["slot"])));finish_drag()
+        wait(lambda:real_window(a)["workspace"]["id"]==171+mons[0]["slot"],"drop out of special")
         begin_drag(a)
         r=drawn_window(b)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2))
         assert any(w["id"]==b and w["target"] for w in ui_state()["ui"]["windows"])
         modifier=hold_shift();screenshot("ui-swap-target")
         finish_drag();modifier.wait(timeout=10)
-        wait(lambda:real_window(a)["workspace"]["id"]==11+mons[0]["id"] and real_window(b)["workspace"]["id"]==171+mons[0]["id"],"window swap")
+        wait(lambda:real_window(a)["workspace"]["id"]==11+mons[0]["slot"] and real_window(b)["workspace"]["id"]==171+mons[0]["slot"],"window swap")
         begin_drag(a);r=drawn_window(c)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2));finish_drag(shift=True)
         wait(lambda:real_window(a)["monitor"]==mons[1]["id"] and real_window(c)["monitor"]==mons[0]["id"],"cross-monitor swap")
         # Swap a fullscreen target through native state transitions, retaining its mode.
         lua(f'hl.dsp.window.fullscreen({{window="address:{b}",mode="fullscreen",action="set"}})')
         wait(lambda:real_window(b)["fullscreen"]>0 and ui_state()["pending"]==0,"fullscreen target")
         begin_drag(a);r=drawn_window(b)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2));finish_drag(shift=True)
-        wait(lambda:real_window(a)["workspace"]["id"]==171+mons[0]["id"],"fullscreen swap")
+        wait(lambda:real_window(a)["workspace"]["id"]==171+mons[0]["slot"],"fullscreen swap")
         assert real_window(b)["fullscreen"]>0
         # Floating placement retains the press point within the window.
         lua(f'hl.dsp.window.float({{window="address:{c}",action="set"}})')
@@ -436,14 +437,14 @@ with (artifacts / "compositor.log").open("w+") as log:
         floating=real_window(c);fw,fh=floating["size"]
         def floating_drop(fx,fy):
             grab_x,grab_y=begin_drag(c)
-            target=next(cell for cell in ui_state()["ui"]["cells"] if cell["key"]==str(91+mons[1]["id"]))
+            target=next(cell for cell in ui_state()["ui"]["cells"] if cell["key"]==str(91+mons[1]["slot"]))
             cx,cy,cw,ch=target["rect"]
-            move_drag(cell_point(str(91+mons[1]["id"]),fx,fy))
+            move_drag(cell_point(str(91+mons[1]["slot"]),fx,fy))
             px,py=ui_state()["ui"]["pointer"]
             expected_x=mons[1]["x"]+(px-cx)/cw*mons[1]["width"]-grab_x
             expected_y=mons[1]["y"]+(py-cy)/ch*mons[1]["height"]-grab_y
             finish_drag()
-            wait(lambda:real_window(c)["workspace"]["id"]==91+mons[1]["id"],"floating cross-monitor drop")
+            wait(lambda:real_window(c)["workspace"]["id"]==91+mons[1]["slot"],"floating cross-monitor drop")
             actual=real_window(c)
             assert abs(actual["at"][0]-expected_x)<=2 and abs(actual["at"][1]-expected_y)<=2,(actual["at"],expected_x,expected_y,grab_x,grab_y)
             assert actual["floating"] and actual["monitor"]==mons[1]["id"]
@@ -452,7 +453,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         # grab point within its clipped thumbnail on the next edge drop.
         floating_drop(0.02,0.02)
         before_cancel=real_window(c)["workspace"]
-        begin_drag(c);move_drag(cell_point(str(251+mons[0]["id"])))
+        begin_drag(c);move_drag(cell_point(str(251+mons[0]["slot"])))
         screenshot("ui-cancel-before")
         keypress("Escape")
         assert ui_state()["ui"]["open"] and not ui_state()["ui"]["dragging"]
@@ -461,7 +462,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         screenshot("ui-cancel-after")
         keypress("Escape");wait(lambda:ui_state().get("open") is False,"second Esc closes")
         # Closing the source during a held drag cannot leave a stale window pointer.
-        open_ui();begin_drag(a);move_drag(cell_point(str(251+mons[1]["id"])))
+        open_ui();begin_drag(a);move_drag(cell_point(str(251+mons[1]["slot"])))
         lua(f'hl.dsp.window.close({{window="address:{a}"}})')
         wait(lambda:all(w["address"]!=a for w in mapped()) and not ui_state()["ui"]["dragging"],"closed drag source")
         pointer_command("up")
@@ -511,14 +512,14 @@ with (artifacts / "compositor.log").open("w+") as log:
         screenshot("ui-stack-target")
         finish_drag()
         wait(lambda:set(real_window(sa)["grouped"])=={sa,sb},"cross-cell stack")
-        assert not next(cell for cell in ui_state()["ui"]["cells"] if cell["key"]==str(271+mons[0]["id"]))["occupied"],"empty source grid cell updates immediately"
+        assert not next(cell for cell in ui_state()["ui"]["cells"] if cell["key"]==str(271+mons[0]["slot"]))["occupied"],"empty source grid cell updates immediately"
         groups=json.loads(ctl("hypr2d","overview","invariants"))["groups"]
         assert next(g for g in groups if sa in g["members"])["current"]==sa
         begin_drag(sc);r=drawn_window(sa)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2));finish_drag()
         wait(lambda:set(real_window(sc)["grouped"])=={sa,sb,sc},"stack onto existing group")
         assert next(g for g in json.loads(ctl("hypr2d","overview","invariants"))["groups"] if sc in g["members"])["current"]==sc
         # Moving a member out leaves the rest of its former group behind.
-        begin_drag(sc);move_drag(cell_point(str(291+mons[0]["id"])));finish_drag()
+        begin_drag(sc);move_drag(cell_point(str(291+mons[0]["slot"])));finish_drag()
         wait(lambda:not real_window(sc)["grouped"] and set(real_window(sa)["grouped"])=={sa,sb},"detach only dragged member")
         # A dedicated special loses its last tile as soon as the drop completes.
         lua('hl.dsp.workspace.toggle_special("drop-last")')
@@ -527,9 +528,9 @@ with (artifacts / "compositor.log").open("w+") as log:
         wait(lambda:any(cell["key"]=="special:drop-last" for cell in ui_state()["ui"]["cells"]) and ui_state()["pending"]==0,"last-window special")
         begin_drag(sc);r=drawn_window(sd)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2));finish_drag()
         wait(lambda:set(real_window(sc)["grouped"])=={sc,sd} and real_window(sc)["workspace"]["name"]=="special:drop-last","stack into special")
-        begin_drag(sc);move_drag(cell_point(str(291+mons[0]["id"])));finish_drag()
-        wait(lambda:not real_window(sc)["grouped"] and real_window(sc)["workspace"]["id"]==291+mons[0]["id"],"detach group member out of special")
-        begin_drag(sd);move_drag(cell_point(str(311+mons[0]["id"])));finish_drag()
+        begin_drag(sc);move_drag(cell_point(str(291+mons[0]["slot"])));finish_drag()
+        wait(lambda:not real_window(sc)["grouped"] and real_window(sc)["workspace"]["id"]==291+mons[0]["slot"],"detach group member out of special")
+        begin_drag(sd);move_drag(cell_point(str(311+mons[0]["slot"])));finish_drag()
         wait(lambda:all(cell["key"]!="special:drop-last" for cell in ui_state()["ui"]["cells"]),"empty special tile removed immediately")
         screenshot("ui-stack-special-removed")
         # Native active-group locks are checked before any detach/move.
@@ -540,10 +541,10 @@ with (artifacts / "compositor.log").open("w+") as log:
         pointer_command("up")
         wait(lambda:ui_state()["ui"]["refused"]==sa,"locked-group refusal flash")
         assert json.loads(ctl("hypr2d","overview","invariants"))==locked,"refusal preserves focus, group order/members/locks"
-        assert not real_window(sc)["grouped"] and real_window(sc)["workspace"]["id"]==291+mons[0]["id"]
+        assert not real_window(sc)["grouped"] and real_window(sc)["workspace"]["id"]==291+mons[0]["slot"]
         screenshot("ui-stack-locked-refusal")
         # A locked source group cannot be detached even onto empty space.
-        begin_drag(sa);move_drag(cell_point(str(321+mons[0]["id"])))
+        begin_drag(sa);move_drag(cell_point(str(321+mons[0]["slot"])))
         pointer_command("up")
         assert json.loads(ctl("hypr2d","overview","invariants"))==locked,"locked source cannot leave its group"
         lua('hl.dsp.group.lock_active({action="unset"})')
@@ -607,7 +608,7 @@ with (artifacts / "compositor.log").open("w+") as log:
             assert not rpc("place",window=b,target={"kind":"special","name":"special:absent"})["ok"]
             placement={"kind":"cell","monitor":mons[0]["id"],"x":0,"y":7}
             assert rpc("place",window=b,target=placement)["ok"]
-            wait(lambda:real_window(b)["workspace"]["id"]==561+mons[0]["id"],"extension placement")
+            wait(lambda:real_window(b)["workspace"]["id"]==561+mons[0]["slot"],"extension placement")
             assert any(r.get("event")=="drop" and r["data"]["regions"]==["tools"] for r in callbacks),callbacks
             ok("hypr2d","goto","0","7",str(mons[0]["id"]))
             assert rpc("state")["ok"]
@@ -615,7 +616,7 @@ with (artifacts / "compositor.log").open("w+") as log:
             assert not select.select([foreign],[],[],0.1)[0],"callbacks are restricted to owned regions"
             ok("hypr2d","goto","0","6",str(mons[0]["id"]))
             ok("hypr2d","move","down","monitor",str(mons[0]["id"]))
-            assert next(m for m in monitors() if m["id"]==mons[0]["id"])["activeWorkspace"]["id"]==1+mons[0]["id"],"reserved row skipped"
+            assert next(m for m in monitors() if m["id"]==mons[0]["id"])["activeWorkspace"]["id"]==1+mons[0]["slot"],"reserved row skipped"
             assert rpc("clear",key="special")["ok"]
             reader.close();other.close()
         wait(lambda:not json.loads(ctl("hypr2d","state","-j"))["extensions"]["annotations"],"disconnect annotations cleanup")
@@ -662,7 +663,115 @@ with (artifacts / "compositor.log").open("w+") as log:
         for w in mapped():
             lua(f'hl.dsp.window.close({{window="address:{w["address"]}"}})')
         wait(lambda:not mapped(),"old fixtures close")
-        ok("output","create","wayland","eDP-1")
+        # Stable identity and parked grids: all outputs and clients are VM-owned.
+        live, dock=monitors()
+        def hot_fixture(app,monitor,x,y):
+            ok("hypr2d","goto",str(x),str(y),str(monitor["id"]))
+            process=subprocess.Popen(["foot","--config=/dev/null",f"--app-id={app}","sh","-c","sleep 600"],env=env,stdout=log,stderr=log,start_new_session=True)
+            clients.append(process)
+            wait(lambda:any(w["class"]==app for w in mapped()),"hotplug fixture")
+            return next(w["address"] for w in mapped() if w["class"]==app)
+        keeper=hot_fixture("live-keeper",live,0,0)
+        special_keeper=hot_fixture("special-keeper",live,0,0)
+        lua(f'hl.dsp.window.move({{window="address:{special_keeper}",workspace="special:parking-test",follow=false}})')
+        parked_a=hot_fixture("parked-a",dock,1,1)
+        parked_hidden=hot_fixture("parked-group-member",dock,1,1)
+        lua(f'hl.dsp.group.toggle({{window="address:{parked_a}"}})')
+        ok("eval",f'local a=hl.get_window("address:{parked_a}"); a.group:add(hl.get_window("address:{parked_hidden}"))')
+        lua(f'hl.dsp.group.active({{window="address:{parked_a}",index=1}})')
+        wait(lambda:len(real_window(parked_a)["grouped"])==2,"grouped parked fixture")
+        parked_b=hot_fixture("parked-b",dock,3,2)
+        original={a:real_window(a)["workspace"]["id"] for a in [parked_a,parked_b,parked_hidden]}
+        ok("hypr2d","goto","1","1",str(dock["id"]))
+        ok("output","remove",dock["name"])
+        wait(lambda:len(monitors())==1 and len(json.loads(ctl("hypr2d","state","-j"))["parked"])==1,"unplug parks")
+        mons=monitors()
+        assert all(real_window(a)["workspace"]["id"]==ws and real_window(a)["monitor"]==live["id"] for a,ws in original.items())
+        state=json.loads(ctl("hypr2d","state","-j"))
+        assert state["monitors"][0]["focused"] and state["monitors"][0]["workspace"]==1+live["slot"],state
+        assert state["parked"][0]["windows"]==3 and state["parked"][0]["slot"]==dock["slot"],state
+        group=next(g for g in json.loads(ctl("hypr2d","overview","invariants"))["groups"] if parked_a in g["members"])
+        assert group["current"]==parked_a and set(group["members"])=={parked_a,parked_hidden},"unplug preserves group membership/current"
+        minimap=subprocess.Popen([cli,"--instance",instance.name,"waybar"],env=env,stdout=subprocess.PIPE,stderr=log,start_new_session=True)
+        clients.append(minimap)
+        assert select.select([minimap.stdout],[],[],10)[0],"parked minimap line"
+        record=json.loads(minimap.stdout.readline())
+        minimap.terminate();minimap.wait(timeout=10)
+        assert "Parked" in record["tooltip"] and dock["name"] in record["tooltip"],record
+        ok("hypr2d","move","right")
+        assert monitors()[0]["activeWorkspace"]["id"]==11+live["slot"],"live moves never visit parked residue"
+        open_ui()
+        assert len(ui_state()["ui"]["cards"])==1
+        assert all(c["monitor"]==live["id"] or c["monitor"]>=0x80000000 for c in ui_state()["ui"]["cells"])
+        screenshot("ui-parked-card")
+        ptr=subprocess.Popen(["hypr2d-test-pointer"],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,start_new_session=True)
+        clients.append(ptr);pointer_ack(b"ready")
+        card=ui_state()["ui"]["cards"][0]["rect"]
+        lua(f'hl.dsp.cursor.move({{x={live["x"]+card[0]+card[2]/2},y={live["y"]+card[1]+card[3]/2}}})')
+        pointer_command("down");pointer_command("up")
+        wait(lambda:ui_state()["ui"]["expanded_parked"] is not None and ui_state()["pending"]==0,"click expands parked")
+        assert any("disconnected" in l["text"] for l in ui_state()["ui"]["labels"])
+        screenshot("ui-parked-expanded")
+        keypress("Escape");assert ui_state()["ui"]["expanded_parked"] is None
+        # Tab order reaches the card after the live grid and special strip.
+        def selected_cell():return next(c for c in ui_state()["ui"]["cells"] if c["selected"])
+        assert selected_cell()["monitor"]==live["id"],"live grid remains keyboard origin after card click/Esc"
+        keypress("Tab");assert selected_cell()["key"].startswith("special:"),"Tab visits specials after live grids"
+        keypress("Tab");assert selected_cell()["monitor"]>=0x80000000,"Tab visits parked cards after specials"
+        keypress("Return")
+        wait(lambda:ui_state()["ui"]["expanded_parked"] is not None,"keyboard expands parked")
+        begin_drag(parked_a)
+        tab=next(l["rect"] for l in ui_state()["ui"]["labels"] if l["text"]=="live")
+        move_drag((tab[0]+tab[2]/2,tab[1]+tab[3]/2))
+        wait(lambda:ui_state()["ui"]["expanded_parked"] is None,"drag over live tab")
+        move_drag(cell_point(str(21+live["slot"])));finish_drag()
+        assert real_window(parked_a)["workspace"]["id"]==21+live["slot"]
+        assert monitors()[0]["activeWorkspace"]["id"]==11+live["slot"],"group detach must not leave the parked workspace active"
+        # Restore it through the parked card, then exercise direct card-to-live.
+        lua(f'hl.dsp.window.move({{window="address:{parked_a}",workspace={original[parked_a]},follow=false}})')
+        wait(lambda:any(w["id"]==parked_a for w in ui_state()["ui"]["windows"]) and ui_state()["pending"]==0,"return fixture to parked card")
+        ok("hypr2d","overview","parked")
+        wait(lambda:ui_state()["ui"]["expanded_parked"] is not None and ui_state()["pending"]==0,"expanded parked for special drop")
+        begin_drag(parked_a);move_drag(cell_point("special:parking-test",.01,.01));finish_drag()
+        assert real_window(parked_a)["workspace"]["name"]=="special:parking-test"
+        lua(f'hl.dsp.window.move({{window="address:{parked_a}",workspace={original[parked_a]},follow=false}})')
+        wait(lambda:any(w["id"]==parked_a and w["workspace"]==str(original[parked_a]) for w in ui_state()["ui"]["windows"]) and ui_state()["pending"]==0,"return parked member from special")
+        keypress("Escape");assert ui_state()["ui"]["expanded_parked"] is None
+        begin_drag(parked_b);move_drag(cell_point(str(81+live["slot"])));finish_drag()
+        assert real_window(parked_b)["workspace"]["id"]==81+live["slot"]
+        lua(f'hl.dsp.window.move({{window="address:{parked_b}",workspace={original[parked_b]},follow=false}})')
+        wait(lambda:ui_state()["pending"]==0,"parked restore settles")
+        keypress("Escape");wait(lambda:ui_state().get("open") is False,"parked UI closes")
+        ptr.stdin.write(b"quit\n");ptr.stdin.flush();ptr.wait(timeout=10)
+        ok("output","create","headless",dock["name"])
+        wait(lambda:len(monitors())==2 and any(m["name"]==dock["name"] for m in monitors()),"replug output")
+        restored=next(m for m in monitors() if m["name"]==dock["name"])
+        wait(lambda:all(real_window(a)["monitor"]==restored["id"] for a in original),"exact workspace reattach")
+        assert restored["slot"]==dock["slot"] and all(real_window(a)["workspace"]["id"]==ws for a,ws in original.items())
+        assert restored["activeWorkspace"]["id"]==91+dock["slot"],restored
+        assert not json.loads(ctl("hypr2d","state","-j"))["parked"]
+        # Recreate the first output second: slot numbering must not follow IDs/order.
+        ok("output","remove",live["name"])
+        wait(lambda:len(monitors())==1,"remove first output")
+        ok("output","create","headless",live["name"])
+        wait(lambda:len(monitors())==2,"reversed plug order")
+        assert next(m for m in monitors() if m["name"]==live["name"])["slot"]==live["slot"]
+        # Simulate a renamed dock port with the same physical serial.
+        ok("hypr2d","monitor-test","identity",dock["name"],"Vendor","Model","serial-a")
+        ok("output","remove",dock["name"])
+        wait(lambda:len(monitors())==1,"dock detached before rename")
+        ok("hypr2d","monitor-test","identity","DOCK-RENAMED","Vendor","Model","serial-a")
+        ok("output","create","headless","DOCK-RENAMED")
+        wait(lambda:any(m["name"]=="DOCK-RENAMED" for m in monitors()),"renamed dock output")
+        renamed=next(m for m in monitors() if m["name"]=="DOCK-RENAMED")
+        wait(lambda:all(real_window(a)["monitor"]==renamed["id"] for a in original),"serial fallback exact restore")
+        assert renamed["slot"]==dock["slot"] and all(real_window(a)["workspace"]["id"]==ws for a,ws in original.items())
+        assert json.loads(ctl("hypr2d","doctor"))["ok"]
+        for a in [keeper,special_keeper,parked_a,parked_b,parked_hidden]:lua(f'hl.dsp.window.close({{window="address:{a}"}})')
+        wait(lambda:not mapped(),"hotplug fixture cleanup")
+        mons=monitors()
+        print("PASS hotplug: parked focus/cells/minimap, cards/expand/drag, exact replug, reversed order, serial rename",flush=True)
+        ok("output","create","headless","eDP-1")
         wait(lambda:any(m["name"]=="eDP-1" for m in monitors()),"named laptop output")
         ok("eval",'hl.monitor({output="eDP-1",mode="2256x1504@60",position="8934x6682",scale=1})')
         wait(lambda:any(m["name"]=="eDP-1" and m["enabled"] for m in json.loads(ctl("hypr2d","overview","invariants"))["outputs"]),"new laptop output enabled before removing old outputs")

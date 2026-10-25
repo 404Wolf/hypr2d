@@ -14,6 +14,7 @@ let
   enabled = evaluate {
     enable = true;
     grids = { "WAYLAND-1" = { rows = 9; wrap = false; }; "HEADLESS-1" = {}; };
+    monitorSlots = { "eDP-1" = 0; "HEADLESS-1" = 2; };
     overview.bind = true;
     theme.fontSize = 18;
     theme.rounding = 2;
@@ -21,6 +22,8 @@ let
     waybar = { enable = true; monitor = "WAYLAND-1"; radiusX = 2; radiusY = 1; placement = "start"; };
   };
   disabled = evaluate {};
+  invalidSlots = evaluate {enable=true;monitorSlots={ "DP-1"=0; };};
+  duplicateSlots = evaluate {enable=true;monitorSlots={ "DP-1"=2; "DP-2"=2; };};
   invalid = evaluate { enable = true; gestures.axisLock = 1000; };
   colored = (evaluate { enable = true; overview.gap = 4; waybar = { enable = true; colors = {
     current = "#9CBEFF"; occupied = "#A8A8A8"; empty = "#123456"; urgent = "#654321";
@@ -48,6 +51,9 @@ let
     assert !(builtins.tryEval invalidColor.config.programs.hypr2d.waybar.colors.current).success;
     assert !(disabled.config.xdg.configFile ? "hypr/hypr2d.json");
     assert !(builtins.tryEval invalid.activationPackage.drvPath).success;
+    assert !(builtins.tryEval invalidSlots.activationPackage.drvPath).success;
+    assert !(builtins.tryEval duplicateSlots.activationPackage.drvPath).success;
+    assert (builtins.fromJSON c.xdg.configFile."hypr/hypr2d.json".text).monitorSlots."HEADLESS-1" == 2;
     true;
 in {
   inherit lua;

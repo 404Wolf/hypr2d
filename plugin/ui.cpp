@@ -39,6 +39,11 @@ static std::optional<rust::Box<hypr2d::Overview>> ui;
 static std::map<std::string, SP<Render::IFramebuffer>> cache;
 static std::map<std::string, SP<Render::ITexture>> textCache;
 static std::vector<PHLWORKSPACE> heldSpecials;
+static std::map<uint32_t, uint32_t> backingMonitors;
+static uint32_t backing(uint32_t id) {
+    auto found = backingMonitors.find(id);
+    return found == backingMonitors.end() ? id : found->second;
+}
 static std::vector<CHyprSignalListener> listeners, surfaceListeners;
 static std::deque<std::string> dirty;
 static bool capturing = false, rebuild = false;
@@ -59,10 +64,11 @@ static void damage() {
 }
 bool active() { return ui.has_value(); }
 static std::string key(PHLWORKSPACE w) { return w->numberedID() ? std::to_string(*w->numberedID()) : w->addressableName(); }
-static std::vector<hypr2d::UIWindow> windows() {
+static std::vector<hypr2d::UIWindow> windows(bool includeHidden = false) {
     std::vector<hypr2d::UIWindow> result;
     for (auto &w : Desktop::windowState()->windows()) {
-        if (!w->mapped() || w->isHidden() || w->presentation().alphaTotal() == 0.f || !w->m_workspace || !w->m_monitor)
+        if (!w->mapped() || (!includeHidden && (w->isHidden() || w->presentation().alphaTotal() == 0.f)) || !w->m_workspace ||
+            !w->m_monitor)
             continue;
         auto pos = w->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
         auto size = w->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
@@ -110,7 +116,8 @@ static void build() {
     auto previousSpecials = std::move(heldSpecials);
     heldSpecials.clear();
     for (auto &m : State::monitorState()->monitors())
-        outputs.push_back({static_cast<uint32_t>(m->m_id), m->m_name, m->m_position.x, m->m_position.y, m->m_size.x, m->m_size.y,
+        outputs.push_back({static_cast<uint32_t>(m->m_id), core->monitor_slot(m->m_name), false, static_cast<uint32_t>(m->m_id), m->m_name,
+                           m->m_position.x, m->m_position.y, m->m_size.x, m->m_size.y,
                            m->m_activeWorkspace && m->m_activeWorkspace->numberedID() ? *m->m_activeWorkspace->numberedID() : 0,
                            m == Desktop::focusState()->monitor()});
     for (auto &w : State::Workspace::state()->workspaces())
@@ -132,6 +139,13 @@ static void build() {
     if (auto metrics = text("Special workspaces", static_cast<int>(style.font_size), 1000, style.label))
         core->ui_header_width("Special workspaces", metrics->m_size.x);
     auto wins = windows();
+    auto allWindows = windows(true);
+    auto parked = core->parked_panels({outputs.data(), outputs.size()}, {allWindows.data(), allWindows.size()});
+    for (auto &p : parked)
+        outputs.push_back(std::move(p));
+    backingMonitors.clear();
+    for (auto &o : outputs)
+        backingMonitors[o.id] = o.backing;
     auto replacement =
         core->overview_new({outputs.data(), outputs.size()}, {specials.data(), specials.size()}, {wins.data(), wins.size()}, now());
     if (ui) {
@@ -183,7 +197,7 @@ static void activate(const std::string &target) {
         if (std::string(cell.key) == target) {
             PHLMONITOR mon;
             for (auto &m : State::monitorState()->monitors())
-                if (m->m_id == cell.monitor)
+                if (m->m_id == backing(cell.monitor))
                     mon = m;
             if (!mon)
                 return;
@@ -282,7 +296,9 @@ class Pass final : public IPassElement {
                 items.push_back(
                     makeUnique<CTexPassElement>(CTexPassElement::SRenderData{.tex = it->second->getTexture(),
                                                                              .box = box,
-                                                                             .a = float(frame.alpha * (c.occupied ? 1.0 : 0.35)),
+                                                                             .a = float(frame.alpha * (c.dimmed     ? 0.55
+                                                                                                       : c.occupied ? 1.0
+                                                                                                                    : 0.35)),
                                                                              .round = static_cast<int>(style.gap ? style.rounding : 0)}));
             // One physical pixel, drawn inside the cell: zero-gap tiles share
             // edges without the old expanded two-pixel halos.
@@ -367,6 +383,15 @@ static void applyDrop(const hypr2d::UIDrop &drop) {
             return;
         }
     }
+    // Public group detach/active dispatchers can focus another workspace. Keep
+    // original active spaces alive while the Lua transaction restores them.
+    std::vector<PHLWORKSPACE> activeSpaces;
+    for (auto &m : State::monitorState()->monitors()) {
+        if (m->m_activeWorkspace)
+            activeSpaces.push_back(m->m_activeWorkspace);
+        if (m->m_activeSpecialWorkspace)
+            activeSpaces.push_back(m->m_activeSpecialWorkspace);
+    }
     auto focus = Desktop::focusState()->monitor();
     const auto savedPointer = Pointer::mgr()->position();
     Hyprutils::Utils::CScopeGuard restore([&] {
@@ -384,14 +409,17 @@ static void applyDrop(const hypr2d::UIDrop &drop) {
     });
     PHLMONITOR mon;
     for (auto &m : State::monitorState()->monitors())
-        if (m->m_id == drop.monitor)
+        if (m->m_id == backing(drop.monitor))
             mon = m;
     if (!mon)
         return;
     auto lua = dynamicPointerCast<Config::Lua::CConfigManager>(WP<Config::IConfigManager>(Config::mgr()));
     if (!lua)
         return;
-    const auto script = core ? hypr2d::drop_script(drop, source, mon->m_position.x + drop.x, mon->m_position.y + drop.y) : rust::String{};
+    auto nativeDrop = drop;
+    nativeDrop.monitor = static_cast<uint32_t>(mon->m_id);
+    const auto script =
+        core ? hypr2d::drop_script(nativeDrop, source, mon->m_position.x + drop.x, mon->m_position.y + drop.y) : rust::String{};
     if (auto error = lua->eval(std::string(script))) {
         (*ui)->overview_refuse(drop.window, now());
         LOG(Log::ERR, "hypr2d drop dispatcher: {}", *error);
@@ -511,7 +539,7 @@ void init(hypr2d::Core *c) {
                     }
                     PHLMONITOR mon;
                     for (auto &m : State::monitorState()->monitors())
-                        if (m->m_id == cell.monitor)
+                        if (m->m_id == backing(cell.monitor))
                             mon = m;
                     if (!mon)
                         break;
@@ -638,6 +666,7 @@ void init(hypr2d::Core *c) {
         if (ui)
             release();
     }));
+    listeners.push_back(e.monitor.added.listen([changed](PHLMONITOR) { changed(); }));
     listeners.push_back(e.monitor.layoutChanged.listen([changed] { changed(); }));
     listeners.push_back(e.workspace.active.listen([changed](PHLWORKSPACE) { changed(); }));
     listeners.push_back(e.workspace.specialActive.listen([changed](PHLWORKSPACE, PHLMONITOR) { changed(); }));
@@ -761,9 +790,14 @@ std::string command(const std::string &input) {
         damage();
         return "ok";
     }
-    if (input != "overview" && input != "overview open")
+    if (input != "overview" && input != "overview open" && input != "overview parked")
         return "error: expected overview [open|close|state]";
     if (ui) {
+        if (input == "overview parked") {
+            (*ui)->overview_parked();
+            damage();
+            return "ok";
+        }
         if (input == "overview open")
             return "ok";
         (*ui)->overview_close(now());
@@ -778,6 +812,8 @@ std::string command(const std::string &input) {
     captures = 0;
     captureMs = 0;
     build();
+    if (input == "overview parked")
+        (*ui)->overview_parked();
     Pointer::Cursor::overrideController->setOverride("left_ptr", Pointer::Cursor::CURSOR_OVERRIDE_SPECIAL_ACTION);
     damage();
     IPC::Socket2::sock()->postEvent({"hypr2d", "overview>>open"});

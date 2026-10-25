@@ -5,7 +5,7 @@ pub(super) struct Drag {
     window: Window,
     origin: (f64, f64),
     grab: (f64, f64),
-    active: bool,
+    pub(super) active: bool,
 }
 impl Overview {
     fn output_size(&self, monitor: u32) -> Option<(f64, f64)> {
@@ -99,7 +99,18 @@ impl Overview {
                 return;
             }
             self.cancelled_release = false;
+            if !self.parked.is_empty() && self.live_tab.contains(self.pointer.0, self.pointer.1) {
+                self.expanded = None;
+                self.reflow();
+                return;
+            }
+            if !self.parked.is_empty() && self.parked_tab.contains(self.pointer.0, self.pointer.1) {
+                self.expanded = self.parked.iter().next().copied();
+                self.reflow();
+                return;
+            }
             self.pressed = self.hover;
+            self.pressed_card = self.card_at();
             self.drag = self.hit_window(None).cloned().and_then(|w| {
                 let c = self.cells.get(self.hover?)?;
                 let (size_x, size_y) = self.output_size(c.monitor)?;
@@ -152,11 +163,22 @@ impl Overview {
                     activate: String::new(),
                 };
             }
+            if self
+                .pressed_card
+                .take()
+                .is_some_and(|g| self.card_at() == Some(g))
+            {
+                if let Some(g) = self.card_at() {
+                    self.expanded = Some(g);
+                    self.reflow();
+                }
+                return ffi::UIDrop::default();
+            }
             if self.hover == pressed {
                 if let Some(i) = self.hover {
                     self.selected = i;
                     return ffi::UIDrop {
-                        activate: self.cells[i].key.clone(),
+                        activate: self.activate_selected(),
                         ..Default::default()
                     };
                 }
@@ -252,6 +274,9 @@ mod tests {
     fn output(id: u32) -> ffi::UIOutput {
         ffi::UIOutput {
             id,
+            slot: id,
+            parked: false,
+            backing: id,
             name: id.to_string(),
             x: 1280.0 * id as f64,
             y: 0.0,

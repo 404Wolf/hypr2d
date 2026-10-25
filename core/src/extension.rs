@@ -82,9 +82,7 @@ impl Core {
                     .find(|m| m.id == *monitor)
                     .ok_or("unknown monitor")?;
                 Ok((
-                    self.grid(m)
-                        .id(Cell { x: *x, y: *y }, *monitor)?
-                        .to_string(),
+                    self.grid(m).id(Cell { x: *x, y: *y }, m.slot)?.to_string(),
                     *monitor,
                 ))
             }
@@ -130,6 +128,7 @@ impl Core {
     pub fn extension_drain(&mut self, ms: &[ffi::Monitor]) -> ffi::ExtensionBatch {
         guarded(|| {
             self.extension_grids = ms.iter().map(|m| (m.id, self.grid(m))).collect();
+            self.extension_slots = ms.iter().map(|m| (m.id, m.slot)).collect();
             let incoming = self
                 .extensions
                 .server
@@ -367,8 +366,14 @@ impl Core {
                                 stride: self.stride,
                                 ..g
                             };
-                            g.cell(id, r.monitor)
-                                .is_some_and(|c| (r.row..r.row + r.rows).contains(&c.y))
+                            g.cell(
+                                id,
+                                self.extension_slots
+                                    .get(&r.monitor)
+                                    .copied()
+                                    .unwrap_or(r.monitor),
+                            )
+                            .is_some_and(|c| (r.row..r.row + r.rows).contains(&c.y))
                         })
                     })
                     .map(|(k, _)| k.clone())

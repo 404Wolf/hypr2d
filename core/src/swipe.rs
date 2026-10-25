@@ -53,6 +53,7 @@ struct Spring {
 #[derive(Debug)]
 pub struct Swipe {
     pub monitor: u32,
+    pub slot: u32,
     pub origin: u32,
     grid: Grid,
     cell: Cell,
@@ -82,6 +83,7 @@ impl Swipe {
         }
         Some(Self {
             monitor,
+            slot: monitor,
             origin,
             grid,
             cell: grid.cell(origin, monitor)?,
@@ -125,7 +127,7 @@ impl Swipe {
     }
     pub fn neighbor_id(&self) -> u32 {
         self.neighbor()
-            .and_then(|c| self.grid.id(c, self.monitor).ok())
+            .and_then(|c| self.grid.id(c, self.slot).ok())
             .unwrap_or(0)
     }
     pub fn update(&mut self, delta: [f64; 2], now: f64) {
@@ -204,7 +206,7 @@ impl Swipe {
             self.finished = true;
         }
         if commit {
-            neighbor.and_then(|c| self.grid.id(c, self.monitor).ok().map(|id| (id, c)))
+            neighbor.and_then(|c| self.grid.id(c, self.slot).ok().map(|id| (id, c)))
         } else {
             None
         }

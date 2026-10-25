@@ -81,6 +81,9 @@ impl Grid {
             .ok_or_else(|| "workspace id overflow".into())
     }
     pub fn cell(self, id: u32, monitor: u32) -> Option<Cell> {
+        if monitor >= self.stride {
+            return None;
+        }
         let n = id.checked_sub(monitor.checked_add(1)?)?;
         if self.stride == 0 || self.columns == 0 || n % self.stride != 0 {
             return None;
@@ -153,5 +156,16 @@ mod tests {
         g.wrap = false;
         assert!(g.step(Cell { x: 0, y: 0 }, Direction::Left).is_none());
         assert!(g.validate(12).is_err());
+    }
+}
+
+#[cfg(test)]
+mod slot_capacity_tests {
+    use super::*;
+    #[test]
+    fn slots_outside_stride_cannot_alias_an_existing_grid() {
+        let grid = Grid::default();
+        assert!(grid.cell(13, 12).is_none());
+        assert!(grid.id(Cell { x: 0, y: 0 }, 12).is_err());
     }
 }
