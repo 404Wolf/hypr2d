@@ -318,6 +318,9 @@ static PHLWINDOW findWindow(const std::string &id) {
     return nullptr;
 }
 static void applyDrop(const hypr2d::UIDrop &drop) {
+    // Temporarily refuse window-target drops while native swap corruption is investigated.
+    if (!drop.swap.empty())
+        return;
     if (!drop.activate.empty()) {
         activate(std::string(drop.activate));
         return;
