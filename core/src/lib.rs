@@ -11,6 +11,7 @@ use overview::probe_report;
 use ui::Overview;
 mod pinch;
 pub mod swipe;
+mod visual;
 use grid::{Cell, Direction, Grid};
 use serde_json::json;
 use std::collections::HashMap;
@@ -176,6 +177,9 @@ mod ffi {
         title: String,
     }
     struct UIStyle {
+        accent: u32,
+        background_darken: f64,
+        memory_budget_mib: u32,
         background: u32,
         cell: u32,
         border: u32,
@@ -242,7 +246,14 @@ mod ffi {
         floating: bool,
         target: bool,
     }
+    struct UIBackdropPanel {
+        monitor: u32,
+        rect: UIRect,
+        columns: u32,
+        rows: u32,
+    }
     struct UIFrame {
+        backdrops: Vec<UIBackdropPanel>,
         ghost: UIGhost,
         windows: Vec<UIWindowView>,
         target: String,
@@ -277,7 +288,11 @@ mod ffi {
             windows: &[UIWindow],
         ) -> Vec<UIOutput>;
         fn ui_style(self: &Core) -> UIStyle;
+        fn backdrop_size(self: &Core, width: f64, height: f64, total_area: f64) -> UIRect;
+        fn overview_hover_clock(self: &mut Overview, now: f64);
         fn overview_modifiers(self: &mut Overview, shift: bool);
+        fn overview_interactive(self: &Overview, now: f64) -> bool;
+        fn overview_presented(self: &mut Overview, now: f64);
         fn overview_refuse(self: &mut Overview, window: &str, now: f64);
         fn overview_press(self: &mut Overview, width: f64, height: f64, x: f64, y: f64);
         fn overview_release(self: &mut Overview, width: f64, height: f64, x: f64, y: f64)
@@ -350,6 +365,7 @@ mod ffi {
         fn pinch_event(self: &mut Core, phase: u8, fingers: u32, scale: f64, open: bool) -> u8;
         fn pinch_active(self: &Core) -> bool;
         fn swipe(self: &mut Core, monitors: &[Monitor], input: SwipeInput) -> SwipeFrame;
+        fn texture_bytes(width: u32, height: u32, mipmaps: bool) -> u64;
         fn spike_round_trip(value: u32) -> u32;
         fn command(self: &mut Core, monitors: &[Monitor], windows: &[Window], input: &str)
             -> Reply;
@@ -396,6 +412,19 @@ impl Default for Core {
             gesture: None,
         }
     }
+}
+fn texture_bytes(mut width: u32, mut height: u32, mipmaps: bool) -> u64 {
+    guarded(|| {
+        let mut bytes = 0;
+        loop {
+            bytes += u64::from(width) * u64::from(height) * 4;
+            if !mipmaps || width <= 1 && height <= 1 {
+                return bytes;
+            }
+            width = (width / 2).max(1);
+            height = (height / 2).max(1);
+        }
+    })
 }
 fn guarded<T: Default>(operation: impl FnOnce() -> T) -> T {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
@@ -810,11 +839,28 @@ impl Core {
             }
         })
     }
+    fn backdrop_size(&self, width: f64, height: f64, total_area: f64) -> ffi::UIRect {
+        guarded(|| {
+            let factor = visual::budget_scale(
+                total_area,
+                self.theme.memory_budget_mib as f64 * 1024. * 1024. * 0.25,
+            );
+            ffi::UIRect {
+                x: 0.,
+                y: 0.,
+                width: (width * factor).floor().max(1.),
+                height: (height * factor).floor().max(1.),
+            }
+        })
+    }
     fn ui_style(&self) -> ffi::UIStyle {
         guarded(|| {
             let t = &self.theme;
             let c = |s: &str| u32::from_str_radix(&s[1..], 16).unwrap_or(0);
             ffi::UIStyle {
+                accent: c(&t.accent),
+                background_darken: t.background_darken,
+                memory_budget_mib: t.memory_budget_mib,
                 background: c(&t.background),
                 cell: c(&t.cell),
                 border: c(&t.border),
@@ -833,6 +879,9 @@ impl Core {
 impl Default for ffi::UIStyle {
     fn default() -> Self {
         Self {
+            accent: 0x9CBEFF,
+            background_darken: 0.35,
+            memory_budget_mib: 128,
             background: 0,
             cell: 0x303030,
             border: 0x353535,

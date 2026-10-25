@@ -9,6 +9,10 @@ let
   theme = {
     inherit (cfg.theme) background cell border hover current target label font rounding;
     font_size = cfg.theme.fontSize;
+    accent = cfg.overview.accent;
+    supersample = cfg.overview.supersample;
+    memory_budget_mib = cfg.overview.memoryBudgetMiB;
+    background_darken = cfg.overview.backgroundDarken;
     fit = cfg.overview.fit;
     gap = cfg.overview.gap;
   };
@@ -70,6 +74,10 @@ in {
       }; });
     };
     overview = {
+      accent = colour "#9CBEFF";
+      supersample = mkOption { type = types.number; default = 2.0; description = "Workspace capture resolution multiplier (1..4), bounded by memoryBudgetMiB."; };
+      memoryBudgetMiB = mkOption { type = types.ints.between 16 512; default = 128; description = "RGBA8/mipmap capture payload cap; 25% reserved for shared monitor backdrops and 75% for visible occupied cells."; };
+      backgroundDarken = mkOption { type = types.number; default = 0.35; description = "Wallpaper backdrop darkening (0..1). Empty desktops use a dimmed copy of the same background layers."; };
       gap = mkOption { type = types.ints.between 0 32; default = 0; description = "Spacing between overview cells, including specials (before layout scaling)."; };
       fit = mkOption { type = types.bool; default = true; description = "Show used bounds plus a one-cell margin; a toggles the full grid."; };
       bind = mkOption { type = types.bool; default = false; description = "Replace SUPER+TAB with the overview bind."; };
@@ -121,6 +129,7 @@ in {
   };
   config = mkIf cfg.enable {
     assertions = [
+      { assertion = cfg.overview.supersample >= 1 && cfg.overview.supersample <= 4 && cfg.overview.backgroundDarken >= 0 && cfg.overview.backgroundDarken <= 1; message = "hypr2d overview.supersample must be 1..4 and backgroundDarken 0..1."; }
       { assertion = cfg.pinch.cancelScale > 0 && cfg.pinch.cancelScale < 1; message = "hypr2d pinch.cancelScale must be between 0 and 1 exclusive."; }
       { assertion = cfg.gestures.sensitivity > 0 && cfg.gestures.diagonalWidth > 0 && cfg.gestures.diagonalWidth < 22.5 && cfg.gestures.hysteresis >= 0 && cfg.gestures.hysteresis < cfg.gestures.diagonalWidth && cfg.gestures.hysteresisDistance > 0 && cfg.gestures.projectionDecel > 0 && cfg.gestures.springStiffness >= 1 && cfg.gestures.springStiffness <= 10000; message = "hypr2d requires positive sensitivity, diagonalWidth 0..22.5, hysteresis below diagonalWidth, positive hysteresisDistance/projectionDecel and springStiffness 1..10000."; }
       { assertion = lib.all (slot: slot < cfg.grid.stride) (builtins.attrValues cfg.monitorSlots); message = "hypr2d monitor slots must be less than the shared stride."; }

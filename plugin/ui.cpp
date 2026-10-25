@@ -8,6 +8,7 @@
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/state/WindowState.hpp>
 #include <hyprland/src/desktop/view/Group.hpp>
+#include <hyprland/src/desktop/view/LayerSurface.hpp>
 #include <hyprland/src/desktop/view/window/Window.hpp>
 #include <hyprland/src/desktop/view/window/WindowGroupMembership.hpp>
 #include <hyprland/src/desktop/view/window/WindowMetadata.hpp>
@@ -50,6 +51,13 @@ static std::deque<std::string> dirty;
 static bool capturing = false, rebuild = false;
 static bool deletedObjects = true;
 static Vector2D pointer;
+static std::map<uint32_t, SP<Render::IFramebuffer>> backdrops;
+static std::set<uint32_t> dirtyBackdrops;
+static bool profileCaptures = false;
+static double maxCaptureMs = 0, maxRefreshMs = 0, maxFrameMs = 0, maxFrameGapMs = 0, openedAt = 0;
+static std::map<uint32_t, double> frameStarts, previousFrames;
+static PHLMONITOR frameOutput;
+static uint32_t backdropCaptures = 0;
 static uint32_t captures = 0;
 static double captureMs = 0;
 static std::set<uint32_t> swallowedKeys;
@@ -106,6 +114,18 @@ static void watchSurfaces() {
             },
             nullptr);
     }
+    for (auto &m : State::monitorState()->monitors())
+        for (int layer = 0; layer < 2; ++layer)
+            for (auto &ref : m->m_layerSurfaceLayers[layer])
+                if (auto ls = ref.lock(); ls && ls->mapped() && ls->wlSurface() && ls->wlSurface()->resource()) {
+                    const auto id = uint32_t(m->m_id);
+                    surfaceListeners.push_back(ls->wlSurface()->resource()->m_events.commit.listen([id] {
+                        if (ui && !capturing) {
+                            dirtyBackdrops.insert(id);
+                            damage();
+                        }
+                    }));
+                }
 }
 static SP<Render::ITexture> text(const std::string &, int, int, uint32_t);
 static void build() {
@@ -158,6 +178,9 @@ static void build() {
         for (auto &w : wins)
             mark(std::string(w.workspace));
     }
+    for (auto &m : State::monitorState()->monitors())
+        if (!backdrops.contains(m->m_id))
+            dirtyBackdrops.insert(m->m_id);
     watchSurfaces();
     rebuild = false;
 }
@@ -176,6 +199,15 @@ static void release() {
     }
     for (auto &[key, tex] : textCache)
         textures.push_back(tex->m_texID);
+    for (auto &[id, fb] : backdrops) {
+        textures.push_back(fb->getTexture()->m_texID);
+        buffers.push_back(dynamicPointerCast<Render::GL::CGLFramebuffer>(fb)->getFBID());
+    }
+    backdrops.clear();
+    dirtyBackdrops.clear();
+    frameStarts.clear();
+    previousFrames.clear();
+    frameOutput.reset();
     cache.clear();
     textCache.clear();
     deletedObjects = true;
@@ -228,7 +260,16 @@ static CHyprColor color(uint32_t rgb, double alpha) {
     return CHyprColor(((rgb >> 16) & 255) / 255.0, ((rgb >> 8) & 255) / 255.0, (rgb & 255) / 255.0, alpha);
 }
 static SP<Render::ITexture> text(const std::string &str, int fontSize, int width, uint32_t labelColor) {
-    auto key = std::format("{}:{}:{}:{}", fontSize, width, labelColor, str);
+    const auto naturalKey = std::format("{}:1000:{}:{}", fontSize, labelColor, str);
+    if (!textCache.contains(naturalKey))
+        textCache[naturalKey] =
+            g_pHyprRenderer->renderText(str, color(labelColor, 1), fontSize, false, std::string(core->ui_style().font), 1000);
+    auto natural = textCache[naturalKey];
+    // Zoom changes the label box, not its font. Reuse natural-width text rather
+    // than rasterizing/uploading another texture on every animation frame.
+    if (!natural || natural->m_size.x <= width || width >= 1000)
+        return natural;
+    const auto key = std::format("{}:{}:{}:{}", fontSize, width, labelColor, str);
     if (!textCache.contains(key))
         textCache[key] = g_pHyprRenderer->renderText(str, color(labelColor, 1), fontSize, false, std::string(core->ui_style().font), width);
     return textCache[key];
@@ -239,11 +280,12 @@ class GhostPass final : public IPassElement {
     CBox box;
     Vector2D uv0, uv1;
     float alpha;
+    bool repeat;
 
   public:
-    GhostPass(SP<Render::ITexture> tex, const hypr2d::UIGhost &ghost, float a)
+    GhostPass(SP<Render::ITexture> tex, const hypr2d::UIGhost &ghost, float a, bool tiled = false)
         : texture(tex), box{ghost.rect.x, ghost.rect.y, ghost.rect.width, ghost.rect.height}, uv0{ghost.uv.x, ghost.uv.y},
-          uv1{ghost.uv.x + ghost.uv.width, ghost.uv.y + ghost.uv.height}, alpha(a) {}
+          uv1{ghost.uv.x + ghost.uv.width, ghost.uv.y + ghost.uv.height}, alpha(a), repeat(tiled) {}
     std::vector<UP<IPassElement>> draw() override {
         auto &r = *g_pHyprRenderer;
         auto tl = r.m_renderData.primarySurfaceUVTopLeft, br = r.m_renderData.primarySurfaceUVBottomRight;
@@ -253,7 +295,13 @@ class GhostPass final : public IPassElement {
         });
         r.m_renderData.primarySurfaceUVTopLeft = uv0;
         r.m_renderData.primarySurfaceUVBottomRight = uv1;
-        r.draw(CTexPassElement::SRenderData{.tex = texture, .box = box, .a = alpha, .allowCustomUV = true}, r.m_renderData.damage);
+        r.draw(CTexPassElement::SRenderData{.tex = texture,
+                                            .box = box,
+                                            .a = alpha,
+                                            .allowCustomUV = true,
+                                            .wrapX = uint8_t(repeat ? WRAP_REPEAT : WRAP_CLAMP_TO_EDGE),
+                                            .wrapY = uint8_t(repeat ? WRAP_REPEAT : WRAP_CLAMP_TO_EDGE)},
+               r.m_renderData.damage);
         return {};
     }
     bool needsLiveBlur() override { return false; }
@@ -265,15 +313,16 @@ class Pass final : public IPassElement {
     hypr2d::UIFrame frame;
     Vector2D size;
     double outputScale;
+    uint32_t monitorID;
 
   public:
-    Pass(hypr2d::UIFrame f, Vector2D s, double scale) : frame(std::move(f)), size(s), outputScale(scale) {}
+    Pass(hypr2d::UIFrame f, Vector2D s, double scale, uint32_t id) : frame(std::move(f)), size(s), outputScale(scale), monitorID(id) {}
     std::vector<UP<IPassElement>> draw() override {
         std::vector<UP<IPassElement>> items;
         auto style = core->ui_style();
         auto rect = [&](const CBox &box, CHyprColor color) {
-            items.push_back(makeUnique<CRectPassElement>(
-                CRectPassElement::SRectData{.box = box, .color = color, .round = static_cast<int>(style.gap ? style.rounding : 0)}));
+            items.push_back(makeUnique<CRectPassElement>(CRectPassElement::SRectData{
+                .box = box, .color = color, .round = std::min<int>(style.rounding, std::max(0, int(std::min(box.w, box.h) / 2)))}));
         };
         auto label = [&](const std::string &str, const CBox &box, float opacity = 1.f, uint32_t labelColor = 0) {
             auto tex = text(str, static_cast<int>(style.font_size * outputScale), std::clamp(static_cast<int>(box.w), 1, 1000),
@@ -284,29 +333,80 @@ class Pass final : public IPassElement {
                                                  .box = {box.x, box.y, std::min(box.w, tex->m_size.x), std::min(box.h, tex->m_size.y)},
                                                  .a = float(frame.alpha * opacity)}));
         };
-        rect({0, 0, size.x, size.y}, color(style.background, frame.alpha));
+        items.push_back(makeUnique<CRectPassElement>(
+            CRectPassElement::SRectData{.box = {0, 0, size.x, size.y}, .color = color(style.background, frame.alpha)}));
+        if (auto bg = backdrops.find(monitorID); bg != backdrops.end())
+            items.push_back(
+                makeUnique<CTexPassElement>(CTexPassElement::SRenderData{.tex = bg->second->getTexture(),
+                                                                         .box = {0, 0, size.x, size.y},
+                                                                         .a = float((1.0 - style.background_darken) * frame.alpha)}));
+        // A zero-gap grid shares one tiled wallpaper pass and O(rows+columns)
+        // border lines. Per-empty-cell textures/rectangles stall software drivers.
+        std::set<uint32_t> tiledPanels;
+        if (!style.gap) {
+            for (const auto &panel : frame.backdrops) {
+                const auto monitor = panel.monitor;
+                auto bg = backdrops.find(backing(monitor));
+                if (bg == backdrops.end())
+                    continue;
+                const auto &r = panel.rect;
+                const auto left = r.x, top = r.y, right = r.x + r.width, bottom = r.y + r.height;
+                const int columns = panel.columns, rows = panel.rows;
+                const double cw = r.width / columns, ch = r.height / rows;
+                hypr2d::UIGhost tile{.rect = {left, top, right - left, bottom - top}, .uv = {0, 0, double(columns), double(rows)}};
+                items.push_back(makeUnique<GhostPass>(bg->second->getTexture(), tile, float(frame.alpha), true));
+                rect({left, top, right - left, bottom - top}, color(style.background, .55 * frame.alpha));
+                for (int x = 0; x <= columns; ++x)
+                    rect({std::round(left + cw * x) - (x == columns ? 1 : 0), top, 1, bottom - top}, color(style.border, frame.alpha));
+                for (int y = 0; y <= rows; ++y)
+                    rect({left, std::round(top + ch * y) - (y == rows ? 1 : 0), right - left, 1}, color(style.border, frame.alpha));
+                tiledPanels.insert(monitor);
+            }
+        }
+        // Layered translucent rounded rectangles form a cheap, bounded soft shadow.
+        for (auto &c : frame.cells) {
+            if (!c.occupied && !c.shown)
+                continue;
+            for (int spread = 6; spread >= 1; --spread) {
+                const double d = spread * outputScale;
+                CBox shadow{c.rect.x - d, c.rect.y - d + 2 * outputScale, c.rect.width + 2 * d, c.rect.height + 2 * d};
+                rect(shadow, color(c.shown ? style.accent : 0, (c.shown ? .025 : .035) * frame.alpha));
+            }
+        }
+        std::stable_sort(frame.cells.begin(), frame.cells.end(), [](const auto &a, const auto &b) { return !a.hovered && b.hovered; });
         for (auto &c : frame.cells) {
             CBox box{std::round(c.rect.x), std::round(c.rect.y), std::ceil(c.rect.width), std::ceil(c.rect.height)};
             const auto borderColor = std::string(c.key) == std::string(frame.target) ? color(style.target, frame.alpha)
+                                     : c.shown                                       ? color(style.accent, frame.alpha)
                                      : c.selected                                    ? color(style.current, frame.alpha)
                                      : c.hovered                                     ? color(style.hover, frame.alpha)
-                                     : c.shown                                       ? color(style.current, frame.alpha)
-                                               : color(c.colour ? c.colour : style.border, frame.alpha);
-            rect(box, color(c.occupied ? style.cell : style.background, frame.alpha));
+                                                 : color(c.colour ? c.colour : style.border, frame.alpha);
+            const bool tiledEmpty = !c.occupied && tiledPanels.contains(c.monitor) && !std::string(c.key).starts_with("special:");
+            if (tiledEmpty && !c.shown && !c.selected && !c.hovered && std::string(c.key) != std::string(frame.target) && c.label.empty() &&
+                !c.colour)
+                continue;
+            if (!tiledEmpty)
+                rect(box, color(c.occupied ? style.cell : style.background, frame.alpha));
+            if (!c.occupied && !tiledEmpty) {
+                if (auto bg = backdrops.find(backing(c.monitor)); bg != backdrops.end())
+                    items.push_back(makeUnique<CTexPassElement>(CTexPassElement::SRenderData{
+                        .tex = bg->second->getTexture(), .box = box, .a = float(frame.alpha), .round = static_cast<int>(style.rounding)}));
+                rect(box, color(style.background, .55 * frame.alpha));
+            }
             if (auto it = cache.find(std::string(c.key)); c.occupied && it != cache.end())
-                items.push_back(
-                    makeUnique<CTexPassElement>(CTexPassElement::SRenderData{.tex = it->second->getTexture(),
-                                                                             .box = box,
-                                                                             .a = float(frame.alpha * (c.dimmed     ? 0.55
-                                                                                                       : c.occupied ? 1.0
-                                                                                                                    : 0.35)),
-                                                                             .round = static_cast<int>(style.gap ? style.rounding : 0)}));
+                items.push_back(makeUnique<CTexPassElement>(CTexPassElement::SRenderData{.tex = it->second->getTexture(),
+                                                                                         .box = box,
+                                                                                         .a = float(frame.alpha * (c.dimmed     ? 0.55
+                                                                                                                   : c.occupied ? 1.0
+                                                                                                                                : 0.35)),
+                                                                                         .round = static_cast<int>(style.rounding)}));
             // One physical pixel, drawn inside the cell: zero-gap tiles share
             // edges without the old expanded two-pixel halos.
-            rect({box.x, box.y, box.w, 1}, borderColor);
-            rect({box.x, box.y + box.h - 1, box.w, 1}, borderColor);
-            rect({box.x, box.y, 1, box.h}, borderColor);
-            rect({box.x + box.w - 1, box.y, 1, box.h}, borderColor);
+            const double line = c.shown ? 2. * outputScale : 1.;
+            rect({box.x, box.y, box.w, line}, borderColor);
+            rect({box.x, box.y + box.h - line, box.w, line}, borderColor);
+            rect({box.x, box.y, line, box.h}, borderColor);
+            rect({box.x + box.w - line, box.y, line, box.h}, borderColor);
             if (!c.label.empty()) {
                 const auto caption = text(std::string(c.label), static_cast<int>(style.font_size * outputScale),
                                           std::clamp(static_cast<int>(box.w - 8), 1, 1000), style.label);
@@ -322,7 +422,7 @@ class Pass final : public IPassElement {
             CBox b{l.rect.x, l.rect.y, l.rect.width, l.rect.height};
             if (l.band)
                 rect(b, color(style.cell, frame.alpha));
-            label(std::string(l.text), b, 1.f, l.colour);
+            label(std::string(l.text), b, l.band ? 1.f : .85f, l.colour);
         }
         if (frame.ghost.visible) {
             if (auto it = cache.find(std::string(frame.ghost.key)); it != cache.end())
@@ -348,7 +448,12 @@ class Pass final : public IPassElement {
     bool needsPrecomputeBlur() override { return false; }
     const char *passName() override { return "hypr2d-overview"; }
     ePassElementType type() override { return EK_CUSTOM; }
-    bool disableSimplification() override { return true; }
+    std::optional<CBox> boundingBox() override { return CBox{0, 0, size.x / outputScale, size.y / outputScale}; }
+    CRegion opaqueRegion() override {
+        // Once open, the opaque backdrop hides the native desktop. Let the
+        // renderer discard that work; retain it throughout the zoom/fade.
+        return frame.alpha >= 1.0 ? CRegion{*boundingBox()} : CRegion{};
+    }
     bool requiresFullDamage() override { return true; }
 };
 static PHLWINDOW findWindow(const std::string &id) {
@@ -476,6 +581,10 @@ static void movePointer(Vector2D global, int phase) {
     if (!ui)
         return;
     pointer = global;
+    // During the composition zoom, visual cells differ from canonical hit
+    // geometry. Ignore pointer selection until settled; Esc/pinch still cancel.
+    if (!(*ui)->overview_interactive(now()))
+        return;
     if (auto kb = g_pSeatManager->m_keyboard.lock())
         (*ui)->overview_modifiers(xkb_state_mod_name_is_active(kb->m_xkbState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) > 0);
     else
@@ -500,6 +609,7 @@ static void movePointer(Vector2D global, int phase) {
                 }));
             } else
                 (*ui)->overview_pointer(m->m_size.x, m->m_size.y, p.x, p.y, false);
+            (*ui)->overview_hover_clock(now());
             damage();
             return;
         }
@@ -510,9 +620,17 @@ static void movePointer(Vector2D global, int phase) {
 void init(hypr2d::Core *c) {
     core = c;
     auto &e = Event::bus()->m_events;
-    listeners.push_back(e.render.pre.listen([](PHLMONITOR) {
+    listeners.push_back(e.render.pre.listen([](PHLMONITOR output) {
         if (!ui || capturing)
             return;
+        const auto frameNow = now();
+        frameOutput = output;
+        frameStarts[output->m_id] = frameNow;
+        if (frameNow - openedAt < 200.) {
+            if (auto it = previousFrames.find(output->m_id); it != previousFrames.end())
+                maxFrameGapMs = std::max(maxFrameGapMs, frameNow - it->second);
+            previousFrames[output->m_id] = frameNow;
+        }
         auto wins = windows();
         for (auto &k : (*ui)->overview_windows({wins.data(), wins.size()}))
             mark(std::string(k));
@@ -534,12 +652,66 @@ void init(hypr2d::Core *c) {
             auto k = cap.special.empty() ? std::to_string(cap.workspace) : std::string(cap.special);
             visible.insert(k);
             auto old = cache.find(k);
-            if (old == cache.end() || old->second->m_size != Vector2D{double(cap.capture_width), double(cap.capture_height)})
+            if (old == cache.end())
                 mark(k);
+            else if (old->second->m_size != Vector2D{double(cap.capture_width), double(cap.capture_height)}) {
+                cache.erase(old); // Retire obsolete storage before allocating its replacement.
+                mark(k);
+            }
         }
         std::erase_if(cache, [&](const auto &entry) { return !visible.contains(entry.first); });
         const double start = now();
         capturing = true;
+        double totalArea = 0;
+        for (auto &m : State::monitorState()->monitors())
+            totalArea += m->m_transformedSize.x * m->m_transformedSize.y;
+        for (auto &m : State::monitorState()->monitors()) {
+            bool mappedBackground = false;
+            for (int layer = 0; layer < 2; ++layer)
+                for (auto &ref : m->m_layerSurfaceLayers[layer])
+                    if (auto ls = ref.lock(); ls && ls->mapped())
+                        mappedBackground = true;
+            if (!mappedBackground) {
+                // No wallpaper/lower layer: the theme's flat fallback needs no
+                // full-output framebuffer, mipmaps or textured fullscreen draw.
+                backdrops.erase(m->m_id);
+                dirtyBackdrops.erase(m->m_id);
+                continue;
+            }
+            const auto dims = core->backdrop_size(m->m_transformedSize.x, m->m_transformedSize.y, totalArea);
+            auto old = backdrops.find(m->m_id);
+            if (old == backdrops.end())
+                dirtyBackdrops.insert(m->m_id);
+            else if (old->second->m_size != Vector2D{dims.width, dims.height}) {
+                backdrops.erase(old);
+                dirtyBackdrops.insert(m->m_id);
+            }
+        }
+        while (!dirtyBackdrops.empty() && now() - start < 2.0) {
+            const auto id = *dirtyBackdrops.begin();
+            dirtyBackdrops.erase(id);
+            for (auto &m : State::monitorState()->monitors())
+                if (m->m_id == id) {
+                    const auto dims = core->backdrop_size(m->m_transformedSize.x, m->m_transformedSize.y, totalArea);
+                    hypr2d::ProbeCell cap{.monitor = id,
+                                          .width = m->m_transformedSize.x,
+                                          .height = m->m_transformedSize.y,
+                                          .capture_width = uint32_t(dims.width),
+                                          .capture_height = uint32_t(dims.height)};
+                    try {
+                        const auto t = now();
+                        backdrops[id] = OverviewProbe::capture(cap, backdrops[id], profileCaptures, true);
+                        const auto cost = now() - t;
+                        captureMs += cost;
+                        maxCaptureMs = std::max(maxCaptureMs, cost);
+                        ++backdropCaptures;
+                    } catch (const std::exception &e) {
+                        LOG(Log::ERR, "hypr2d backdrop: {}", e.what());
+                        backdrops.erase(id);
+                    }
+                    break;
+                }
+        }
         while (!dirty.empty() && now() - start < 2.0) {
             auto k = dirty.front();
             dirty.pop_front();
@@ -566,8 +738,10 @@ void init(hypr2d::Core *c) {
                             LOG(Log::INFO, "hypr2d capture {} framebuffer={}x{} drawn={}x{} physical pixels", k, cap.capture_width,
                                 cap.capture_height, cap.width, cap.height);
                         double t = now();
-                        cache[k] = OverviewProbe::capture(cap, cache[k], false);
-                        captureMs += now() - t;
+                        cache[k] = OverviewProbe::capture(cap, cache[k], profileCaptures);
+                        const auto cost = now() - t;
+                        captureMs += cost;
+                        maxCaptureMs = std::max(maxCaptureMs, cost);
                         ++captures;
                         for (auto &w : State::Workspace::state()->workspaces())
                             if (key(w.lock()) == k) {
@@ -585,16 +759,23 @@ void init(hypr2d::Core *c) {
                     break;
                 }
         }
+        maxRefreshMs = std::max(maxRefreshMs, now() - start);
         capturing = false;
-        if (!dirty.empty() || frame.animating)
+        if (!dirty.empty() || !dirtyBackdrops.empty() || frame.animating)
             damage();
     }));
     listeners.push_back(e.render.stage.listen([](eRenderStage stage) {
+        if (ui && !capturing && stage == RENDER_POST) {
+            if (frameOutput && frameStarts.contains(frameOutput->m_id))
+                maxFrameMs = std::max(maxFrameMs, now() - frameStarts[frameOutput->m_id]);
+            (*ui)->overview_presented(now());
+            frameOutput.reset();
+        }
         if (ui && !capturing && stage == RENDER_LAST_MOMENT) {
             auto m = g_pHyprRenderer->m_renderData.pMonitor.lock();
             auto frame = (*ui)->overview_frame_scaled(m->m_transformedSize.x, m->m_transformedSize.y, m->m_scale, now());
-            const bool more = frame.animating || !dirty.empty();
-            g_pHyprRenderer->m_renderPass.add(makeUnique<Pass>(std::move(frame), m->m_transformedSize, m->m_scale));
+            const bool more = frame.animating || !dirty.empty() || !dirtyBackdrops.empty();
+            g_pHyprRenderer->m_renderPass.add(makeUnique<Pass>(std::move(frame), m->m_transformedSize, m->m_scale, m->m_id));
             // pre-render requests can be consumed by this frame's commit.
             // During rendering scheduleFrame also sets pendingFrame, which the
             // native renderer schedules AFTER commit (essential on headless).
@@ -670,6 +851,14 @@ void init(hypr2d::Core *c) {
             changed();
         }
     }));
+    auto layerChanged = [changed](PHLLS) {
+        if (ui)
+            for (auto &m : State::monitorState()->monitors())
+                dirtyBackdrops.insert(m->m_id);
+        changed();
+    };
+    listeners.push_back(e.layer.opened.listen(layerChanged));
+    listeners.push_back(e.layer.closed.listen(layerChanged));
     listeners.push_back(e.window.open.listen([changed](PHLWINDOW) { changed(); }));
     listeners.push_back(e.window.close.listen([changed](PHLWINDOW) { changed(); }));
     listeners.push_back(e.window.moveToWorkspace.listen([changed](PHLWINDOW, PHLWORKSPACE) { changed(); }));
@@ -760,10 +949,33 @@ std::string command(const std::string &input) {
                                   escapeJSONStrings(key), fb->m_size.x, fb->m_size.y, drawn.x, drawn.y);
         }
         images += "]";
-        return std::format("{{\"ui\":{},\"captures\":{},\"capture_ms\":{},\"pending\":{},\"images\":{}}}",
+        uint64_t payload = 0;
+        auto countPayload = [&](const auto &fb) {
+            payload += hypr2d::texture_bytes(fb->m_size.x, fb->m_size.y, fb->getTexture()->minFilter == GL_LINEAR_MIPMAP_LINEAR);
+        };
+        for (auto &[k, fb] : cache)
+            countPayload(fb);
+        for (auto &[id, fb] : backdrops)
+            countPayload(fb);
+        double bytes = 0;
+        for (auto &[k, fb] : cache)
+            bytes += fb->m_size.x * fb->m_size.y * 4. * 4. / 3.;
+        for (auto &[id, fb] : backdrops)
+            bytes += fb->m_size.x * fb->m_size.y * 4. * 4. / 3.;
+        return std::format("{{\"max_frame_ms\":{},\"opening_max_frame_gap_ms\":{},\"completed_gpu\":{},\"gpu_rgba_bytes\":{},\"gpu_bytes_"
+                           "bound\":{},\"backdrop_captures\":{},\"max_capture_ms\":{},\"max_refresh_ms\":{},\"ui\":{},"
+                           "\"captures\":{},\"capture_ms\":{},\"pending\":{},\"images\":{}}}",
+                           maxFrameMs, maxFrameGapMs, profileCaptures, payload, bytes, backdropCaptures, maxCaptureMs, maxRefreshMs,
                            std::string((*ui)->overview_state_scaled(m ? m->m_transformedSize.x : 1000.0, m ? m->m_transformedSize.y : 700.0,
                                                                     m ? m->m_scale : 1.0, now())),
-                           captures, captureMs, dirty.size(), images);
+                           captures, captureMs, dirty.size() + dirtyBackdrops.size(), images);
+    }
+    if (input == "overview profile" || input == "overview profile off") {
+        const auto testing = getenv("HYPR2D_TESTING");
+        if (!testing || std::string(testing) != "1")
+            return "error: test-only command";
+        profileCaptures = input == "overview profile";
+        return "ok";
     }
     if (input == "overview close") {
         if (ui)
@@ -791,7 +1003,12 @@ std::string command(const std::string &input) {
         return "error: overview requires a focused output";
     pointer = Pointer::mgr()->position();
     captures = 0;
+    backdropCaptures = 0;
     captureMs = 0;
+    maxCaptureMs = maxRefreshMs = maxFrameMs = maxFrameGapMs = 0;
+    openedAt = now();
+    frameStarts.clear();
+    previousFrames.clear();
     build();
     if (input == "overview parked")
         (*ui)->overview_parked();

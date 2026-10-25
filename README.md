@@ -122,7 +122,7 @@ The combined layout fits the output width/height and is centered vertically,
 including the grids and special strip. Cell captions use the main app class's
 short name (for example `firefox` or `kitty`), followed by `+N` for additional
 windows. Empty grid cells have no caption: a thin base02 outline surrounds the
-base00 background. Occupied cells retain their thumbnails and configured fill.
+dimmed wallpaper. Occupied cells retain their workspace thumbnails.
 
 Configure appearance with one atomic JSON object (omitted fields use defaults):
 
@@ -132,7 +132,14 @@ hyprctl hypr2d overview-config '{"fit":true,"background":"#000000","cell":"#3030
 
 Colours use `#RRGGBB`; font size is 10–40 output pixels and rounding is 0–4 px.
 These defaults match base16 OneDark Extra Dark. Runtime changes apply while
-open. Captures resize to the displayed cell size × monitor scale, within the cache budget.
+open. Capture dimensions are the displayed cell size × monitor scale ×
+`overview.supersample` (default 2), reduced only to meet the memory budget.
+The current desktop has a 2 px `overview.accent` ring (default #9CBEFF) and faint
+glow; selection/minimap colours retain `theme.current`. Hover lifts tiles 2%
+with a 120 ms ease. Occupied tiles have soft shadows; headers use 85% opacity.
+Open/close zooms around the current desktop over 180 ms, including interrupted
+open/close transitions. Pointer selection starts when the zoom settles;
+Esc and pinch cancellation remain available throughout.
 
 Overview cells and special tiles default to flush spacing with one-pixel inset
 borders. Set `programs.hypr2d.overview.gap` (0–32, before layout scaling) to
@@ -140,10 +147,30 @@ increase spacing. Labels have an 80% background-colour scrim. Numeric special
 workspace identifiers use the main app's short name; named specials and extension
 labels take precedence.
 
-Captures use Hyprland's simple full-fake path directly into the displayed
-physical thumbnail dimensions, without the normal full-output export resample.
-The cache remains budgeted at 64 MiB (conservative mip-inclusive accounting).
-`hyprctl hypr2d overview state` reports framebuffer and drawn physical dimensions;
+The backdrop captures each monitor's BACKGROUND and BOTTOM layer surfaces
+(including hyprpaper), without windows, top layers or cursor. Default darkening
+is 35%; empty desktops reuse the same texture at 55% darkening. No additional
+blur pass is added. Wallpapers refresh on layer surface commits/map/unmap.
+Without mapped lower layers, the flat theme fallback needs no backdrop texture.
+
+```nix
+programs.hypr2d.overview = {
+  supersample = 2;       # 1..4
+  memoryBudgetMiB = 128; # 16..512, shared across monitors
+  backgroundDarken = 0.35;
+  accent = "#9CBEFF";
+};
+```
+
+Captures use the simple full-fake path directly into supersampled physical
+framebuffers, then generate mipmaps for trilinear minification. There is no
+full-output export resample. Only visible occupied cells get individual
+textures; empty cells share their monitor backdrop. The budget reserves 25%
+for backdrops and 75% for thumbnails, including mipmap payload. Resize retires
+old mip levels. Refreshes remain damage-driven with a 2 ms queue budget; one
+capture is indivisible. GPU/driver bookkeeping and text textures are outside
+the RGBA capture payload cap.
+`hyprctl hypr2d overview state` reports capture payload, timing, framebuffer and drawn physical dimensions;
 layout changes log both. `hyprctl hypr2d overview cursor` reports cursor-image
 availability and native software/hardware state for hardware diagnostics.
 `hyprctl hypr2d overview open` and `close` are idempotent, unlike the Lua toggle.

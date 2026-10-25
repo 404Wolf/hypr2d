@@ -1,6 +1,7 @@
 // Full-fake capture mechanism informed by hyprexpo (MIT); implementation original.
 #include "overview.hpp"
 #include <chrono>
+#include <cmath>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/output/Monitor.hpp>
 #include <hyprland/src/render/Renderer.hpp>
@@ -9,6 +10,7 @@
 #include <hyprland/src/state/workspace/State.hpp>
 #include <hyprland/src/workspace/HLWorkspace.hpp>
 #include <hyprutils/utils/ScopeGuard.hpp>
+#include <malloc.h>
 
 namespace OverviewProbe {
 // Expose protected base member pointers without casting the renderer to a
@@ -16,6 +18,8 @@ namespace OverviewProbe {
 struct RendererAccess : Render::IHyprRenderer {
     static auto workspaceDraw() { return &RendererAccess::renderWorkspace; }
     static auto windowsDraw() { return &RendererAccess::renderWorkspaceWindows; }
+    static auto backgroundDraw() { return &RendererAccess::renderBackground; }
+    static auto layerDraw() { return &RendererAccess::renderLayer; }
     static auto mode() { return &RendererAccess::m_renderMode; }
 };
 static rust::Vec<hypr2d::ProbeCell> plan;
@@ -50,14 +54,14 @@ struct WorkspaceState {
 };
 // Capture runs between frames, synchronously. Only current animation values are
 // overridden, never goals, timing, callbacks, registrations, or visibility.
-SP<Render::IFramebuffer> capture(const hypr2d::ProbeCell &cell, SP<Render::IFramebuffer> fb, bool finish) {
+SP<Render::IFramebuffer> capture(const hypr2d::ProbeCell &cell, SP<Render::IFramebuffer> fb, bool finish, bool background) {
     auto &r = *g_pHyprRenderer;
     auto m = findMonitor(cell.monitor);
     if (!m)
         throw std::runtime_error("probe output disappeared");
     if (r.m_renderData.currentFB)
         throw std::runtime_error("probe captures must run between frames");
-    const auto target = findWorkspace(cell);
+    const auto target = background ? PHLWORKSPACE{} : findWorkspace(cell);
     if (target && target->m_monitor != m)
         throw std::runtime_error("probe target belongs to another monitor");
     auto savedData = r.m_renderData;
@@ -127,6 +131,8 @@ SP<Render::IFramebuffer> capture(const hypr2d::ProbeCell &cell, SP<Render::IFram
     }
     r.m_bBlockSurfaceFeedback = true;
     r.m_bRenderingSnapshot = true;
+    if (fb && fb->m_size != Vector2D{double(cell.capture_width), double(cell.capture_height)})
+        fb.reset(); // Retire old mip levels as well as level zero on resize.
     if (!fb)
         fb = r.createFB("hypr2d-thumbnail");
     if (!fb->alloc(cell.capture_width, cell.capture_height, DRM_FORMAT_ARGB8888))
@@ -148,22 +154,40 @@ SP<Render::IFramebuffer> capture(const hypr2d::ProbeCell &cell, SP<Render::IFram
         throw std::runtime_error("probe full-fake begin failed");
     if (r.m_renderData.currentFB != fb || r.m_renderData.currentFB->m_size != fb->m_size)
         throw std::runtime_error("capture is not rendering directly into thumbnail");
-    if (!cell.special.empty()) {
+    if (background || !cell.special.empty()) {
         r.m_renderPass.add(makeUnique<CClearPassElement>(CClearPassElement::SClearData{CHyprColor(0.02, 0.02, 0.02, 1.0)}));
         Render::SRenderModifData mod;
         mod.modifs.emplace_back(Render::SRenderModifData::RMOD_TYPE_SCALE, float(cell.capture_width / m->m_transformedSize.x));
         r.m_renderPass.add(makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{mod}));
-        (r.*RendererAccess::windowsDraw())(m, target, Time::steadyNow());
+        if (background) {
+            (r.*RendererAccess::backgroundDraw())(m);
+            for (int layer = 0; layer < 2; ++layer)
+                for (const auto &surface : m->m_layerSurfaceLayers[layer])
+                    if (auto ls = surface.lock())
+                        (r.*RendererAccess::layerDraw())(ls, m, Time::steadyNow(), false, false);
+        } else
+            (r.*RendererAccess::windowsDraw())(m, target, Time::steadyNow());
         r.m_renderPass.add(makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{Render::SRenderModifData{}}));
     } else
         (r.*RendererAccess::workspaceDraw())(
             m, target, Time::steadyNow(),
             CBox{0, 0, double(cell.capture_width), cell.capture_width * m->m_transformedSize.y / m->m_transformedSize.x});
     r.endRender();
-    // Simple FULL_FAKE renders directly into the destination: no full-output
-    // work buffer or export resample. At settled size composition samples level
-    // zero once; avoid trilinear mip blending softening near-1:1 thumbnails.
-    fb->getTexture()->minFilter = GL_LINEAR;
+    // Render directly at the planned supersampled size. Generate a mip pyramid
+    // only for minified textures; native-size captures retain a single sample.
+    const bool minified = background || cell.capture_width > std::ceil(cell.width) || cell.capture_height > std::ceil(cell.height);
+    if (minified) {
+        fb->getTexture()->bind();
+        glGenerateMipmap(GL_TEXTURE_2D);
+        if (finish && (cell.capture_width > 1 || cell.capture_height > 1)) {
+            GLint mipWidth = 0;
+            glGetTexLevelParameteriv(GL_TEXTURE_2D, 1, GL_TEXTURE_WIDTH, &mipWidth);
+            if (mipWidth != std::max(1, int(cell.capture_width) / 2))
+                throw std::runtime_error("thumbnail mipmap generation failed");
+        }
+        fb->getTexture()->unbind();
+    }
+    fb->getTexture()->minFilter = minified ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR;
     fb->getTexture()->magFilter = GL_NEAREST;
     if (finish)
         glFinish(); // Test-only completion measurement.
@@ -230,9 +254,17 @@ void shutdown() {
     times.clear();
 }
 std::string command(hypr2d::Core &core, const std::vector<hypr2d::Monitor> &monitors, const std::string &input) {
-    if (input == "probe close")
+    if (input == "probe retire") {
+        // Unlike close(), this quiescent test checkpoint schedules no frame.
+        g_pHyprRenderer->glBackend()->makeEGLCurrent();
+        glFinish();
+        malloc_trim(0);
+    } else if (input == "probe close") {
         close();
-    else if (input == "probe open" || input == "probe full") {
+        // Test-only RSS checkpoint: after GPU retirement, return free glibc
+        // pages so allocator high-water batches cannot masquerade as leaks.
+        malloc_trim(0);
+    } else if (input == "probe open" || input == "probe full") {
         close();
         if (g_pHyprRenderer->type() != Render::IHyprRenderer::RT_GL)
             return "error: GL prototype only";

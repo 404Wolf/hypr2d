@@ -1122,3 +1122,100 @@ Lua openers, both cancellation directions, subthreshold travel, no reopen after
 GL cleanup, overlapping swipe rejection, two-monitor workspace preservation,
 and the laptop's grouped focus/order and visible special invariants. No live
 compositor was changed; physical pinch feel remains a deployment hand-test.
+
+### Wallpaper and supersampled overview rendering
+
+Overview backdrops use the existing full-fake state guard, drawing only native
+renderBackground and renderLayer for BACKGROUND/BOTTOM. Shared per-monitor
+textures serve the screen backdrop and all empty desktops. Layer commits and
+map/unmap invalidate the backdrop; ordinary window/UI changes do not. No extra
+blur pass is added: native layer blur may require renderer-wide scratch/blur
+resources and is not a cheap standalone overview setting.
+
+Rust plans visible occupied captures at drawn physical size times supersample
+(default 2, configurable 1..4), independent of hover/open zoom. A shared 128 MiB
+RGBA/mipmap budget reserves 25% for backdrops and 75% for thumbnails, reducing
+resolution proportionally as required. Empty cells allocate no per-cell texture.
+C++ renders directly at that resolution and generates a mip chain for
+GL_LINEAR_MIPMAP_LINEAR, with native-size fallback remaining linear. Resizing
+retires the whole old framebuffer/texture so obsolete mip levels cannot persist.
+State diagnostics distinguish exact allocated RGBA level payload from the
+conservative budget bound; neither includes driver metadata or text textures.
+
+Rust also owns the 180 ms ease-out composition zoom and continuous 120 ms hover
+motion, including interrupted close/open and hover reversal. The shim draws
+bounded layered shadows/glow, 2 px current accent rings, captions and 85% headers;
+hovered tiles compose last. The separate overview accent defaults #9CBEFF while
+existing theme.current/minimap defaults remain unchanged. No layout, focus,
+workspace or group mutation is introduced by these effects.
+
+Zero-gap grids tile the shared backdrop once per panel with repeat UVs and
+O(rows+columns) grid lines; empty cells do not issue individual texture draws.
+Rust supplies panel bounds/row/column counts. This avoids the software-driver
+stall exposed by the existing <50 ms minimap regression. Lift is frozen while
+pressed/dragging, retaining exact floating drop coordinates and window targets.
+Natural-width text textures are reused throughout zoom instead of uploading a
+new label texture for each animated box width. Diagnostics include opening frame
+intervals, CPU frame cost and a test-only completed-GPU capture profiling mode.
+
+Refusal feedback starts its 180 ms visible period after the first native frame
+containing it completes, so slow initial rendering cannot consume the whole
+flash before it appears. The native POST timing hook retains the output from PRE
+because endRender clears renderer data before POST. Opaque overview bounds allow
+native pass occlusion once open, while underlying content remains during fades.
+Closed-cycle tests retain exact GL-name deletion, FD stability and the original
+16 MiB RSS variation bound. They restore normal damage tracking after screencopy,
+let native closing frames settle, then retire GPU work and trim free glibc pages
+without requesting another frame. The old probe-close checkpoint scheduled new
+frames after its barrier, making RSS samples include in-flight renderer batches.
+A 60-cycle soak uses three retired samples per cycle and 20 warm-up cycles.
+Ten-cycle lower envelopes distinguish the retained footprint from renderer-pool
+phases: envelopes must stay within 16 MiB and the final one within 4 MiB of the
+first; raw variation is bounded at 64 MiB. Every raw sample and fitted growth is
+saved for inspection. Allocator trimming does not free leaked/in-use objects.
+
+The minimap keeps the fixed 16 ms event debounce. A completed drop can replay
+known movewindowv2 occupancy deltas against its cached snapshot, avoiding an IPC
+request waiting behind render work. It requires known source metadata, known
+destinations and the plugin's completion marker; metadata/focus/workspace/config
+or topology changes, unknown windows/targets and external moves fetch fresh
+state. The whole burst is validated before mutation. Drop completion is emitted
+after native focus/workspace restoration. Socket2 truncates event data at 1024
+bytes on this revision, so a full JSON snapshot is not broadcast through it.
+
+Validation: all 67 Rust tests, formatting/Clippy and all four x86_64 flake
+checks passed. The complete VM suite took 365 s. Inspected fit/full/hover
+screenshots with a real BACKGROUND layer-shell test wallpaper at 2256×1504,
+scale 1, origin (8934,6682), using a 9×9 grid and grouped clients. Native-size
+cursor/group/state regressions remain explicit at supersample=1; the visual
+workload uses the new default 2. The app-hidden cursor fixture forces an actual
+pointer leave/enter before typing, rather than warping to an unchanged center
+and assuming Foot received a new enter event after synthetic pinch forwarding.
+
+Measured visible workload: three occupied normal cells plus one special, with
+one shared backdrop. Fit captures were 1116×744 for 558×372 cells and 844×562
+for the 422×281 special. Full-grid captures were 400×266 for 200×133 cells and
+692×462 for the 346×231 special. RGBA/mipmap payload was 32.34 MiB fit and
+20.51 MiB full, within the 128 MiB cap. Empty cells allocated no capture.
+Completed-GPU profiling measured 108.54 ms fit / 60.49 ms full for all five
+captures (21.71 / 12.10 ms mean including the backdrop); the slowest individual
+capture was 50.58 / 38.28 ms. Ordinary asynchronous runs reported 121.33 / 64.14
+ms total capture API time. These are software-renderer VM measurements, not
+Radeon timings. The 2 ms queue budget cannot preempt an individual capture.
+
+The VM does **not** prove a no-dropped-frame hardware claim: maximum native
+frame cost was 159.82–237.94 ms in ordinary runs, and 170.96–174.10 ms in
+completed-GPU runs. The ordinary fit opening did not produce a second frame
+inside the 200 ms interval, so its zero opening-gap sample means no sample,
+not zero latency. Open-wall measurements include IPC waits and the test's
+200 ms settle delay and are not animation duration measurements. Real Radeon
+pacing remains a deployment check; no plugin was loaded into the live session.
+The configured animation duration is 180 ms, not a promise that the software VM
+can deliver 60 Hz. Optional extra blur was omitted to avoid more scratch passes.
+
+The 60-cycle resource soak retained exact GL-object deletion and stable 100 FDs.
+Post-warmup ten-cycle RSS floors were 269132, 269824, 269184 and 269252 KiB
+(final +120 KiB), without retained growth. Existing native pinch cancellation,
+hotplug, doctor recovery, drag/group/special and minimap regressions passed;
+the overview-drop minimap update measured 20.98 ms. VM processes exited and the
+driver cleaned up. aarch64 builds and physical GPU/trackpad tests were not run.

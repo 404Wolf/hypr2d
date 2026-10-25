@@ -60,10 +60,14 @@ struct CellView {
 pub struct Overview {
     annotations: std::collections::BTreeMap<String, hypr2d_client::Annotation>,
     regions: Vec<(u32, u32, String)>,
+    supersample: f64,
+    memory_budget_mib: u32,
+    hover_motion: std::collections::BTreeMap<usize, crate::visual::HoverMotion>,
     fit: bool,
     shift: bool,
     refused: String,
     refused_until: f64,
+    refused_pending: bool,
     gap: f64,
     font_height: f64,
     gap_pixels: f64,
@@ -93,6 +97,7 @@ pub struct Overview {
     hover: Option<usize>,
     started: f64,
     closing: Option<f64>,
+    closing_from: Option<f64>,
 }
 impl Core {
     pub fn overview_new(
@@ -104,6 +109,8 @@ impl Core {
     ) -> Box<Overview> {
         guarded(|| {
             let mut ui = Overview {
+                supersample: self.theme.supersample,
+                memory_budget_mib: self.theme.memory_budget_mib,
                 fit: self.theme.fit,
                 gap: f64::from(self.theme.gap),
                 font_height: self
@@ -131,7 +138,7 @@ impl Core {
                 ..Default::default()
             };
             if outputs.is_empty() {
-                ui.closing = Some(now - 100.0);
+                ui.closing = Some(now - 180.0);
                 return Box::new(ui);
             }
             let min_x = outputs
@@ -528,12 +535,10 @@ impl Overview {
         guarded(|| {
             let mut plans = std::collections::BTreeMap::<String, ffi::ProbeCell>::new();
             for viewport in viewports {
-                let frame = self.overview_frame_scaled(
-                    viewport.width,
-                    viewport.height,
-                    viewport.x.max(1.),
-                    0.,
-                );
+                let mut layout =
+                    self.scaled_viewport(viewport.width, viewport.height, viewport.x.max(1.));
+                layout.hover_motion.clear();
+                let frame = layout.frame(viewport.width, viewport.height, self.started + 1000.);
                 for cell in frame.cells.into_iter().filter(|c| c.occupied) {
                     let w = cell.rect.width.ceil().max(1.) as u32;
                     let h = cell.rect.height.ceil().max(1.) as u32;
@@ -560,17 +565,22 @@ impl Overview {
                         });
                     entry.capture_width = entry.capture_width.max(w);
                     entry.capture_height = entry.capture_height.max(h);
-                    entry.width = entry.capture_width.into();
-                    entry.height = entry.capture_height.into();
+                    entry.width = entry.width.max(w.into());
+                    entry.height = entry.height.max(h.into());
                 }
+            }
+            for p in plans.values_mut() {
+                p.capture_width = (p.width * self.supersample).ceil().max(1.) as u32;
+                p.capture_height = (p.height * self.supersample).ceil().max(1.) as u32;
             }
             let area: f64 = plans
                 .values()
                 .map(|p| f64::from(p.capture_width) * f64::from(p.capture_height))
                 .sum();
-            let factor = (64. * 1024. * 1024. / (area.max(1.) * 4. * 4. / 3.))
-                .sqrt()
-                .min(1.);
+            let factor = crate::visual::budget_scale(
+                area,
+                self.memory_budget_mib as f64 * 1024. * 1024. * 0.75,
+            );
             plans
                 .into_values()
                 .map(|mut p| {
@@ -618,6 +628,7 @@ impl Overview {
             replacement.shift = self.shift;
             replacement.refused = self.refused.clone();
             replacement.refused_until = self.refused_until;
+            replacement.refused_pending = self.refused_pending;
             replacement.header_height = self.header_height;
             replacement.header_gap = self.header_gap;
             replacement.expanded = self
@@ -658,6 +669,10 @@ impl Overview {
             let selected = self.cells.get(self.selected).map(|c| c.key.clone());
             replacement.started = self.started;
             replacement.closing = self.closing;
+            replacement.closing_from = self.closing_from;
+            if !layout_changed {
+                replacement.hover_motion = self.hover_motion.clone();
+            }
             if let Some(i) = replacement
                 .cells
                 .iter()
@@ -707,7 +722,7 @@ impl Overview {
         guarded(|| {
             let f = self.overview_frame(width, height, now);
             let (s, ox, oy) = self.transform(width, height);
-            serde_json::json!({"expanded_parked":self.expanded.map(|g|self.panel_names[g].clone()),"cards":self.cards.iter().map(|(g,r)|serde_json::json!({"name":self.panel_names[*g],"rect":[r.x*s+ox,r.y*s+oy,r.w*s,r.h*s]})).collect::<Vec<_>>(),"labels":f.labels.iter().map(|l|serde_json::json!({"text":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>(),"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"drop_mode":f.drop_mode,"refused":f.refused,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":f.labels.iter().take(self.headers.iter().enumerate().filter(|(g,_)|self.header_visible(*g)).count()).map(|l|serde_json::json!({"label":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>()}).to_string()
+            serde_json::json!({"expanded_parked":self.expanded.map(|g|self.panel_names[g].clone()),"cards":self.cards.iter().map(|(g,r)|serde_json::json!({"name":self.panel_names[*g],"rect":[r.x*s+ox,r.y*s+oy,r.w*s,r.h*s]})).collect::<Vec<_>>(),"labels":f.labels.iter().map(|l|serde_json::json!({"text":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>(),"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"drop_mode":f.drop_mode,"refused":f.refused,"last_refused":self.refused,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":f.labels.iter().take(self.headers.iter().enumerate().filter(|(g,_)|self.header_visible(*g)).count()).map(|l|serde_json::json!({"label":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>()}).to_string()
         })
     }
     pub fn overview_frame(&self, width: f64, height: f64, now: f64) -> ffi::UIFrame {
@@ -715,7 +730,25 @@ impl Overview {
     }
     fn frame(&self, width: f64, height: f64, now: f64) -> ffi::UIFrame {
         guarded(|| {
-            let (scale, ox, oy) = self.transform(width, height);
+            let (mut scale, mut ox, mut oy) = self.transform(width, height);
+            let progress = if let Some(t) = self.closing {
+                self.closing_from.unwrap_or(1.) * (1. - crate::visual::ease((now - t) / 180.))
+            } else {
+                crate::visual::ease((now - self.started) / 180.)
+            };
+            if let Some(anchor) = self.cells.iter().find(|c| c.visible && c.shown) {
+                let cx = ox + (anchor.rect.x + anchor.rect.w / 2.) * scale;
+                let cy = oy + (anchor.rect.y + anchor.rect.h / 2.) * scale;
+                let zoom = 1.
+                    + (1. - progress)
+                        * ((width / (anchor.rect.w * scale))
+                            .min(height / (anchor.rect.h * scale))
+                            .max(1.)
+                            - 1.);
+                ox = (ox - cx) * zoom + cx + (width / 2. - cx) * (1. - progress);
+                oy = (oy - cy) * zoom + cy + (height / 2. - cy) * (1. - progress);
+                scale *= zoom;
+            }
             let convert = |r: Rect| ffi::UIRect {
                 x: ox + r.x * scale,
                 y: oy + r.y * scale,
@@ -723,12 +756,32 @@ impl Overview {
                 height: r.h * scale,
             };
             let (ghost, windows, target) = self.drag_frame(convert);
-            let progress = if let Some(t) = self.closing {
-                1.0 - ((now - t) / 100.0).clamp(0.0, 1.0)
-            } else {
-                ((now - self.started) / 100.0).clamp(0.0, 1.0)
-            };
+            let mut backgrounds = std::collections::BTreeMap::<u32, (Rect, f64, f64)>::new();
+            for c in self
+                .cells
+                .iter()
+                .filter(|c| c.visible && !c.key.starts_with("special:"))
+            {
+                let (bounds, _, _) = backgrounds
+                    .entry(c.monitor)
+                    .or_insert((c.rect, c.rect.w, c.rect.h));
+                let right = (bounds.x + bounds.w).max(c.rect.x + c.rect.w);
+                let bottom = (bounds.y + bounds.h).max(c.rect.y + c.rect.h);
+                bounds.x = bounds.x.min(c.rect.x);
+                bounds.y = bounds.y.min(c.rect.y);
+                bounds.w = right - bounds.x;
+                bounds.h = bottom - bounds.y;
+            }
             ffi::UIFrame {
+                backdrops: backgrounds
+                    .into_iter()
+                    .map(|(monitor, (r, w, h))| ffi::UIBackdropPanel {
+                        monitor,
+                        rect: convert(r),
+                        columns: (r.w / w).round().max(1.) as u32,
+                        rows: (r.h / h).round().max(1.) as u32,
+                    })
+                    .collect(),
                 ghost,
                 drop_mode: if windows.iter().any(|w| w.target) {
                     if self.shift {
@@ -748,8 +801,10 @@ impl Overview {
                 },
                 target,
                 alive: self.closing.is_none() || progress > 0.0,
-                animating: progress > 0.0 && progress < 1.0 || now < self.refused_until,
-                alpha: progress * progress * (3.0 - 2.0 * progress),
+                animating: progress > 0.0 && progress < 1.0
+                    || now < self.refused_until
+                    || self.hover_motion.values().any(|m| m.active(now)),
+                alpha: progress,
                 cells: self
                     .cells
                     .iter()
@@ -758,7 +813,25 @@ impl Overview {
                     .map(|(i, c)| ffi::UICell {
                         key: c.key.clone(),
                         monitor: c.monitor,
-                        rect: convert(c.rect),
+                        rect: {
+                            let mut r = convert(c.rect);
+                            // Drag/drop coordinates use canonical cell geometry.
+                            // Freeze lift while pressed so floating drop points
+                            // and window target outlines stay exactly aligned.
+                            let lift = if self.pressed.is_some() || self.drag.is_some() {
+                                0.
+                            } else {
+                                self.hover_motion
+                                    .get(&i)
+                                    .map(|motion| motion.value(now))
+                                    .unwrap_or(0.)
+                            };
+                            r.x -= r.width * 0.01 * lift;
+                            r.y -= r.height * 0.01 * lift;
+                            r.width *= 1. + 0.02 * lift;
+                            r.height *= 1. + 0.02 * lift;
+                            r
+                        },
                         label: annotation_text(&c.label, self.annotations.get(&c.key)),
                         colour: self
                             .annotations
@@ -1019,7 +1092,7 @@ impl Overview {
             }
             if self.cells.is_empty() {
                 if key == 0xff1b {
-                    self.closing = Some(now);
+                    self.begin_close(now);
                 }
                 return String::new();
             }
@@ -1036,7 +1109,7 @@ impl Overview {
                         self.pressed = None;
                         self.cancelled_release = true;
                     } else if self.expanded.take().is_none() {
-                        self.closing = Some(now);
+                        self.begin_close(now);
                     }
                 }
                 0xff0d => return self.activate_selected(),
@@ -1107,11 +1180,23 @@ impl Overview {
     pub fn overview_modifiers(&mut self, shift: bool) {
         guarded(|| self.shift = shift)
     }
-    pub fn overview_refuse(&mut self, window: &str, now: f64) {
+    pub fn overview_refuse(&mut self, window: &str, _now: f64) {
         guarded(|| {
             self.refused = window.into();
-            self.refused_until = now + 180.;
+            self.refused_until = f64::INFINITY;
+            self.refused_pending = true;
         })
+    }
+    pub fn overview_interactive(&self, now: f64) -> bool {
+        guarded(|| self.closing.is_none() && now >= self.started + 180.)
+    }
+    pub fn overview_presented(&mut self, now: f64) {
+        guarded(|| {
+            if self.refused_pending {
+                self.refused_pending = false;
+                self.refused_until = now + 180.;
+            }
+        });
     }
     pub fn overview_parked(&mut self) {
         guarded(|| {
@@ -1124,18 +1209,50 @@ impl Overview {
             }
         })
     }
+    pub fn overview_hover_clock(&mut self, now: f64) {
+        guarded(|| {
+            self.hover_motion
+                .retain(|i, m| Some(*i) == self.hover || m.value(now) > 0.);
+            for (i, m) in &mut self.hover_motion {
+                let target = if Some(*i) == self.hover { 1. } else { 0. };
+                if m.to != target {
+                    *m = crate::visual::HoverMotion {
+                        from: m.value(now),
+                        to: target,
+                        start: now,
+                    };
+                }
+            }
+            if let Some(i) = self.hover {
+                self.hover_motion
+                    .entry(i)
+                    .or_insert(crate::visual::HoverMotion {
+                        from: 0.,
+                        to: 1.,
+                        start: now,
+                    });
+            }
+        });
+    }
+    fn begin_close(&mut self, now: f64) {
+        if self.closing.is_none() {
+            self.closing_from = Some(crate::visual::ease((now - self.started) / 180.));
+            self.closing = Some(now);
+        }
+    }
     pub fn overview_close(&mut self, now: f64) {
         guarded(|| {
             self.drag = None;
             self.pressed = None;
             self.cancelled_release = true;
-            self.closing.get_or_insert(now);
+            self.begin_close(now);
         });
     }
 }
 impl Default for ffi::UIFrame {
     fn default() -> Self {
         Self {
+            backdrops: vec![],
             ghost: ffi::UIGhost::default(),
             windows: vec![],
             target: String::new(),
@@ -1248,6 +1365,112 @@ mod tests {
         }
     }
     #[test]
+    fn laptop_supersampling_is_visible_only_budgeted_and_animation_independent() {
+        let mut core = Core::default();
+        assert!(core
+            .command(&[], &[], "configure 0 9 9 true 10")
+            .error
+            .is_empty());
+        let windows: Vec<_> = [0, 1, 9, 10]
+            .into_iter()
+            .map(|i| ffi::UIWindow {
+                id: i.to_string(),
+                workspace: (10 * i + 1).to_string(),
+                monitor: 0,
+                x: 0.,
+                y: 0.,
+                width: 2256.,
+                height: 1504.,
+                floating: false,
+                title: "kitty".into(),
+            })
+            .collect();
+        let mut ui = core.overview_new(
+            &[ffi::UIOutput {
+                width: 2256.,
+                height: 1504.,
+                x: 8934.,
+                y: 6682.,
+                ..output(0, 8934., 6682.)
+            }],
+            &[],
+            &windows,
+            0.,
+        );
+        let vp = [ffi::UIRect {
+            x: 1.,
+            y: 0.,
+            width: 2256.,
+            height: 1504.,
+        }];
+        for full in [false, true] {
+            ui.fit = !full;
+            ui.reflow();
+            let frame = ui.overview_frame(2256., 1504., 1000.);
+            assert_eq!(frame.backdrops.len(), 1);
+            assert_eq!(frame.backdrops[0].columns, if full { 9 } else { 3 });
+            assert_eq!(frame.backdrops[0].rows, if full { 9 } else { 3 });
+            let plans = ui.overview_captures(&vp);
+            assert_eq!(plans.len(), 4, "empty desktops reuse a shared backdrop");
+            for p in &plans {
+                assert_eq!(p.capture_width, (p.width * 2.) as u32);
+                assert_eq!(p.capture_height, (p.height * 2.) as u32);
+            }
+            let bytes: f64 = plans
+                .iter()
+                .map(|p| p.capture_width as f64 * p.capture_height as f64 * 4. * 4. / 3.)
+                .sum();
+            assert!(bytes <= 96. * 1024. * 1024.);
+            let before = ui.overview_frame(2256., 1504., 40.);
+            ui.overview_close(40.);
+            let after = ui.overview_frame(2256., 1504., 40.);
+            assert_eq!(
+                before.alpha, after.alpha,
+                "closing mid-open has no opacity/zoom jump"
+            );
+            assert_eq!(before.cells[0].rect.x, after.cells[0].rect.x);
+            ui.closing = None;
+            ui.closing_from = None;
+        }
+        for bad in [
+            r#"{"supersample":0.5}"#,
+            r#"{"supersample":5}"#,
+            r#"{"background_darken":1.1}"#,
+            r#"{"memory_budget_mib":8}"#,
+        ] {
+            assert!(crate::theme::Theme::parse(bad).is_err());
+        }
+    }
+    #[test]
+    fn hover_lifts_two_percent_and_reversal_is_continuous_without_recapture() {
+        let core = Core::default();
+        let mut ui = core.overview_new(&[output(0, 0., 0.)], &[], &[], 0.);
+        let frame = ui.overview_frame(2256., 1504., 1000.);
+        let r = &frame.cells[0].rect;
+        ui.overview_pointer(2256., 1504., r.x + r.width / 2., r.y + r.height / 2., false);
+        ui.overview_hover_clock(1000.);
+        let middle = ui.overview_frame(2256., 1504., 1060.);
+        assert!((middle.cells[0].rect.width / r.width - 1.01).abs() < 1e-9);
+        let settled = ui.overview_frame(2256., 1504., 1120.);
+        assert!((settled.cells[0].rect.width / r.width - 1.02).abs() < 1e-9);
+        ui.overview_press(2256., 1504., r.x + r.width / 2., r.y + r.height / 2.);
+        assert_eq!(
+            ui.overview_frame(2256., 1504., 1120.).cells[0].rect.width,
+            r.width
+        );
+        ui.pressed = None;
+        ui.hover = None;
+        ui.overview_hover_clock(1060.);
+        assert_eq!(
+            ui.overview_frame(2256., 1504., 1060.).cells[0].rect.width,
+            middle.cells[0].rect.width
+        );
+        assert_eq!(
+            ui.overview_frame(2256., 1504., 1180.).cells[0].rect.width,
+            r.width
+        );
+    }
+    #[test]
     fn edp_headers_are_text_sized_flush_and_eight_pixels_above_each_panel() {
         let mut output = output(0, 8934., 6682.);
         output.name = "eDP-1".into();
@@ -1271,7 +1494,7 @@ mod tests {
             ui.fit = !full;
             ui.reflow();
             for scale in [1., 2.] {
-                let f = ui.overview_frame_scaled(2256. * scale, 1504. * scale, scale, 101.);
+                let f = ui.overview_frame_scaled(2256. * scale, 1504. * scale, scale, 1001.);
                 for (label, special) in [("eDP-1", false), ("Special workspaces", true)] {
                     let header = f.labels.iter().find(|l| l.text == label).unwrap();
                     let cells: Vec<_> = f
@@ -1338,14 +1561,14 @@ mod tests {
         ui.overview_key(0xff0d, false, 101.);
         assert_eq!(ui.expanded, Some(1));
         assert!(ui
-            .overview_frame(1280., 720., 101.)
+            .overview_frame(1280., 720., 1001.)
             .labels
             .iter()
             .any(|l| l.text == "Dock · disconnected"));
         ui.overview_key(0xff1b, false, 101.);
         assert!(ui.expanded.is_none() && ui.closing.is_none());
         ui.overview_parked();
-        let expanded = ui.overview_frame(1280., 720., 101.);
+        let expanded = ui.overview_frame(1280., 720., 1001.);
         let source = expanded
             .windows
             .iter()
@@ -1369,9 +1592,9 @@ mod tests {
             ui.expanded.is_none(),
             "first drag motion over live tab must switch immediately"
         );
-        assert!(ui.overview_frame(1280., 720., 101.).ghost.visible);
+        assert!(ui.overview_frame(1280., 720., 1001.).ghost.visible);
         ui.overview_key(0xff1b, false, 101.);
-        let frame = ui.overview_frame(1280., 720., 101.);
+        let frame = ui.overview_frame(1280., 720., 1001.);
         let source = frame
             .windows
             .iter()
@@ -1469,7 +1692,7 @@ mod tests {
         for full in [false, true, false] {
             ui.fit = !full;
             ui.reflow();
-            let f = ui.overview_frame(2256., 1504., 101.);
+            let f = ui.overview_frame(2256., 1504., 1001.);
             let rects: Vec<_> = f
                 .cells
                 .iter()
@@ -1489,8 +1712,8 @@ mod tests {
             assert!(((right.x - a.x - a.width) - (below.y - a.y - a.height)).abs() < 1e-6);
             let plan = ui.overview_captures(&viewport);
             assert_eq!(plan.len(), 1);
-            assert_eq!(plan[0].capture_width, a.width.ceil() as u32);
-            assert_eq!(plan[0].capture_height, a.height.ceil() as u32);
+            assert_eq!(plan[0].capture_width, (a.width.ceil() * 2.).ceil() as u32);
+            assert_eq!(plan[0].capture_height, (a.height.ceil() * 2.).ceil() as u32);
             if full {
                 assert!(plan[0].capture_width < previous_width);
             }
@@ -1555,7 +1778,7 @@ mod tests {
             .iter()
             .map(|c| f64::from(c.capture_width) * f64::from(c.capture_height) * 4. * 4. / 3.)
             .sum();
-        assert!(bytes <= 64. * 1024. * 1024.);
+        assert!(bytes <= 96. * 1024. * 1024.);
     }
     #[test]
     fn short_app_labels_and_centered_visible_composition() {
@@ -1587,7 +1810,7 @@ mod tests {
                 &[],
                 0.,
             );
-            let f = ui.overview_frame(1280., 720., 101.);
+            let f = ui.overview_frame(1280., 720., 1001.);
             let top = f
                 .labels
                 .iter()
@@ -1609,13 +1832,13 @@ mod tests {
     #[test]
     fn fit_margin_minimum_and_toggle_preserve_aspect() {
         let mut ui = Core::default().overview_new(&[output(0, 0., 0.)], &[], &[], 0.);
-        let f = ui.overview_frame(1280., 720., 101.);
+        let f = ui.overview_frame(1280., 720., 1001.);
         assert_eq!(f.cells.len(), 9);
         assert!((f.cells[0].rect.width / f.cells[0].rect.height - 1280. / 720.).abs() < 0.001);
         ui.overview_key(97, false, 101.);
-        assert_eq!(ui.overview_frame(1280., 720., 101.).cells.len(), 64);
+        assert_eq!(ui.overview_frame(1280., 720., 1001.).cells.len(), 64);
         ui.overview_key(97, false, 101.);
-        assert_eq!(ui.overview_frame(1280., 720., 101.).cells.len(), 9);
+        assert_eq!(ui.overview_frame(1280., 720., 1001.).cells.len(), 9);
         assert!(crate::theme::Theme::parse(r##"{"label":"#oops"}"##).is_err());
     }
     #[test]
@@ -1637,7 +1860,7 @@ mod tests {
             &[],
             0.0,
         );
-        let f = ui.overview_frame(1000.0, 700.0, 101.0);
+        let f = ui.overview_frame(1000.0, 700.0, 1001.0);
         assert_eq!(f.cells.len(), 129);
         assert!(f.cells[64].rect.x < f.cells[0].rect.x && f.cells[64].rect.y < f.cells[0].rect.y);
         ui.overview_key(0xff09, false, 101.0);
@@ -1658,7 +1881,7 @@ mod tests {
             ..Default::default()
         }
         .overview_new(&[output(0, 0.0, 0.0)], &[], &[], 0.0);
-        let f = ui.overview_frame(1280.0, 720.0, 101.0);
+        let f = ui.overview_frame(1280.0, 720.0, 1001.0);
         let c = &f.cells[9];
         assert_eq!(
             ui.overview_pointer(1280.0, 720.0, c.rect.x + 1.0, c.rect.y + 1.0, true),
@@ -1668,8 +1891,11 @@ mod tests {
             .overview_pointer(1280.0, 720.0, 0.0, 0.0, true)
             .is_empty());
         assert!(ui.overview_frame(1280.0, 720.0, 50.0).animating);
+        assert!(!ui.overview_interactive(179.));
+        assert!(ui.overview_interactive(180.));
         ui.overview_key(0xff1b, false, 110.0);
+        assert!(!ui.overview_interactive(181.));
         assert!(ui.overview_frame(1280.0, 720.0, 150.0).alive);
-        assert!(!ui.overview_frame(1280.0, 720.0, 211.0).alive);
+        assert!(!ui.overview_frame(1280.0, 720.0, 291.0).alive);
     }
 }

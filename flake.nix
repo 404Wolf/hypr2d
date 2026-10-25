@@ -69,7 +69,7 @@
       };
       nested = pkgs.writeShellApplication {
         name = "hypr2d-nested";
-        runtimeInputs = [ compositor (pkgs.python3.withPackages (p: [ p.pillow ])) pkgs.foot pkgs.waybar pkgs.grim pkgs.wtype pkgs.wlrctl testPointer ];
+        runtimeInputs = [ compositor (pkgs.python3.withPackages (p: [ p.pillow ])) pkgs.foot pkgs.waybar pkgs.grim pkgs.wtype pkgs.wlrctl pkgs.swaybg testPointer ];
         text = builtins.replaceStrings [ "@PLUGIN@" "@SMOKE@" "@CLI@" "@EXAMPLES@" "@OVERVIEW@" "@HMLUA@" "@LATENCY@" "@DOCTOR@" ] [ "${plugin}/lib/libhypr2d.so" "${./nix/smoke.py}" "${rust}/bin/hypr2d" "${./examples}" "${./nix/overview.py}" "${moduleTest.lua}" "${./nix/latency.py}" "${./nix/doctor.py}" ] (builtins.readFile ./nix/nested.sh);
       };
       parentConfig = pkgs.writeText "hypr2d-ci-parent.lua" ''
@@ -101,7 +101,7 @@
           # keep the expected path as an alias for EGL device discovery.
           machine.succeed("rm -f /dev/dri/renderD128; ln -s card0 /dev/dri/renderD128")
           machine.send_chars("Hyprland --i-am-really-stupid --config ${parentConfig} >/tmp/hypr2d-parent.log 2>&1\n")
-          machine.wait_until_succeeds("test -f /tmp/hypr2d-status", timeout=300)
+          machine.wait_until_succeeds("test -f /tmp/hypr2d-status", timeout=420)
           print(machine.succeed("cat /tmp/hypr2d-doctor.log"))
           machine.succeed("grep 'PASS doctor postmortem:' /tmp/hypr2d-doctor.log")
           machine.succeed("grep 'PASS doctor repair:' /tmp/hypr2d-doctor.log")

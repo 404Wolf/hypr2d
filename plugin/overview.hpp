@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 namespace OverviewProbe {
-SP<Render::IFramebuffer> capture(const hypr2d::ProbeCell &cell, SP<Render::IFramebuffer> fb, bool finish);
+SP<Render::IFramebuffer> capture(const hypr2d::ProbeCell &cell, SP<Render::IFramebuffer> fb, bool finish, bool background = false);
 void init();
 void close();
 void shutdown();

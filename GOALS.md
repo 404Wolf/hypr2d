@@ -85,4 +85,7 @@ changed; flag anything that blocks you at the bottom under "Questions".
 
 - [x] Four-finger overview pinch cancellation with sequence ownership, configurable threshold, native Lua opener and VM state/no-reopen regressions
 
+- [x] Overview wallpaper/empty desktops, budgeted supersampling and subtle animated tile polish; VM screenshots and 2256×1504 9×9 timing
+  - Software-rendered VM timing is recorded in DESIGN.md; Radeon frame pacing remains a user-owned live verification.
+
 ## Questions

@@ -315,7 +315,7 @@ mod tests {
                 shown: false,
             }],
             &[window("a", "1", 0), window("b", "2", 1)],
-            0.0,
+            -200.0,
         )
     }
     fn press(ui: &mut Overview) {
@@ -363,9 +363,15 @@ mod tests {
         assert_eq!(drop.swap, "b");
         assert!(drop.stack.is_empty());
         ui.overview_refuse("b", 101.);
-        assert_eq!(ui.overview_frame(1000., 700., 150.).refused, "b");
-        assert!(ui.overview_frame(1000., 700., 150.).animating);
-        assert!(ui.overview_frame(1000., 700., 300.).refused.is_empty());
+        assert_eq!(
+            ui.overview_frame(1000., 700., 350.).refused,
+            "b",
+            "feedback must survive a delayed first frame"
+        );
+        ui.overview_presented(350.);
+        assert_eq!(ui.overview_frame(1000., 700., 529.).refused, "b");
+        assert!(ui.overview_frame(1000., 700., 529.).animating);
+        assert!(ui.overview_frame(1000., 700., 530.).refused.is_empty());
     }
     #[test]
     fn floating_drop_retains_grab_offset_on_other_monitor_and_special() {
@@ -405,7 +411,7 @@ mod tests {
             .activate
             .is_empty());
         ui.overview_key(0xff1b, false, 103.0);
-        assert!(!ui.overview_frame(1000.0, 700.0, 204.0).alive);
+        assert!(!ui.overview_frame(1000.0, 700.0, 284.0).alive);
         let mut ui = model();
         press(&mut ui);
         ui.overview_windows(&[window("b", "2", 1)]);

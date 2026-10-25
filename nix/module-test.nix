@@ -23,6 +23,8 @@ let
     waybar = { enable = true; monitor = "WAYLAND-1"; radiusX = 2; radiusY = 1; columns = "full"; placement = "start"; };
   };
   disabled = evaluate {};
+  invalidSupersample = (evaluate {enable=true;overview.supersample=5;}).config;
+  invalidDarken = (evaluate {enable=true;overview.backgroundDarken=1.1;}).config;
   invalidPinch = (evaluate {enable=true;pinch.cancelScale=1;}).config;
   invalidSlots = evaluate {enable=true;monitorSlots={ "DP-1"=0; };};
   duplicateSlots = evaluate {enable=true;monitorSlots={ "DP-1"=2; "DP-2"=2; };};
@@ -56,6 +58,7 @@ let
     assert colored.programs.hypr2d.theme.current == "#82AAFF";
     assert (builtins.fromJSON colored.xdg.configFile."hypr/hypr2d.json".text).theme.gap == 4;
     assert c.programs.hypr2d.overview.gap == 0;
+    assert c.programs.hypr2d.overview.supersample == 2.0 && c.programs.hypr2d.overview.memoryBudgetMiB == 128 && c.programs.hypr2d.overview.backgroundDarken == 0.35;
     assert colored.programs.hypr2d.pinch.cancelScale == 0.08;
     assert lib.hasInfix "pinch-config 0.12" c.wayland.windowManager.hyprland.extraConfig;
     assert (builtins.fromJSON c.xdg.configFile."hypr/hypr2d.json".text).pinch.cancelScale == 0.12;
@@ -64,7 +67,7 @@ let
     assert lib.hasInfix "--columns full --rows centered" c.programs.waybar.settings.mainBar."custom/hypr2d".exec;
     assert !(builtins.tryEval invalidColor.config.programs.hypr2d.waybar.colors.current).success;
     assert !(disabled.config.xdg.configFile ? "hypr/hypr2d.json");
-    assert lib.all (v: !(builtins.tryEval v.activationPackage.drvPath).success) [ invalidPinch invalid invalidDiagonal invalidHysteresis invalidProjection invalidSpring invalidSensitivity ];
+    assert lib.all (v: !(builtins.tryEval v.activationPackage.drvPath).success) [ invalidSupersample invalidDarken invalidPinch invalid invalidDiagonal invalidHysteresis invalidProjection invalidSpring invalidSensitivity ];
     assert lib.all (v: lib.hasInfix v c.wayland.windowManager.hyprland.extraConfig) [ "diagonal_width=14" "hysteresis=7" "hysteresis_distance=16" "projection_decel=0.0008" "spring_stiffness=625" "sensitivity=1.3" ];
     assert !(builtins.tryEval invalidSlots.activationPackage.drvPath).success;
     assert !(builtins.tryEval duplicateSlots.activationPackage.drvPath).success;

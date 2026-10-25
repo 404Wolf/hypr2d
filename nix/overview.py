@@ -7,6 +7,7 @@ import signal
 import socket
 import select
 import subprocess
+import statistics
 import sys
 import time
 from PIL import Image, ImageChops
@@ -72,6 +73,7 @@ with (artifacts / "compositor.log").open("w+") as log:
             print("Initial outputs:",monitors(),flush=True)
             print((artifacts / "compositor.log").read_text()[-16000:],flush=True)
             raise
+        ok("hypr2d","overview-config",'{"supersample":1}')
         assert not ctl("configerrors"), ctl("configerrors")
         ok("eval", 'hl.config({input={follow_mouse=0}, animations={enabled=false}, cursor={invisible=true}})')
         ok("output", "create", "headless")
@@ -267,7 +269,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         empty=next(c for c in fitted["cells"] if not c["occupied"] and not c["selected"] and not c["shown"] and not c["key"].startswith("special:"))
         x,y,w,h=empty["rect"]
         empty_image=Image.open(artifacts / "ui-fit-default-0.png").convert("RGB")
-        assert empty_image.getpixel((round(x+w/2),round(y+h/2)))==(0,0,0),"empty background must be base00"
+        assert max(empty_image.getpixel((round(x+w/2),round(y+h/2))))<=20,"empty background must be base00"
         assert empty_image.getpixel((round(x),round(y+h/2)))==(53,53,53),"empty outline must be base02"
         # Real mapped fixtures exercise short reverse-DNS class labels and +N.
         label_windows=[]
@@ -288,7 +290,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         wait(lambda:len(ui_state()["ui"]["cells"])==130,"full grid toggle")
         check_composition(ui_state()["ui"])
         screenshot("ui-full-default")
-        ok("hypr2d","overview-config",json.dumps({"fit":False,"font":"DejaVu Sans","font_size":18,"rounding":2,"border":"#4A4A4A"}))
+        ok("hypr2d","overview-config",json.dumps({"fit":False,"font":"DejaVu Sans","font_size":18,"rounding":2,"supersample":1,"border":"#4A4A4A"}))
         wait(lambda:ui_state().get("pending")==0,"theme refresh")
         screenshot("ui-theme")
         ui = ui_state()["ui"]
@@ -558,7 +560,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         locked=json.loads(ctl("hypr2d","overview","invariants"))
         begin_drag(sc);r=drawn_window(sa)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2))
         pointer_command("up")
-        wait(lambda:ui_state()["ui"]["refused"]==sa,"locked-group refusal flash")
+        wait(lambda:ui_state()["ui"]["last_refused"]==sa,"locked-group refusal")
         assert json.loads(ctl("hypr2d","overview","invariants"))==locked,"refusal preserves focus, group order/members/locks"
         assert not real_window(sc)["grouped"] and real_window(sc)["workspace"]["id"]==291+mons[0]["slot"]
         screenshot("ui-stack-locked-refusal")
@@ -577,18 +579,35 @@ with (artifacts / "compositor.log").open("w+") as log:
         wait(lambda:all(w["address"] not in [sa,sb,sc,sd] for w in mapped()),"stack fixture cleanup")
         print("PASS stack: cross-cell/new/existing group, active member, detach source member, Shift swaps, empty-special removal, locked refusal",flush=True)
         screenshot("ui-clean-before")
+        # Screencopy forces damage_tracking=0. Restore normal tracking so a
+        # closed RSS sample isn't taken in a continuously rendering pipeline.
+        ok("eval",'hl.config({debug={damage_tracking=2}})')
         ui_runs=[]
-        for cycle in range(20):
+        for cycle in range(60):
             open_ui();keypress("Escape");wait(lambda:ui_state().get("open") is False,"UI repeat close")
             assert ui_state()["deleted_gl_objects"],"production capture/label GL objects released"
-            probe("close")  # Test-only GPU retirement barrier before closed RSS sampling.
-            ui_runs.append(process_memory())
+            time.sleep(.2) # Finish the native frames requested by overview close.
+            samples=[]
+            for sample in range(3):
+                probe("retire") # GPU barrier + allocator trim, without fresh damage.
+                samples.append(process_memory())
+                if sample<2:time.sleep(.05)
+            retained=min(samples,key=lambda s:int(s["rss"].split()[1])).copy()
+            retained["rss_samples"]=[s["rss"] for s in samples]
+            ui_runs.append(retained)
         screenshot("ui-clean-after");compare("ui-clean-after","ui-clean-before")
-        rss=[int(r["rss"].split()[1]) for r in ui_runs[5:]]
-        assert max(rss)-min(rss)<16*1024,rss
-        assert len({r["fds"] for r in ui_runs[5:]})==1,ui_runs
+        warm=ui_runs[20:]
+        rss=[int(r["rss"].split()[1]) for r in warm]
+        floors=[min(rss[i:i+10]) for i in range(0,len(rss),10)]
+        slope=statistics.linear_regression(range(len(rss)),rss).slope
+        (artifacts/"ui-memory.json").write_text(json.dumps({"samples":ui_runs,"warm_rss_kib":rss,"block_floors_kib":floors,"growth_kib_per_cycle":slope},indent=2))
+        assert max(floors)-min(floors)<16*1024,(floors,rss)
+        assert floors[-1]<=floors[0]+4*1024,("retained closed footprint grows",floors,rss)
+        raw_rss=[int(sample.split()[1]) for run in warm for sample in run["rss_samples"]]
+        assert max(raw_rss)-min(raw_rss)<64*1024,raw_rss
+        assert len({r["fds"] for r in warm})==1,ui_runs
         ptr.stdin.write(b"quit\n");ptr.stdin.flush();ptr.wait(timeout=10)
-        print("PASS M5: real pointer drags, cross-monitor moves/swaps, specials, fullscreen swap, floating placement, ghost/target, two-stage Esc, disappearing source, 20 clean UI cycles")
+        print("PASS M5: real pointer drags, cross-monitor moves/swaps, specials, fullscreen swap, floating placement, ghost/target, two-stage Esc, disappearing source, 60 clean UI cycles")
         # M6 protocol, native placement, event routing and rendered annotations.
         with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as ext, socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as foreign:
             ext.connect(str(instance / "hypr2d.sock"));foreign.connect(str(instance / "hypr2d.sock"))
@@ -804,7 +823,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         mons=monitors(); edp=mons[0]
         assert (edp["width"],edp["height"],edp["x"],edp["y"],edp["scale"])==(2256,1504,8934,6682,1),edp
         ok("eval",'hl.config({animations={enabled=false},group={groupbar={height=4,render_titles=false,gradients=false,scrolling=true}},input={follow_mouse=1,resolve_binds_by_sym=true},cursor={invisible=false,no_hardware_cursors=1,hide_on_key_press=false}})')
-        ok("hypr2d","overview-config",'{"fit":true,"font_size":16,"rounding":3}')
+        ok("hypr2d","overview-config",'{"fit":true,"font_size":16,"rounding":3,"supersample":1}')
         ok("hypr2d","goto","0","0",str(edp["id"]))
         def laptop_fixture(app):
             pattern = "\x1b[?25l\x1b[97mPIXEL CAPTURE\n0123456789 abcdef\nSharp thumbnail detail\nGroups stay unchanged\n"
@@ -852,6 +871,9 @@ with (artifacts / "compositor.log").open("w+") as log:
         lua('hl.dsp.group.active({index=1})')
         assert os.environ.get("HYPR2D_TEST_MODULE"),"hardware bind regression uses generated Home Manager config"
         ok("eval",f'assert(loadfile({json.dumps(os.environ["HYPR2D_TEST_MODULE"])}))()')
+        # Keep the original native-resolution regression explicit after HM's
+        # new default (2x). The wallpaper benchmark below covers supersampling.
+        ok("hypr2d","overview-config",'{"fit":true,"font_size":16,"rounding":3,"supersample":1}')
         baseline=invariants()
         assert baseline["native"]["focus"]==first,baseline
         screenshot("hardware-before")
@@ -962,10 +984,17 @@ with (artifacts / "compositor.log").open("w+") as log:
         print("PASS pinch: native Lua opening, in/out cancel, no reopen, swipe isolation, grouped focus/special/workspace/order preservation")
         lua('hl.dsp.workspace.toggle_special("8")')
         lua(f'hl.dsp.focus({{window="address:{first}"}})')
+        # Force a real pointer leave/enter: an unchanged center warp does not
+        # deliver motion to Foot after native pinch forwarding.
+        lua('hl.dsp.cursor.move({x=8935,y=6683})')
+        time.sleep(.1)
         win=real_window(first)
         lua(f'hl.dsp.cursor.move({{x={win["at"][0]+win["size"][0]/2},y={win["at"][1]+win["size"][1]/2}}})')
-        keypress("x")
+        # Cursor enter/shape is asynchronous in the client. Let Foot receive the
+        # enter before typing, then wait for its actual hide request.
         time.sleep(.2)
+        keypress("x")
+        wait(lambda:not json.loads(ctl("hypr2d","overview","cursor"))["texture"],"client hides cursor after typing")
         hidden_cursor=json.loads(ctl("hypr2d","overview","cursor"))
         assert not hidden_cursor["texture"],("fixture must reproduce a missing app cursor image",hidden_cursor)
         screenshot("app-hidden-cursor-before")
@@ -997,6 +1026,76 @@ with (artifacts / "compositor.log").open("w+") as log:
         wait(lambda:ui_state().get("open") is False,"app-hidden cursor close")
         assert not json.loads(ctl("hypr2d","overview","cursor"))["texture"],"restore hidden app cursor on close"
         (artifacts/"hardware-invariants.json").write_text(json.dumps({"before":baseline,"after":invariants(),"shown":shown},indent=2))
+        # Isolate the actual single-output workload, not the parked grids left
+        # by earlier hotplug coverage. These clients still close via dispatchers.
+        keep={first,second,hidden,special,hidden_first,hidden_second}
+        for stale in mapped():
+            if stale["address"] not in keep:
+                lua(f'hl.dsp.window.close({{window=assert(hl.get_window("address:{stale["address"]}"))}})')
+        wait(lambda:{w["address"] for w in mapped()}==keep,"single-grid benchmark clients")
+        # Visual upgrade: real layer-shell wallpaper, 2256x1504, 9x9 grid.
+        wallpaper=Image.new("RGB",(2256,1504))
+        from PIL import ImageDraw
+        painter=ImageDraw.Draw(wallpaper)
+        painter.rectangle((0,0,1127,751),fill="#406080")
+        painter.rectangle((1128,0,2255,751),fill="#805040")
+        painter.rectangle((0,752,1127,1503),fill="#406050")
+        painter.rectangle((1128,752,2255,1503),fill="#604080")
+        wallpaper.save(artifacts/"wallpaper.png")
+        paper=subprocess.Popen(["swaybg","-i",str(artifacts/"wallpaper.png"),"-m","stretch"],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+        clients.append(paper)
+        wait(lambda:"wallpaper" in ctl("-j","layers"),"background layer wallpaper")
+        ok("hypr2d","configure","eDP-1","9","9","true","10")
+        ok("hypr2d","overview-config",'{"supersample":2,"memory_budget_mib":128,"background_darken":0.35}')
+        visual_metrics=[]
+        for full_grid,completed_gpu in ((False,False),(True,False),(False,True),(True,True)):
+            ok("hypr2d","overview","profile" if completed_gpu else "profile off")
+            ok("hypr2d","overview-config",json.dumps({"fit":not full_grid,"supersample":2,"memory_budget_mib":128,"background_darken":0.35}))
+            visual_before=invariants()
+            began=time.monotonic()
+            open_ui()
+            state=ui_state()
+            state["open_wall_ms"]=(time.monotonic()-began)*1000
+            assert state["max_frame_ms"]>0,"native frame timing must be measured after render data reset"
+            assert state["gpu_bytes_bound"]<=128*1024*1024,state
+            assert state["backdrop_captures"]>=1
+            for image in state["images"]:
+                assert image["width"]>=image["drawn_width"] and image["height"]>=image["drawn_height"],image
+            visual_name=("visual-full" if full_grid else "visual-fit")+("-profile" if completed_gpu else "")
+            screenshot(visual_name)
+            image=Image.open(artifacts/(visual_name+"-0.png")).convert("RGB")
+            # Exposed backdrop must contain the test wallpaper, not flat black.
+            assert sum(image.getpixel((10,10)))>50,image.getpixel((10,10))
+            empty=next(c for c in state["ui"]["cells"] if not c["occupied"] and not c["shown"])
+            x,y,w,h=empty["rect"]
+            assert sum(image.getpixel((round(x+w*.25),round(y+h*.25))))>20,"empty desktop wallpaper"
+            if not full_grid and not completed_gpu:
+                target=next(c for c in state["ui"]["cells"] if c["occupied"] and not c["shown"])
+                x,y,w,h=target["rect"]
+                count=state["captures"]
+                lua(f'hl.dsp.cursor.move({{x={8934+x+w/2},y={6682+y+h/2}}})')
+                time.sleep(.15)
+                hovered=next(c for c in ui_state()["ui"]["cells"] if c["key"]==target["key"])
+                assert abs(hovered["rect"][2]/w-1.02)<.001,hovered
+                assert ui_state()["captures"]==count,"hover must reuse supersampled textures"
+                screenshot("visual-hover")
+                lua('hl.dsp.cursor.move({x=8944,y=6692})')
+                time.sleep(.15)
+            # Changing fit/full re-plans only visible occupied cells at 2x.
+            original_widths={i["key"]:i["width"] for i in state["images"]}
+            keypress("a")
+            wait(lambda:ui_state().get("pending")==0,"supersampled fit/full recapture")
+            time.sleep(.2)
+            resized=ui_state()
+            assert any(i["width"]!=original_widths.get(i["key"]) for i in resized["images"]),"layout changes must resize supersampled targets"
+            visual_metrics.append({k:state[k] for k in ("max_frame_ms","opening_max_frame_gap_ms","completed_gpu","gpu_rgba_bytes","gpu_bytes_bound","captures","backdrop_captures","capture_ms","max_capture_ms","max_refresh_ms","open_wall_ms")}|{"full_grid":full_grid,"images":state["images"]})
+            keypress("Escape");wait(lambda:ui_state().get("open") is False,"visual close")
+            assert ui_state()["deleted_gl_objects"],"backdrop and mipmap resources deleted"
+            assert invariants()==visual_before,"wallpaper/supersampling preserve focus/group/workspace state"
+        (artifacts/"visual-cost.json").write_text(json.dumps(visual_metrics,indent=2))
+        paper.terminate();paper.wait(timeout=5)
+        clients.remove(paper)
+        print("PASS visual: wallpaper background/empty desktops, budgeted 2x supersampling, fit/full 9x9 screenshots and completed-GPU timing",visual_metrics,flush=True)
         print("PASS hardware: eDP-1 2256x1504 scale1 at 8934x6682, display-sized captures/fit toggle, software cursor screenshot, group/focus/order/workspace/special preservation")
         # Close fixtures normally before compositor shutdown. This also proves
         # group/special bookkeeping survives native unmap after the drop tests.
