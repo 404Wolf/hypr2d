@@ -102,6 +102,27 @@ A translucent ghost and gold destination/window outline show the pending drop.
 Esc cancels a drag first; a second Esc closes the overview. Releasing a cancelled
 drag does nothing. Fullscreen swaps preserve each window's fullscreen mode.
 
+## Overview appearance
+
+Fit is on by default: each monitor shows the used/current bounding box plus
+one cell on every side (clipped to the grid), with at least 3×3 cells.
+Keyboard selection expands the box when necessary. Press `a` to toggle all
+cells without changing workspace numbering. Panels retain physical monitor
+positions and each thumbnail retains its source monitor's aspect ratio.
+The combined layout fits the output width/height and is aligned near the top,
+leaving only space required by those aspect ratios and the special strip.
+Cell captions show the main app name, a window count, or `0` for empty cells.
+
+Configure appearance with one atomic JSON object (omitted fields use defaults):
+
+```sh
+hyprctl hypr2d overview-config '{"fit":true,"background":"#000000","cell":"#303030","border":"#353535","hover":"#4A4A4A","current":"#82AAFF","target":"#FFCB6B","label":"#EEFFFF","font":"sans-serif","font_size":16,"rounding":3}'
+```
+
+Colours use `#RRGGBB`; font size is 10–40 output pixels and rounding is 0–4 px.
+These defaults match base16 OneDark Extra Dark. Runtime changes apply while
+open. Grid capture size stays at 160 pixels wide, independent of layout size.
+
 ## Validation
 
 `nix develop --command cargo test --workspace` runs the pure Rust tests.

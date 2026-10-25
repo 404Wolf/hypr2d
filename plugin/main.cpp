@@ -217,6 +217,10 @@ static std::string execute(const std::string &input) {
         }
         if (!reply.moves.empty() && reply.moves[0].all)
             (void)Config::Actions::focusMonitor(focus);
+        if (input.starts_with("overview-config ")) {
+            OverviewUI::command("overview refresh");
+            IPC::Socket2::sock()->postEvent({"hypr2d", "config"});
+        }
         if (input.starts_with("configure "))
             IPC::Socket2::sock()->postEvent({"hypr2d", "config"});
         return std::string(reply.output);

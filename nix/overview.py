@@ -202,6 +202,16 @@ with (artifacts / "compositor.log").open("w+") as log:
             wait(lambda: ui_state().get("pending") == 0, "UI captures settle")
             time.sleep(0.2)
         open_ui()
+        fitted=ui_state()["ui"]
+        assert fitted["fit"] and len(fitted["cells"])<130
+        assert all(c["label"] != c["key"] for c in fitted["cells"] if not c["key"].startswith("special:"))
+        screenshot("ui-fit-default")
+        keypress("a")
+        wait(lambda:len(ui_state()["ui"]["cells"])==130,"full grid toggle")
+        screenshot("ui-full-default")
+        ok("hypr2d","overview-config",json.dumps({"fit":False,"font":"DejaVu Sans","font_size":18,"rounding":2,"border":"#4A4A4A"}))
+        wait(lambda:ui_state().get("pending")==0,"theme refresh")
+        screenshot("ui-theme")
         ui = ui_state()["ui"]
         assert len(ui["cells"]) == 130, ui
         assert any(c["key"] == "special:probe-0" and c["label"] == "probe-0" for c in ui["cells"])

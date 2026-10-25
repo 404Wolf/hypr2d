@@ -1,5 +1,6 @@
 pub mod grid;
 mod overview;
+mod theme;
 mod ui;
 use overview::probe_report;
 use ui::Overview;
@@ -121,6 +122,18 @@ mod ffi {
         floating: bool,
         title: String,
     }
+    struct UIStyle {
+        background: u32,
+        cell: u32,
+        border: u32,
+        hover: u32,
+        current: u32,
+        target: u32,
+        label: u32,
+        font: String,
+        font_size: u32,
+        rounding: u32,
+    }
     struct UICell {
         key: String,
         monitor: u32,
@@ -171,6 +184,7 @@ mod ffi {
     }
     extern "Rust" {
         type Overview;
+        fn ui_style(self: &Core) -> UIStyle;
         fn overview_press(self: &mut Overview, width: f64, height: f64, x: f64, y: f64);
         fn overview_release(self: &mut Overview, width: f64, height: f64, x: f64, y: f64)
             -> UIDrop;
@@ -219,6 +233,7 @@ mod ffi {
     }
 }
 pub struct Core {
+    theme: theme::Theme,
     grids: HashMap<String, Grid>,
     stride: u32,
     swipe_config: swipe::Config,
@@ -227,6 +242,7 @@ pub struct Core {
 impl Default for Core {
     fn default() -> Self {
         Self {
+            theme: theme::Theme::default(),
             grids: HashMap::new(),
             stride: 10,
             swipe_config: swipe::Config::default(),
@@ -293,6 +309,14 @@ impl Core {
         windows: &[ffi::Window],
         input: &str,
     ) -> Result<ffi::Reply, String> {
+        if let Some(json) = input.strip_prefix("overview-config ") {
+            self.theme = theme::Theme::parse(json)?;
+            return Ok(ffi::Reply {
+                moves: vec![],
+                output: "ok".into(),
+                error: String::new(),
+            });
+        }
         let args: Vec<_> = input.split_whitespace().collect();
         let mut reply = ffi::Reply {
             moves: vec![],
@@ -300,7 +324,7 @@ impl Core {
             error: String::new(),
         };
         if matches!(args.as_slice(), ["state"] | ["state", "-j"]) {
-            reply.output = json!({"version":1,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
+            reply.output = json!({"version":1,"overview_config":self.theme,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
                 let g = self.grid(m);
                 json!({"id":m.id,"name":m.name,"workspace":m.workspace,"focused":m.focused,"grid":g,"cell":g.cell(m.workspace,m.id),"offset":[m.offset_x,m.offset_y],
                     "cells":(0..g.rows).flat_map(|y|(0..g.columns).map(move |x|Cell{x,y})).filter_map(|c|g.id(c,m.id).ok().map(|id|json!({"x":c.x,"y":c.y,"workspace":id,"windows":windows.iter().filter(|w|w.workspace==id).map(|w|json!({"address":w.address,"title":w.title,"app_id":w.app_id,"urgent":w.urgent})).collect::<Vec<_>>()}))).collect::<Vec<_>>()})
@@ -503,6 +527,43 @@ impl Core {
             }
             result
         })
+    }
+}
+
+impl Core {
+    fn ui_style(&self) -> ffi::UIStyle {
+        guarded(|| {
+            let t = &self.theme;
+            let c = |s: &str| u32::from_str_radix(&s[1..], 16).unwrap_or(0);
+            ffi::UIStyle {
+                background: c(&t.background),
+                cell: c(&t.cell),
+                border: c(&t.border),
+                hover: c(&t.hover),
+                current: c(&t.current),
+                target: c(&t.target),
+                label: c(&t.label),
+                font: t.font.clone(),
+                font_size: t.font_size,
+                rounding: t.rounding,
+            }
+        })
+    }
+}
+impl Default for ffi::UIStyle {
+    fn default() -> Self {
+        Self {
+            background: 0,
+            cell: 0x303030,
+            border: 0x353535,
+            hover: 0x4A4A4A,
+            current: 0x82AAFF,
+            target: 0xFFCB6B,
+            label: 0xEEFFFF,
+            font: "sans-serif".into(),
+            font_size: 16,
+            rounding: 3,
+        }
     }
 }
 

@@ -35,6 +35,10 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Drag a window between cells, between monitors' grids, and into/out of special workspaces; drop on a window to swap; floating windows placed at the drop point
 - [x] Ghost thumbnail + target highlight; Esc cancels
 
+## Overview polish (after M5)
+- [x] Maximize layout scale while preserving physical panel arrangement and monitor-aspect cells; default fit bounding box + one-cell margin, at least 3×3, `a` full-grid toggle
+- [x] Configurable OneDark Extra Dark palette/fonts, subtle rounding, readable app/count cell labels; verified in VM screenshots
+
 ## M6 — Extension socket (no agent-specific code in this repo)
 - [ ] Versioned JSON-lines socket: annotations (label/badge/dot/colour/tooltip on cells, specials, windows), reserved regions (rows with titles), placement, activate/drop callbacks, session-scoped cleanup on disconnect
 - [ ] `hypr2d-client` Rust crate + protocol docs; overview and waybar render annotations

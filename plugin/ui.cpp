@@ -58,7 +58,7 @@ static std::vector<hypr2d::UIWindow> windows() {
         auto size = w->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
         auto m = w->m_monitor.lock();
         result.push_back({std::format("0x{:x}", reinterpret_cast<uintptr_t>(w.get())), key(w->m_workspace), static_cast<uint32_t>(m->m_id),
-                          pos.x - m->m_position.x, pos.y - m->m_position.y, size.x, size.y, w->isFloating(), w->metadata().title()});
+                          pos.x - m->m_position.x, pos.y - m->m_position.y, size.x, size.y, w->isFloating(), w->metadata().appID()});
     }
     return result;
 }
@@ -178,10 +178,14 @@ static void activate(const std::string &target) {
             return;
         }
 }
+static CHyprColor color(uint32_t rgb, double alpha) {
+    return CHyprColor(((rgb >> 16) & 255) / 255.0, ((rgb >> 8) & 255) / 255.0, (rgb & 255) / 255.0, alpha);
+}
 static SP<Render::ITexture> text(const std::string &str, int fontSize, int width) {
     auto key = std::format("{}:{}:{}", fontSize, width, str);
     if (!textCache.contains(key))
-        textCache[key] = g_pHyprRenderer->renderText(str, CHyprColor(0.67, 0.7, 0.76, 1.0), fontSize, false, "sans-serif", width);
+        textCache[key] =
+            g_pHyprRenderer->renderText(str, color(core->ui_style().label, 1), fontSize, false, std::string(core->ui_style().font), width);
     return textCache[key];
 }
 // The ghost samples a cropped region of an existing thumbnail; no extra capture.
@@ -220,11 +224,13 @@ class Pass final : public IPassElement {
     Pass(hypr2d::UIFrame f, Vector2D s) : frame(std::move(f)), size(s) {}
     std::vector<UP<IPassElement>> draw() override {
         std::vector<UP<IPassElement>> items;
+        auto style = core->ui_style();
         auto rect = [&](const CBox &box, CHyprColor color) {
-            items.push_back(makeUnique<CRectPassElement>(CRectPassElement::SRectData{.box = box, .color = color}));
+            items.push_back(makeUnique<CRectPassElement>(
+                CRectPassElement::SRectData{.box = box, .color = color, .round = static_cast<int>(style.rounding)}));
         };
         auto label = [&](const std::string &str, const CBox &box, float opacity = 1.f) {
-            auto tex = text(str, std::clamp(static_cast<int>(std::round(box.h * 0.6)), 9, 32), std::clamp(static_cast<int>(box.w), 1, 500));
+            auto tex = text(str, static_cast<int>(style.font_size), std::clamp(static_cast<int>(box.w), 1, 500));
             if (tex)
                 items.push_back(makeUnique<CTexPassElement>(
                     CTexPassElement::SRenderData{.tex = tex,
@@ -232,31 +238,34 @@ class Pass final : public IPassElement {
                                                  .a = float(frame.alpha * opacity)}));
         };
         const double uiScale = frame.labels.empty() ? 1.0 : frame.labels[0].rect.height / 24.0;
-        rect({0, 0, size.x, size.y}, CHyprColor(0.025, 0.03, 0.04, frame.alpha));
+        rect({0, 0, size.x, size.y}, color(style.background, frame.alpha));
         for (auto &c : frame.cells) {
             CBox box{c.rect.x, c.rect.y, c.rect.width, c.rect.height};
-            const auto color = std::string(c.key) == std::string(frame.target) ? CHyprColor(0.9, 0.75, 0.48, frame.alpha)
-                               : c.selected                                    ? CHyprColor(0.38, 0.68, 0.94, frame.alpha)
-                               : c.hovered                                     ? CHyprColor(0.77, 0.48, 0.86, frame.alpha)
-                               : c.shown                                       ? CHyprColor(0.6, 0.76, 0.47, frame.alpha)
-                                                                               : CHyprColor(0.15, 0.17, 0.20, frame.alpha);
-            rect(box.copy().expand(2), color);
-            rect(box, CHyprColor(0.055, 0.06, 0.075, frame.alpha));
+            const auto borderColor = std::string(c.key) == std::string(frame.target) ? color(style.target, frame.alpha)
+                                     : c.selected                                    ? color(style.current, frame.alpha)
+                                     : c.hovered                                     ? color(style.hover, frame.alpha)
+                                     : c.shown                                       ? color(style.current, frame.alpha)
+                                                                                     : color(style.border, frame.alpha);
+            rect(box.copy().expand(2), borderColor);
+            rect(box, color(style.cell, frame.alpha));
             if (auto it = cache.find(std::string(c.key)); it != cache.end())
-                items.push_back(makeUnique<CTexPassElement>(CTexPassElement::SRenderData{
-                    .tex = it->second->getTexture(), .box = box, .a = float(frame.alpha * (c.occupied ? 1.0 : 0.35))}));
-            if (std::string(c.key).starts_with("special:") || c.selected || c.hovered || c.shown)
-                label(
-                    std::string(c.label),
-                    {box.x + 3 * uiScale, box.y + 2 * uiScale, std::max(1.0, box.w - 6 * uiScale), std::min(14.0 * uiScale, box.h * 0.45)},
-                    c.occupied ? 1.f : 0.45f);
+                items.push_back(
+                    makeUnique<CTexPassElement>(CTexPassElement::SRenderData{.tex = it->second->getTexture(),
+                                                                             .box = box,
+                                                                             .a = float(frame.alpha * (c.occupied ? 1.0 : 0.35)),
+                                                                             .round = static_cast<int>(style.rounding)}));
+            if (!c.label.empty())
+                label(std::string(c.label),
+                      {box.x + 3 * uiScale, box.y + 2 * uiScale, std::max(1.0, box.w - 6 * uiScale),
+                       std::min(static_cast<double>(style.font_size + 6), box.h * 0.45)},
+                      c.occupied ? 1.f : 0.45f);
         }
         for (auto &l : frame.labels)
             label(std::string(l.text), {l.rect.x, l.rect.y, l.rect.width, l.rect.height});
         for (auto &w : frame.windows)
             if (w.target) {
                 CBox b{w.rect.x, w.rect.y, w.rect.width, w.rect.height};
-                auto col = CHyprColor(0.9, 0.75, 0.48, frame.alpha);
+                auto col = color(style.target, frame.alpha);
                 rect({b.x, b.y, b.w, 2}, col);
                 rect({b.x, b.y + b.h - 2, b.w, 2}, col);
                 rect({b.x, b.y, 2, b.h}, col);
@@ -513,6 +522,14 @@ void shutdown() {
     core = nullptr;
 }
 std::string command(const std::string &input) {
+    if (input == "overview refresh") {
+        textCache.clear();
+        if (ui) {
+            rebuild = true;
+            damage();
+        }
+        return "ok";
+    }
     if (input == "overview state") {
         if (!ui)
             return deletedObjects ? "{\"open\":false,\"deleted_gl_objects\":true}" : "{\"open\":false,\"deleted_gl_objects\":false}";

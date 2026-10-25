@@ -52,9 +52,12 @@ struct CellView {
     y: u32,
     occupied: bool,
     shown: bool,
+    visible: bool,
 }
 #[derive(Default)]
 pub struct Overview {
+    fit: bool,
+    panels: Vec<Rect>,
     windows: Vec<Window>,
     outputs: Vec<(u32, f64, f64)>,
     canvas_height: f64,
@@ -79,6 +82,7 @@ impl Core {
     ) -> Box<Overview> {
         guarded(|| {
             let mut ui = Overview {
+                fit: self.theme.fit,
                 started: now,
                 windows: window_snapshot(windows),
                 outputs: outputs.iter().map(|m| (m.id, m.width, m.height)).collect(),
@@ -99,7 +103,7 @@ impl Core {
                 .iter()
                 .map(|m| m.y + m.height)
                 .fold(f64::NEG_INFINITY, f64::max);
-            let scale = (960.0 / (max_x - min_x).max(1.0)).min(530.0 / (max_y - min_y).max(1.0));
+            let scale = (984.0 / (max_x - min_x).max(1.0)).min(530.0 / (max_y - min_y).max(1.0));
             for (group, m) in outputs.iter().enumerate() {
                 let grid = self
                     .grids
@@ -111,11 +115,12 @@ impl Core {
                         ..Default::default()
                     });
                 let panel = Rect {
-                    x: 20.0 + (m.x - min_x) * scale,
+                    x: 8.0 + (m.x - min_x) * scale,
                     y: 24.0 + (m.y - min_y) * scale,
                     w: m.width * scale,
                     h: m.height * scale,
                 };
+                ui.panels.push(panel);
                 ui.headers.push((
                     Rect {
                         x: panel.x + 6.0,
@@ -139,7 +144,7 @@ impl Core {
                                 ui.selected = ui.cells.len();
                             }
                             ui.cells.push(CellView {
-                                key,
+                                key: key.clone(),
                                 monitor: m.id,
                                 rect: Rect {
                                     x: panel.x + 8.0 + x as f64 * w,
@@ -147,12 +152,13 @@ impl Core {
                                     w: (w - 3.0).max(1.0),
                                     h: ((w - 3.0) * ratio).max(1.0),
                                 },
-                                label: id.to_string(),
+                                label: cell_label(windows, &key),
                                 group,
                                 x,
                                 y,
                                 occupied,
                                 shown: m.workspace == id,
+                                visible: true,
                             });
                         }
                     }
@@ -186,13 +192,64 @@ impl Core {
                     y: 0,
                     occupied: windows.iter().any(|win| win.workspace == s.name),
                     shown: s.shown,
+                    visible: true,
                 });
             }
+            ui.reflow();
             Box::new(ui)
         })
     }
 }
 impl Overview {
+    fn reflow(&mut self) {
+        for (g, p) in self.panels.iter().enumerate() {
+            let cells: Vec<_> = self
+                .cells
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.group == g)
+                .collect();
+            let cols = cells.iter().map(|(_, c)| c.x + 1).max().unwrap_or(1);
+            let rows = cells.iter().map(|(_, c)| c.y + 1).max().unwrap_or(1);
+            let used: Vec<_> = cells
+                .iter()
+                .filter(|(i, c)| c.occupied || c.shown || *i == self.selected)
+                .collect();
+            let bounds = |axis: bool, n: u32| {
+                if !self.fit {
+                    return (0, n);
+                }
+                let lo = used
+                    .iter()
+                    .map(|(_, c)| if axis { c.x } else { c.y })
+                    .min()
+                    .unwrap_or(0)
+                    .saturating_sub(1);
+                let hi = (used
+                    .iter()
+                    .map(|(_, c)| if axis { c.x } else { c.y })
+                    .max()
+                    .unwrap_or(0)
+                    + 2)
+                .min(n);
+                let count = (hi - lo).max(3.min(n));
+                (lo.min(n - count), count)
+            };
+            let (x0, nx) = bounds(true, cols);
+            let (y0, ny) = bounds(false, rows);
+            let ratio = self.outputs[g].2 / self.outputs[g].1;
+            let w = ((p.w - 8.) / f64::from(nx)).min((p.h - 34.) / f64::from(ny) / ratio);
+            for c in self.cells.iter_mut().filter(|c| c.group == g) {
+                c.visible = c.x >= x0 && c.x < x0 + nx && c.y >= y0 && c.y < y0 + ny;
+                c.rect = Rect {
+                    x: p.x + 4. + (c.x as f64 - x0 as f64) * w,
+                    y: p.y + 30. + (c.y as f64 - y0 as f64) * w * ratio,
+                    w: (w - 3.).max(1.),
+                    h: ((w - 3.) * ratio).max(1.),
+                };
+            }
+        }
+    }
     pub fn overview_windows(&mut self, windows: &[ffi::UIWindow]) -> Vec<String> {
         guarded(|| {
             let replacement = window_snapshot(windows);
@@ -209,12 +266,18 @@ impl Overview {
             self.validate_drag();
             for c in &mut self.cells {
                 c.occupied = self.windows.iter().any(|w| w.workspace == c.key);
+                if !c.key.starts_with("special:") {
+                    c.label = owned_label(&self.windows, &c.key);
+                }
             }
+            self.reflow();
             dirty.into_iter().collect()
         })
     }
     pub fn overview_reconcile(&mut self, mut replacement: Box<Overview>) -> Vec<String> {
         guarded(|| {
+            replacement.fit = self.fit;
+            replacement.reflow();
             let mut dirty = BTreeSet::new();
             for w in self
                 .windows
@@ -268,7 +331,7 @@ impl Overview {
         guarded(|| {
             let f = self.overview_frame(width, height, now);
             let (s, ox, oy) = self.transform(width, height);
-            serde_json::json!({"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":self.headers.iter().map(|(r,t)|serde_json::json!({"label":t,"rect":[r.x,r.y,r.w,r.h]})).collect::<Vec<_>>()}).to_string()
+            serde_json::json!({"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":self.headers.iter().map(|(r,t)|serde_json::json!({"label":t,"rect":[r.x,r.y,r.w,r.h]})).collect::<Vec<_>>()}).to_string()
         })
     }
     pub fn overview_frame(&self, width: f64, height: f64, now: f64) -> ffi::UIFrame {
@@ -297,6 +360,7 @@ impl Overview {
                     .cells
                     .iter()
                     .enumerate()
+                    .filter(|(_, c)| c.visible)
                     .map(|(i, c)| ffi::UICell {
                         key: c.key.clone(),
                         monitor: c.monitor,
@@ -321,11 +385,7 @@ impl Overview {
     }
     fn transform(&self, width: f64, height: f64) -> (f64, f64, f64) {
         let s = (width / WIDTH).min(height / self.canvas_height.max(1.0));
-        (
-            s,
-            (width - WIDTH * s) / 2.0,
-            (height - self.canvas_height * s) / 2.0,
-        )
+        (s, (width - WIDTH * s) / 2.0, 8.0)
     }
     pub fn overview_pointer(
         &mut self,
@@ -345,7 +405,7 @@ impl Overview {
             self.hover = self
                 .cells
                 .iter()
-                .position(|c| c.rect.contains((x - ox) / s, (y - oy) / s));
+                .position(|c| c.visible && c.rect.contains((x - ox) / s, (y - oy) / s));
             if click {
                 if let Some(i) = self.hover {
                     self.selected = i;
@@ -370,6 +430,10 @@ impl Overview {
                 return String::new();
             }
             match key {
+                97 => {
+                    self.fit = !self.fit;
+                    self.reflow();
+                }
                 0xff1b => {
                     if self.drag.take().is_some() {
                         self.pressed = None;
@@ -430,6 +494,7 @@ impl Overview {
                     }
                 }
             }
+            self.reflow();
             String::new()
         })
     }
@@ -452,6 +517,23 @@ impl Default for ffi::UIFrame {
     }
 }
 
+fn owned_label(windows: &[Window], key: &str) -> String {
+    let ws: Vec<_> = windows.iter().filter(|w| w.workspace == key).collect();
+    match ws.len() {
+        0 => "0".into(),
+        1 => ws[0].title.clone(),
+        n => format!("{n} windows"),
+    }
+}
+fn cell_label(windows: &[ffi::UIWindow], key: &str) -> String {
+    let ws: Vec<_> = windows.iter().filter(|w| w.workspace == key).collect();
+    match ws.len() {
+        0 => "0".into(),
+        1 => ws[0].title.clone(),
+        n => format!("{n} windows"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,8 +550,27 @@ mod tests {
         }
     }
     #[test]
+    fn fit_margin_minimum_and_toggle_preserve_aspect() {
+        let mut ui = Core::default().overview_new(&[output(0, 0., 0.)], &[], &[], 0.);
+        let f = ui.overview_frame(1280., 720., 101.);
+        assert_eq!(f.cells.len(), 9);
+        assert!((f.cells[0].rect.width / f.cells[0].rect.height - 1280. / 720.).abs() < 0.001);
+        ui.overview_key(97, false, 101.);
+        assert_eq!(ui.overview_frame(1280., 720., 101.).cells.len(), 64);
+        ui.overview_key(97, false, 101.);
+        assert_eq!(ui.overview_frame(1280., 720., 101.).cells.len(), 9);
+        assert!(crate::theme::Theme::parse(r##"{"label":"#oops"}"##).is_err());
+    }
+    #[test]
     fn physical_layout_negative_positions_and_keyboard_groups() {
-        let mut ui = Core::default().overview_new(
+        let mut ui = Core {
+            theme: crate::theme::Theme {
+                fit: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .overview_new(
             &[output(0, 0.0, 0.0), output(1, -1280.0, -720.0)],
             &[ffi::UISpecial {
                 monitor: 1,
@@ -492,7 +593,14 @@ mod tests {
     }
     #[test]
     fn hit_testing_scaled_canvas_and_animation_cleanup() {
-        let mut ui = Core::default().overview_new(&[output(0, 0.0, 0.0)], &[], &[], 0.0);
+        let mut ui = Core {
+            theme: crate::theme::Theme {
+                fit: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .overview_new(&[output(0, 0.0, 0.0)], &[], &[], 0.0);
         let f = ui.overview_frame(1280.0, 720.0, 101.0);
         let c = &f.cells[9];
         assert_eq!(

@@ -549,3 +549,27 @@ or Home Manager edits, and the VM and its clients exit. Aarch64, real trackpad
 input, HDR/rotated outputs, concurrent screensharing and arbitrary transformer
 or popup effects have not been validated by this suite; the earlier capture
 caveats still apply. Vulkan remains unsupported by this GL capture path.
+
+
+### Overview polish
+
+Fit defaults on and includes occupied/current/selected cells, a clipped one-cell
+margin, and at least 3×3 cells (or the whole grid if smaller). `a` toggles the
+full grid; coordinates and numbering never change. Layout uses almost the full
+output width, aligns near the top and preserves physical output placement and
+source monitor aspect ratios. Aspect preservation limits simultaneous width
+and height coverage: two horizontal 16:9 panels cannot fill a 16:9 output in
+both axes without distortion or changing their relative arrangement.
+
+An atomic `overview-config` JSON command validates palette/font/rounding before
+replacing configuration, then redraws an open overview. Defaults use the user's
+base16 OneDark Extra Dark values; rounding defaults to 3 px and is capped at 4.
+Cell labels use native app IDs, window counts, or 0 for empty cells, at a
+configurable readable pixel size. Larger cells reuse 160-pixel capture textures;
+this polish does not increase capture allocation or introduce polling.
+
+The complete VM suite and 23 Rust tests passed with formatting/Clippy. New VM
+screenshots cover default fit, `a` full grid, and changed font/size/border/rounding.
+The tests assert reduced fit cell count, nonnumeric app labels, full-grid toggle,
+minimum fit size and cell aspect ratio; existing M1–M5 interaction, screenshot
+and repeated-cleanup tests remain passing.

@@ -15,7 +15,10 @@ impl Overview {
             .map(|o| (o.1, o.2))
     }
     fn window_rect(&self, w: &Window) -> Option<Rect> {
-        let cell = self.cells.iter().find(|c| c.key == w.workspace)?;
+        let cell = self
+            .cells
+            .iter()
+            .find(|c| c.visible && c.key == w.workspace)?;
         let (width, height) = self.output_size(cell.monitor)?;
         Some(Rect {
             x: cell.rect.x + w.rect.x / width * cell.rect.w,
@@ -26,7 +29,11 @@ impl Overview {
     }
     fn visible_window_rect(&self, w: &Window) -> Option<Rect> {
         let r = self.window_rect(w)?;
-        let c = &self.cells.iter().find(|c| c.key == w.workspace)?.rect;
+        let c = &self
+            .cells
+            .iter()
+            .find(|c| c.visible && c.key == w.workspace)?
+            .rect;
         let x = r.x.max(c.x);
         let y = r.y.max(c.y);
         let right = (r.x + r.w).min(c.x + c.w);
@@ -259,7 +266,14 @@ mod tests {
         }
     }
     fn model() -> Box<Overview> {
-        Core::default().overview_new(
+        Core {
+            theme: crate::theme::Theme {
+                fit: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .overview_new(
             &[output(0), output(1)],
             &[ffi::UISpecial {
                 monitor: 1,
