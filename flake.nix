@@ -14,7 +14,7 @@
         version = "0.1.0";
         src = pkgs.lib.fileset.toSource {
           root = ./.;
-          fileset = pkgs.lib.fileset.unions [ ./Cargo.toml ./Cargo.lock ./core ./cli ];
+          fileset = pkgs.lib.fileset.unions [ ./Cargo.toml ./Cargo.lock ./core ./cli ./client ];
         };
         cargoLock.lockFile = ./Cargo.lock;
         nativeBuildInputs = [ pkgs.rustfmt pkgs.clippy ];
