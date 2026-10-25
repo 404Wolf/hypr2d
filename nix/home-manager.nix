@@ -36,7 +36,7 @@ let
     lib.optionalString (value != null) " --${name}-color ${lib.escapeShellArg value}"
   ) cfg.waybar.colors);
   module = {
-    exec = "${cli} waybar --radius-x ${toString cfg.waybar.radiusX} --radius-y ${toString cfg.waybar.radiusY}${monitorArg}${colorArgs}";
+    exec = "${cli} waybar --columns ${cfg.waybar.columns} --rows ${cfg.waybar.rows} --radius-x ${toString cfg.waybar.radiusX} --radius-y ${toString cfg.waybar.radiusY}${monitorArg}${colorArgs}";
     return-type = "json";
     restart-interval = lib.mkDefault 2;
     format = "{text}";
@@ -103,8 +103,10 @@ in {
       bar = mkOption { type = types.str; default = "mainBar"; description = "Named Waybar settings entry to extend."; };
       position = mkOption { type = types.enum [ "left" "center" "right" ]; default = "left"; description = "Bar module list to append to."; };
       monitor = mkOption { type = types.nullOr types.str; default = null; description = "Output name/id, or focused output when null."; };
-      radiusX = mkOption { type = types.ints.between 0 4; default = 4; description = "Horizontal minimap radius."; };
-      radiusY = mkOption { type = types.ints.between 0 4; default = 1; description = "Vertical minimap radius."; };
+      columns = mkOption { type = types.enum [ "centered" "full" ]; default = "centered"; description = "Centered radius or every column at fixed grid positions."; };
+      rows = mkOption { type = types.enum [ "centered" "full" ]; default = "centered"; description = "Centered radius or every row at fixed grid positions."; };
+      radiusX = mkOption { type = types.ints.between 0 4; default = 4; description = "Horizontal minimap radius; ignored for full columns."; };
+      radiusY = mkOption { type = types.ints.between 0 4; default = 1; description = "Vertical minimap radius; ignored for full rows."; };
       placement = mkOption { type = types.enum [ "start" "end" ]; default = "end"; description = "Insert before or after existing modules in the selected bar section."; };
       colors = lib.genAttrs [ "current" "occupied" "empty" "urgent" ] (name: mkOption {
         type = types.nullOr (types.strMatching "#[0-9a-fA-F]{6}");

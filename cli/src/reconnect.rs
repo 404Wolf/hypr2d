@@ -76,17 +76,23 @@ pub fn run(args: &Args, mut out: impl Write) -> io::Result<()> {
             };
             let started = Instant::now();
             // Subscription precedes snapshot, including every reconnect.
-            let result = waybar::stream(
+            let result = waybar::stream_view(
                 BufReader::new(reader),
                 || {
                     serde_json::from_str(&crate::request(&path, "state -j")?)
                         .map_err(|e| e.to_string())
                 },
                 &mut out,
-                args.monitor.as_deref(),
-                args.radius_x.or(args.radius).unwrap_or(4),
-                args.radius_y.or(args.radius).unwrap_or(1),
-                &args.colors,
+                &waybar::View::new(
+                    args.monitor.as_deref(),
+                    args.radius_x.or(args.radius).unwrap_or(4),
+                    args.radius_y.or(args.radius).unwrap_or(1),
+                    &args.colors,
+                )
+                .axes(
+                    args.columns.unwrap_or_default(),
+                    args.rows.unwrap_or_default(),
+                ),
             );
             last.clear(); // stream wrote records using its own deduplication state.
                           // Wake and retire a blocked reader on output failure or disconnect.

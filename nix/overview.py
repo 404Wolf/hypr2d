@@ -60,12 +60,12 @@ with (artifacts / "compositor.log").open("w+") as log:
             return json.loads(ctl("hypr2d", "probe", action))
         # Aquamarine occasionally retires its bootstrap fallback before making
         # the first Wayland output after the preceding child exits. Explicitly
-        # create this VM child's development window if bootstrap left none.
+        # create a headless replacement if bootstrap left none.
         ready_deadline=time.monotonic()+2
         while time.monotonic()<ready_deadline and not any(m["name"]!="FALLBACK" for m in monitors()):
             time.sleep(.05)
         if not any(m["name"]!="FALLBACK" for m in monitors()):
-            ok("output","create","wayland","WAYLAND-BOOTSTRAP")
+            ok("output","create","headless","WAYLAND-1")
         try:
             wait(lambda: len(monitors()) == 1 and monitors()[0]["name"]!="FALLBACK", "initial monitor")
         except AssertionError:
@@ -85,6 +85,19 @@ with (artifacts / "compositor.log").open("w+") as log:
         colors = ["701010", "107010", "101070", "707010", "701070", "107070", "703010", "307070", "504070", "407050"]
         def mapped():
             return json.loads(ctl("-j", "clients"))
+        def first_minimap(process):
+            # Startup deliberately emits a neutral record before subscribing.
+            deadline=time.monotonic()+10;buffer=b""
+            while time.monotonic()<deadline:
+                while b"\n" in buffer:
+                    line,buffer=buffer.split(b"\n",1)
+                    record=json.loads(line)
+                    if record["alt"]!="unavailable":return record
+                assert select.select([process.stdout],[],[],max(0,deadline-time.monotonic()))[0],"ready minimap line"
+                data=os.read(process.stdout.fileno(),65536)
+                assert data,"minimap process exited"
+                buffer+=data
+            raise AssertionError("minimap remained unavailable")
         fixture_count = 0
         for panel, m in enumerate(mons):
             for x in range(4):
@@ -487,7 +500,7 @@ with (artifacts / "compositor.log").open("w+") as log:
                 lua(f'hl.dsp.group.toggle({{window="address:{sx}"}})')
                 wait(lambda:bool(real_window(sx)["grouped"]),"grouped swap source")
                 partner=stack_fixture("swap-partner",5,4)
-                ok("eval",f'local a=hl.get_window("address:{sx}"); local b=hl.get_window("address:{partner}"); a.group:add(b)')
+                ok("eval",f'local a=assert(hl.get_window("address:{sx}")); local b=assert(hl.get_window("address:{partner}")); a.group:add(b)')
                 wait(lambda:len(real_window(sx)["grouped"])==2,"two-member swap source")
                 # Select the visible member for the drag, as on the user's laptop.
                 sx,partner=partner,sx
@@ -596,8 +609,7 @@ with (artifacts / "compositor.log").open("w+") as log:
             assert len(rpc("state")["data"]["annotations"])==3
             module=subprocess.Popen([cli,"--instance",instance.name,"waybar","--monitor",mons[0]["name"]],stdout=subprocess.PIPE,stderr=log,start_new_session=True)
             clients.append(module)
-            assert select.select([module.stdout],[],[],10)[0]
-            record=json.loads(module.stdout.readline())
+            record=first_minimap(module)
             assert "annotated" in record["class"] and "Build &lt;safe&gt;" in record["tooltip"] and "Jobs &amp; checks" in record["tooltip"] and "Editor" in record["tooltip"] and "Chat" in record["tooltip"],record
             open_ui()
             wait(lambda:any("Build <safe>" in cell["label"] for cell in ui_state()["ui"]["cells"]),"extension cell caption")
@@ -680,7 +692,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         parked_a=hot_fixture("parked-a",dock,1,1)
         parked_hidden=hot_fixture("parked-group-member",dock,1,1)
         lua(f'hl.dsp.group.toggle({{window="address:{parked_a}"}})')
-        ok("eval",f'local a=hl.get_window("address:{parked_a}"); a.group:add(hl.get_window("address:{parked_hidden}"))')
+        ok("eval",f'local a=assert(hl.get_window("address:{parked_a}")); a.group:add(assert(hl.get_window("address:{parked_hidden}")))')
         lua(f'hl.dsp.group.active({{window="address:{parked_a}",index=1}})')
         wait(lambda:len(real_window(parked_a)["grouped"])==2,"grouped parked fixture")
         parked_b=hot_fixture("parked-b",dock,3,2)
@@ -697,8 +709,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         assert group["current"]==parked_a and set(group["members"])=={parked_a,parked_hidden},"unplug preserves group membership/current"
         minimap=subprocess.Popen([cli,"--instance",instance.name,"waybar"],env=env,stdout=subprocess.PIPE,stderr=log,start_new_session=True)
         clients.append(minimap)
-        assert select.select([minimap.stdout],[],[],10)[0],"parked minimap line"
-        record=json.loads(minimap.stdout.readline())
+        record=first_minimap(minimap)
         minimap.terminate();minimap.wait(timeout=10)
         assert "Parked" in record["tooltip"] and dock["name"] in record["tooltip"],record
         ok("hypr2d","move","right")

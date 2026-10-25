@@ -1,6 +1,7 @@
 """Test only the nested child we launch, identified by its PID lock file."""
 import concurrent.futures
 import json
+import re
 import socket
 import signal
 import select
@@ -416,6 +417,17 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         record_when(lambda r: r["alt"] == "1,0")
         module.terminate()
         module.wait(timeout=10)
+        # Anchored horizontal positions use the actual configured grid width.
+        command("configure",first["name"],"9","9","true","10")
+        module=subprocess.Popen([cli,"--instance",instance.name,"waybar","--monitor",first["name"],"--columns","full","--rows","centered"],stdout=subprocess.PIPE,stderr=output,start_new_session=True)
+        clients.append(module);buffer=b""
+        for x in list(range(9))+[0]:
+            if x==0 and cell(mid)["cell"]["x"]==8:command("move","right")
+            else:command("goto",str(x),"0",str(mid))
+            anchored=record_when(lambda r:r["alt"]==f"{x},0")
+            shades=re.findall('foreground="([^"]+)"',anchored["text"])
+            assert len(shades)==27 and shades.index("#82AAFF")==9+x,(x,shades)
+        module.terminate();module.wait(timeout=10)
         # Real Waybar: no explicit height. Compare the user's 13px/min-height:0
         # single-line bar with/without the minimap, then inspect all three rows.
         artifacts=Path("/tmp/hypr2d-waybar-results");artifacts.mkdir(exist_ok=True)
@@ -426,24 +438,25 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
             layers=json.loads(ctl("-j","layers"))
             return [layer for level in layers.get(first["name"],{}).get("levels",{}).values() for layer in level if layer["namespace"]=="waybar"]
         heights=[]
-        for enabled in [False,True]:
+        for variant in ["without","with","fullrows"]:
+            enabled=variant!="without"
             bar_config=json.loads((Path(examples)/"waybar.jsonc").read_text())
             bar_config["output"]=first["name"]
             bar_config["modules-left"]=["custom/hypr2d","cpu"] if enabled else ["cpu"]
             bar_config["cpu"]={"format":"CPU"}
-            bar_config["custom/hypr2d"]["exec"]=shlex.join([cli,"--instance",instance.name,"waybar","--monitor",first["name"]])
-            bar_path=artifacts/("with.json" if enabled else "without.json")
+            bar_config["custom/hypr2d"]["exec"]=shlex.join([cli,"--instance",instance.name,"waybar","--monitor",first["name"],"--columns","full","--rows","full" if variant=="fullrows" else "centered"])
+            bar_path=artifacts/f"{variant}.json"
             bar_path.write_text(json.dumps(bar_config))
-            with (artifacts/("with.log" if enabled else "without.log")).open("w+") as bar_log:
+            with (artifacts/f"{variant}.log").open("w+") as bar_log:
                 bar=subprocess.Popen(["waybar","--config",str(bar_path),"--style",str(bar_style)],env=bar_env,stdout=bar_log,stderr=bar_log,start_new_session=True)
                 clients.append(bar)
                 wait_for(lambda:bool(layers_for_bar()),"Waybar maps")
                 time.sleep(.6)
                 assert bar.poll() is None
                 layer=layers_for_bar()[0];heights.append(layer["h"])
-                shot=artifacts/("with.png" if enabled else "without.png")
+                shot=artifacts/f"{variant}.png"
                 subprocess.run(["grim","-o",first["name"],str(shot)],env=bar_env,check=True,timeout=10)
-                if enabled:
+                if variant=="with":
                     image=Image.open(shot).convert("RGB")
                     # The dot block precedes CPU. Detect dot-coloured rows and
                     # columns in its first 85px, excluding antialiasing fringes.
@@ -467,13 +480,21 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
                     assert len(columns)==9,(columns,rows,layer)
                     (artifacts/"dot-rows.json").write_text(json.dumps(rows))
                     image.crop((0,0,160,layer["h"])).save(artifacts/"minimap-crop.png")
+                    command("goto","8","0",str(mid));time.sleep(.15)
+                    end=artifacts/"anchored-end.png"
+                    subprocess.run(["grim","-o",first["name"],str(end)],env=bar_env,check=True,timeout=10)
+                    image=Image.open(end).convert("RGB")
+                    blue=[x for y in range(layer["h"]) for x in range(min(80,image.width)) if (lambda rgb:rgb[2]>rgb[0]*1.1 and rgb[2]>rgb[1])(image.getpixel((x,y)))]
+                    assert blue and min(blue)>=min(columns[8])-1 and max(blue)<=max(columns[8])+1,(blue,columns)
+                    image.crop((0,0,160,layer["h"])).save(artifacts/"anchored-end-crop.png")
+                    command("goto","0","0",str(mid))
                 bar.terminate();bar.wait(timeout=10)
                 wait_for(lambda:not layers_for_bar(),"Waybar closes")
                 bar_log.flush();text=Path(bar_log.name).read_text()
                 assert "Error parsing" not in text and "not a valid" not in text,text
-        assert heights[0]==heights[1],f"minimap changed automatic bar height: {heights}"
-        (artifacts/"heights.json").write_text(json.dumps({"without":heights[0],"with":heights[1],"font_px":13,"min_height":0}))
-        print(f"PASS Waybar minimap: native move refresh, 9x3 dots, three rendered rows, unchanged automatic bar height {heights[0]}px, before CPU")
+        assert len(set(heights))==1,f"minimap changed automatic bar height: {heights}"
+        (artifacts/"heights.json").write_text(json.dumps({"without":heights[0],"with":heights[1],"full_rows":heights[2],"font_px":13,"min_height":0}))
+        print(f"PASS Waybar minimap: native move refresh, anchored 9x3 dots, each column/wrap, full-row mode, three rendered rows, unchanged automatic bar height {heights[0]}px, before CPU")
         print("PASS M3: CLI state/actions, event-driven JSON, idle deduplication, occupied/title/close events, escaping, unload/reload, example Waybar/CSS")
         ctl("dispatch", "hl.dsp.exit()")
         child.wait(timeout=10)

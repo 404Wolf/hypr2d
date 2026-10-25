@@ -1050,3 +1050,26 @@ plugin absence, load/reload without a ready event, instance replacement and
 socket2 replacement while retaining the process. It counts snapshot requests
 to prove no healthy polling. Backoff bounds, existing event/markup tests,
 formatting/Clippy and the generated Home Manager module check pass.
+
+### Anchored minimap axes
+
+CLI --columns/--rows and HM waybar.columns/rows independently select centered
+(default) or full axes. Full axes iterate absolute grid coordinates; centered
+axes retain radius/wrap behaviour. The view uses the actual per-monitor grid
+size. Markup scales for additional rows and uses absolute line height for
+4–9 rows (a bounded total line height, with a 1025-unit minimum), avoiding small-font metric rounding
+which otherwise made a 9-row bar grow from 17 to 21 px in the VM. Pango's
+[markup reference](https://docs.gtk.org/Pango/pango_markup.html) documents the
+factor-versus-absolute line-height syntax; the pinned library treats exactly
+1024 as a multiplier (headless Pango test: 27,648 px), while 1025 gives a 10 px
+9-row layout. The minimum avoids that threshold. Larger grids use a bounded factor.
+Unit cases cover every column and wrap, fixed occupancy markers, full/centered
+axis combinations and 1/2/5/9/16-column grids. The VM exercises all nine columns,
+checks the last blue dot at the same physical column, and measures real Waybar
+with the user's 13px/min-height:0 settings in absent, 9×3 and full-row modes.
+
+All four x86_64 flake checks pass for the anchored-axis batch. The VM measured
+17 px without the minimap, with anchored 9×3 dots, and with all nine rows. The
+start/end-column crops were inspected: current blue moves from the first to the
+last fixed column before CPU. The full-row screenshot stays inside the same bar.
+The existing crash/recovery, overview, hotplug, swipe and latency checks pass.

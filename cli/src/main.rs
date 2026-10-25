@@ -7,7 +7,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const USAGE:&str="hypr2d [--instance SIGNATURE] state\nhypr2d [--instance SIGNATURE] move DIR [all] [--monitor NAME]\nhypr2d [--instance SIGNATURE] carry DIR\nhypr2d [--instance SIGNATURE] goto X Y [MONITOR]\nhypr2d [--instance SIGNATURE] waybar [--monitor NAME] [--radius-x 0..4] [--radius-y 0..4] [--current-color #RRGGBB] [--occupied-color #RRGGBB] [--empty-color #RRGGBB] [--urgent-color #RRGGBB]";
+const USAGE:&str="hypr2d [--instance SIGNATURE] state\nhypr2d [--instance SIGNATURE] move DIR [all] [--monitor NAME]\nhypr2d [--instance SIGNATURE] carry DIR\nhypr2d [--instance SIGNATURE] goto X Y [MONITOR]\nhypr2d [--instance SIGNATURE] waybar [--monitor NAME] [--columns full|centered] [--rows full|centered] [--radius-x 0..4] [--radius-y 0..4] [--current-color #RRGGBB] [--occupied-color #RRGGBB] [--empty-color #RRGGBB] [--urgent-color #RRGGBB]";
 #[derive(Default)]
 struct Args {
     instance: Option<String>,
@@ -16,6 +16,8 @@ struct Args {
     radius_x: Option<u32>,
     radius_y: Option<u32>,
     colors: waybar::Colors,
+    columns: Option<waybar::AxisMode>,
+    rows: Option<waybar::AxisMode>,
     words: Vec<String>,
 }
 impl Args {
@@ -26,6 +28,14 @@ impl Args {
             match arg.as_str() {
                 "--instance" => args.instance = Some(it.next().ok_or("missing instance")?),
                 "--monitor" => args.monitor = Some(it.next().ok_or("missing monitor")?),
+                "--columns" | "--rows" => {
+                    let mode = it.next().ok_or("missing axis mode")?.parse()?;
+                    if arg == "--columns" {
+                        args.columns = Some(mode)
+                    } else {
+                        args.rows = Some(mode)
+                    }
+                }
                 "--current-color" | "--occupied-color" | "--empty-color" | "--urgent-color" => {
                     let value = it.next().ok_or("missing color")?;
                     if value.len() != 7
@@ -63,6 +73,9 @@ impl Args {
         Ok(args)
     }
     fn command(&self) -> Result<String, String> {
+        if self.columns.is_some() || self.rows.is_some() {
+            return Err("axis modes are only valid for waybar".into());
+        }
         if self.radius.is_some() || self.radius_x.is_some() || self.radius_y.is_some() {
             return Err("--radius is only valid for waybar".into());
         }
@@ -174,6 +187,22 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn axis_arguments_are_validated_scoped_and_default_to_centered() {
+        let args = Args::parse(["waybar"].map(str::to_owned)).unwrap();
+        assert!(args.columns.is_none() && args.rows.is_none());
+        for flag in ["--columns", "--rows"] {
+            for mode in ["full", "centered"] {
+                assert!(Args::parse(["waybar", flag, mode].map(str::to_owned)).is_ok());
+            }
+            assert!(Args::parse(["waybar", flag, "scroll"].map(str::to_owned)).is_err());
+            assert!(Args::parse(["waybar", flag].map(str::to_owned)).is_err());
+            assert!(Args::parse(["state", flag, "full"].map(str::to_owned))
+                .unwrap()
+                .command()
+                .is_err());
+        }
+    }
     #[test]
     fn minimap_color_arguments_are_validated_and_scoped() {
         for flag in [

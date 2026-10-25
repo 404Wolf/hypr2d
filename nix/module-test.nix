@@ -19,7 +19,7 @@ let
     theme.fontSize = 18;
     theme.rounding = 2;
     gestures = { fingers = 4; distance = 140; axisLock = 6; natural = false; diagonalWidth = 14; hysteresis=7; hysteresisDistance = 16; projectionDecel = 0.0008; springStiffness = 625; };
-    waybar = { enable = true; monitor = "WAYLAND-1"; radiusX = 2; radiusY = 1; placement = "start"; };
+    waybar = { enable = true; monitor = "WAYLAND-1"; radiusX = 2; radiusY = 1; columns = "full"; placement = "start"; };
   };
   disabled = evaluate {};
   invalidSlots = evaluate {enable=true;monitorSlots={ "DP-1"=0; };};
@@ -53,6 +53,9 @@ let
     assert colored.programs.hypr2d.theme.current == "#82AAFF";
     assert (builtins.fromJSON colored.xdg.configFile."hypr/hypr2d.json".text).theme.gap == 4;
     assert c.programs.hypr2d.overview.gap == 0;
+    assert c.programs.hypr2d.waybar.columns == "full" && c.programs.hypr2d.waybar.rows == "centered";
+    assert colored.programs.hypr2d.waybar.columns == "centered" && colored.programs.hypr2d.waybar.rows == "centered";
+    assert lib.hasInfix "--columns full --rows centered" c.programs.waybar.settings.mainBar."custom/hypr2d".exec;
     assert !(builtins.tryEval invalidColor.config.programs.hypr2d.waybar.colors.current).success;
     assert !(disabled.config.xdg.configFile ? "hypr/hypr2d.json");
     assert lib.all (v: !(builtins.tryEval v.activationPackage.drvPath).success) [ invalid invalidDiagonal invalidHysteresis invalidProjection invalidSpring ];

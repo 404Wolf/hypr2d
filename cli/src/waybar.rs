@@ -80,13 +80,57 @@ pub struct Colors {
     pub empty: Option<String>,
     pub urgent: Option<String>,
 }
-pub fn render(
-    snapshot: &Snapshot,
-    selected: Option<&str>,
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum AxisMode {
+    #[default]
+    Centered,
+    Full,
+}
+impl std::str::FromStr for AxisMode {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "centered" => Ok(Self::Centered),
+            "full" => Ok(Self::Full),
+            _ => Err("axis mode must be full or centered".into()),
+        }
+    }
+}
+#[derive(Clone, Copy)]
+pub struct View<'a> {
+    monitor: Option<&'a str>,
     radius_x: u32,
     radius_y: u32,
-    colors: &Colors,
-) -> Record {
+    colors: &'a Colors,
+    columns: AxisMode,
+    rows: AxisMode,
+}
+impl<'a> View<'a> {
+    pub fn new(monitor: Option<&'a str>, radius_x: u32, radius_y: u32, colors: &'a Colors) -> Self {
+        Self {
+            monitor,
+            radius_x,
+            radius_y,
+            colors,
+            columns: AxisMode::Centered,
+            rows: AxisMode::Centered,
+        }
+    }
+    pub fn axes(mut self, columns: AxisMode, rows: AxisMode) -> Self {
+        self.columns = columns;
+        self.rows = rows;
+        self
+    }
+}
+pub fn render_view(snapshot: &Snapshot, view: &View<'_>) -> Record {
+    let View {
+        monitor: selected,
+        radius_x,
+        radius_y,
+        colors,
+        columns,
+        rows,
+    } = *view;
     if snapshot.version != 1 {
         return unavailable("Unsupported hypr2d state version");
     }
@@ -116,15 +160,36 @@ pub fn render(
             class: vec!["outside-grid".into()],
         };
     };
-    if m.grid.columns == 0 || m.grid.rows == 0 {
+    if m.grid.columns == 0 || m.grid.rows == 0 || m.grid.columns > 256 || m.grid.rows > 256 {
         return unavailable("Invalid grid dimensions");
     }
     let cells: HashMap<_, _> = m.cells.iter().map(|c| ((c.x, c.y), c)).collect();
-    let width = 2 * radius_x + 1;
-    let height = 2 * radius_y + 1;
+    let width = if columns == AxisMode::Full {
+        m.grid.columns
+    } else {
+        2 * radius_x + 1
+    };
+    let height = if rows == AxisMode::Full {
+        m.grid.rows
+    } else {
+        2 * radius_y + 1
+    };
     let mut classes = BTreeSet::new();
+    // Keep the existing three-row content height even when a full vertical
+    // axis (or a larger centered radius) requests more rows.
+    let size = 4096 * 3 / height.max(3);
+    // Pinned Pango uses values strictly above 1024 for absolute line height.
+    // Bound total height for 4..9 rows; tiny full grids use a factor
+    // instead, because sub-1024 integer values would mean a multiplier.
+    let line_height = if height <= 3 {
+        "0.75".into()
+    } else if height <= 9 {
+        (9216 / height).max(1025).to_string()
+    } else {
+        format!("{:.6}", 3.0 / f64::from(height))
+    };
     let mut text =
-        String::from("<span font_family=\"monospace\" size=\"4096\" line_height=\"0.75\">");
+        format!("<span font_family=\"monospace\" size=\"{size}\" line_height=\"{line_height}\">");
     for row in 0..height {
         if row > 0 {
             text.push('\n');
@@ -133,8 +198,16 @@ pub fn render(
             if col > 0 {
                 text.push(' ');
             }
-            let x = i64::from(current.x) + i64::from(col) - i64::from(width / 2);
-            let y = i64::from(current.y) + i64::from(row) - i64::from(height / 2);
+            let x = if columns == AxisMode::Full {
+                i64::from(col)
+            } else {
+                i64::from(current.x) + i64::from(col) - i64::from(width / 2)
+            };
+            let y = if rows == AxisMode::Full {
+                i64::from(row)
+            } else {
+                i64::from(current.y) + i64::from(row) - i64::from(height / 2)
+            };
             if !m.grid.wrap
                 && (x < 0 || y < 0 || x >= m.grid.columns.into() || y >= m.grid.rows.into())
             {
@@ -332,14 +405,11 @@ fn refresh(
     fetch: &mut impl FnMut() -> Result<Snapshot, String>,
     out: &mut impl Write,
     last: &mut String,
-    monitor: Option<&str>,
-    radius_x: u32,
-    radius_y: u32,
-    colors: &Colors,
+    view: &View<'_>,
 ) -> io::Result<bool> {
     let (record, ready) = match fetch() {
         Ok(state) => {
-            let record = render(&state, monitor, radius_x, radius_y, colors);
+            let record = render_view(&state, view);
             let ready = record.alt != "unavailable";
             (record, ready)
         }
@@ -354,14 +424,11 @@ fn refresh(
 // A blocking socket reader feeds readiness events. Idle means recv(), never a
 // timeout or snapshot request. A fixed 16ms deadline coalesces each burst without
 // allowing a continuous event stream to postpone a refresh indefinitely.
-pub fn stream(
+pub fn stream_view(
     mut events: impl BufRead + Send + 'static,
     mut fetch: impl FnMut() -> Result<Snapshot, String>,
     mut out: impl Write,
-    monitor: Option<&str>,
-    radius_x: u32,
-    radius_y: u32,
-    colors: &Colors,
+    view: &View<'_>,
 ) -> io::Result<()> {
     let (tx, rx) = mpsc::sync_channel(128);
     std::thread::spawn(move || loop {
@@ -381,9 +448,7 @@ pub fn stream(
     });
     let mut last = String::new();
     let mut backoff = crate::reconnect::Backoff::default();
-    let ready = refresh(
-        &mut fetch, &mut out, &mut last, monitor, radius_x, radius_y, colors,
-    )?;
+    let ready = refresh(&mut fetch, &mut out, &mut last, view)?;
     let mut loaded = ready;
     let mut retry = if ready {
         None
@@ -394,9 +459,7 @@ pub fn stream(
     loop {
         let now = Instant::now();
         if pending.is_some_and(|t| now >= t) || retry.is_some_and(|t| now >= t) {
-            let ready = refresh(
-                &mut fetch, &mut out, &mut last, monitor, radius_x, radius_y, colors,
-            )?;
+            let ready = refresh(&mut fetch, &mut out, &mut last, view)?;
             pending = None;
             if ready {
                 loaded = true;
@@ -420,9 +483,7 @@ pub fn stream(
         };
         let Some(line) = next else {
             if pending.is_some() && loaded {
-                refresh(
-                    &mut fetch, &mut out, &mut last, monitor, radius_x, radius_y, colors,
-                )?;
+                refresh(&mut fetch, &mut out, &mut last, view)?;
             }
             break;
         };
@@ -452,10 +513,136 @@ pub fn stream(
     Ok(())
 }
 #[cfg(test)]
+fn render(
+    snapshot: &Snapshot,
+    monitor: Option<&str>,
+    radius_x: u32,
+    radius_y: u32,
+    colors: &Colors,
+) -> Record {
+    render_view(snapshot, &View::new(monitor, radius_x, radius_y, colors))
+}
+#[cfg(test)]
+fn stream(
+    events: impl BufRead + Send + 'static,
+    fetch: impl FnMut() -> Result<Snapshot, String>,
+    out: impl Write,
+    monitor: Option<&str>,
+    radius_x: u32,
+    radius_y: u32,
+    colors: &Colors,
+) -> io::Result<()> {
+    stream_view(
+        events,
+        fetch,
+        out,
+        &View::new(monitor, radius_x, radius_y, colors),
+    )
+}
+#[cfg(test)]
 mod tests {
     use super::*;
     fn fixture() -> Snapshot {
         serde_json::from_str(r#"{"version":1,"monitors":[{"id":0,"name":"DP<&","focused":true,"workspace":1,"grid":{"columns":2,"rows":1,"wrap":true},"cell":{"x":0,"y":0},"cells":[{"x":0,"y":0,"workspace":1,"windows":[]},{"x":1,"y":0,"workspace":11,"windows":[{"title":"<b>unsafe & title</b>","app_id":"app<","urgent":true}]}]}]}"#).unwrap()
+    }
+    #[test]
+    fn full_axes_anchor_each_column_and_row_including_wrap_and_small_grids() {
+        let colors = Colors::default();
+        for columns in [1, 2, 5, 9, 16] {
+            for rows in [1, 4, 9] {
+                let mut state = fixture();
+                state.monitors[0].grid = Grid {
+                    columns,
+                    rows,
+                    wrap: true,
+                };
+                state.monitors[0].cells = (0..rows)
+                    .flat_map(|y| {
+                        (0..columns).map(move |x| GridCell {
+                            x,
+                            y,
+                            workspace: 10 * (y * columns + x) + 1,
+                            windows: if x == columns / 2 {
+                                vec![Window {
+                                    address: "marker".into(),
+                                    title: "fixed".into(),
+                                    app_id: "fixed".into(),
+                                    urgent: false,
+                                }]
+                            } else {
+                                vec![]
+                            },
+                        })
+                    })
+                    .collect();
+                let view = View::new(None, 0, 1, &colors).axes(AxisMode::Full, AxisMode::Centered);
+                for x in (0..columns).chain([0]) {
+                    state.monitors[0].cell = Some(Cell { x, y: 0 });
+                    let record = render_view(&state, &view);
+                    let shades: Vec<_> = record
+                        .text
+                        .split("foreground=\"")
+                        .skip(1)
+                        .map(|s| s.split('"').next().unwrap())
+                        .collect();
+                    assert_eq!(shades.len(), columns as usize * 3);
+                    let middle = &shades[columns as usize..2 * columns as usize];
+                    assert_eq!(
+                        middle.iter().position(|c| *c == "#82AAFF"),
+                        Some(x as usize)
+                    );
+                    assert_eq!(middle.iter().filter(|c| **c == "#82AAFF").count(), 1);
+                    for (col, shade) in middle.iter().enumerate() {
+                        assert_eq!(
+                            *shade,
+                            if col == x as usize {
+                                "#82AAFF"
+                            } else if col == columns as usize / 2 {
+                                "#EEFFFF"
+                            } else {
+                                "#4A4A4A"
+                            }
+                        );
+                    }
+                }
+                let full = view.axes(AxisMode::Full, AxisMode::Full);
+                for y in 0..rows {
+                    state.monitors[0].cell = Some(Cell { x: columns - 1, y });
+                    let record = render_view(&state, &full);
+                    if rows == 9 {
+                        assert!(record.text.contains("line_height=\"1025\""));
+                    }
+                    let shades: Vec<_> = record
+                        .text
+                        .split("foreground=\"")
+                        .skip(1)
+                        .map(|s| s.split('"').next().unwrap())
+                        .collect();
+                    assert_eq!(shades.len(), (rows * columns) as usize);
+                    assert_eq!(
+                        shades.iter().position(|c| *c == "#82AAFF"),
+                        Some((y * columns + columns - 1) as usize)
+                    );
+                    assert!(record
+                        .text
+                        .contains(&format!("size=\"{}\"", 4096 * 3 / rows.max(3))));
+                }
+                if columns > 1 {
+                    let vertical = view.axes(AxisMode::Centered, AxisMode::Full);
+                    for y in 0..rows {
+                        state.monitors[0].cell = Some(Cell { x: 0, y });
+                        let record = render_view(&state, &vertical);
+                        // radius_x=0 still applies to centered columns; full rows ignore radius_y.
+                        assert_eq!(record.text.matches('●').count(), rows as usize);
+                    }
+                }
+                state.monitors[0].grid.wrap = false;
+                assert_eq!(
+                    render_view(&state, &full).text.matches('●').count(),
+                    (rows * columns) as usize
+                );
+            }
+        }
     }
     #[test]
     fn dedicated_colors_override_independently_and_preserve_fallbacks() {

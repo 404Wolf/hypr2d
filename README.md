@@ -299,6 +299,22 @@ instance when the inherited signature becomes stale. `--instance` deliberately
 pins a single instance, useful for nested testing. The HM entry defaults to
 `restart-interval = 2` as an additional Waybar-side fallback.
 
+Use `hypr2d waybar --columns full --rows centered` to anchor every grid column
+at a fixed horizontal position. On a 9×9 grid this keeps nine columns in place;
+left/right movement moves only the blue dot. Rows remain current row ±1 with
+wrapping. `--rows full` anchors all rows too. Each axis defaults to `centered`;
+its radius applies only in centered mode. Extra rows reduce the markup font size
+so they share the existing compact content-height budget.
+
+```nix
+programs.hypr2d.waybar = {
+  columns = "full";
+  rows = "centered";
+  radiusY = 1;
+};
+```
+
+
 It uses `HYPRLAND_INSTANCE_SIGNATURE` and `XDG_RUNTIME_DIR`, or accepts an exact
 `--instance SIGNATURE`. Tests always supply their own nested signature.
 
