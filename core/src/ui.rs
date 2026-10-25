@@ -536,8 +536,27 @@ impl Overview {
         labels
     }
     fn transform(&self, width: f64, height: f64) -> (f64, f64, f64) {
-        let s = (width / WIDTH).min(height / self.canvas_height.max(1.0));
-        (s, (width - WIDTH * s) / 2.0, 8.0)
+        let bounds = self
+            .cells
+            .iter()
+            .filter(|c| c.visible)
+            .map(|c| c.rect)
+            .chain(self.headers.iter().map(|(r, _)| *r));
+        let (top, bottom) = bounds.fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), r| {
+            (lo.min(r.y), hi.max(r.y + r.h))
+        });
+        let (top, bottom) = if top.is_finite() {
+            (top, bottom)
+        } else {
+            (0., self.canvas_height.max(1.))
+        };
+        let extent = (bottom - top).max(1.);
+        let s = (width / WIDTH).min((height - 24.).max(1.) / extent);
+        (
+            s,
+            (width - WIDTH * s) / 2.,
+            (height - extent * s) / 2. - top * s,
+        )
     }
     pub fn overview_pointer(
         &mut self,
@@ -669,23 +688,53 @@ impl Default for ffi::UIFrame {
     }
 }
 
-fn owned_label(windows: &[Window], key: &str) -> String {
-    let ws: Vec<_> = windows.iter().filter(|w| w.workspace == key).collect();
-    match ws.len() {
-        0 => "0".into(),
-        1 if ws[0].title.is_empty() => "1 window".into(),
-        1 => ws[0].title.clone(),
-        n => format!("{n} windows"),
+fn short_app(class: &str) -> String {
+    let name = class
+        .trim()
+        .strip_suffix(".desktop")
+        .unwrap_or(class.trim());
+    let name = name
+        .rsplit(['.', '/', '\\'])
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
+        .to_lowercase();
+    if name.is_empty() {
+        "window".into()
+    } else {
+        name
     }
 }
-fn cell_label(windows: &[ffi::UIWindow], key: &str) -> String {
-    let ws: Vec<_> = windows.iter().filter(|w| w.workspace == key).collect();
-    match ws.len() {
-        0 => "0".into(),
-        1 if ws[0].title.is_empty() => "1 window".into(),
-        1 => ws[0].title.clone(),
-        n => format!("{n} windows"),
+fn app_label<'a>(apps: impl Iterator<Item = &'a str>) -> String {
+    let apps: Vec<_> = apps.map(short_app).collect();
+    let mut counts = std::collections::HashMap::new();
+    for (i, app) in apps.iter().enumerate() {
+        let entry = counts.entry(app).or_insert((0, usize::MAX - i));
+        entry.0 += 1;
     }
+    let Some((app, _)) = counts.into_iter().max_by_key(|(_, rank)| *rank) else {
+        return String::new();
+    };
+    if apps.len() > 1 {
+        format!("{app} +{}", apps.len() - 1)
+    } else {
+        app.clone()
+    }
+}
+fn owned_label(windows: &[Window], key: &str) -> String {
+    app_label(
+        windows
+            .iter()
+            .filter(|w| w.workspace == key)
+            .map(|w| w.title.as_str()),
+    )
+}
+fn cell_label(windows: &[ffi::UIWindow], key: &str) -> String {
+    app_label(
+        windows
+            .iter()
+            .filter(|w| w.workspace == key)
+            .map(|w| w.title.as_str()),
+    )
 }
 
 fn parse_colour(s: &str) -> u32 {
@@ -720,6 +769,55 @@ mod tests {
             height: 720.0,
             workspace: id + 1,
             focused: id == 0,
+        }
+    }
+    #[test]
+    fn short_app_labels_and_centered_visible_composition() {
+        assert_eq!(app_label([].into_iter()), "");
+        assert_eq!(
+            app_label(["org.mozilla.Firefox.desktop"].into_iter()),
+            "firefox"
+        );
+        assert_eq!(
+            app_label(["org.mozilla.Firefox", "kitty", "kitty"].into_iter()),
+            "kitty +2"
+        );
+        assert_eq!(app_label(["", ""].into_iter()), "window +1");
+        for fit in [true, false] {
+            let core = Core {
+                theme: crate::theme::Theme {
+                    fit,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let ui = core.overview_new(
+                &[output(0, 0., 0.), output(1, 1280., 0.)],
+                &[ffi::UISpecial {
+                    monitor: 0,
+                    name: "special:chat".into(),
+                    shown: false,
+                }],
+                &[],
+                0.,
+            );
+            let f = ui.overview_frame(1280., 720., 101.);
+            let top = f
+                .labels
+                .iter()
+                .map(|l| l.rect.y)
+                .fold(f64::INFINITY, f64::min);
+            let bottom = f
+                .cells
+                .iter()
+                .map(|c| c.rect.y + c.rect.height)
+                .fold(0., f64::max);
+            assert!((top - (720. - bottom)).abs() < 0.001);
+            assert!(f
+                .cells
+                .iter()
+                .filter(|c| !c.key.starts_with("special:"))
+                .all(|c| c.label.is_empty()));
         }
     }
     #[test]

@@ -641,3 +641,24 @@ outputs' before/after comparisons changed zero pixels. GL objects were checked
 deleted on every close. All VM clients and the VM exited. Aarch64 and physical
 trackpad input remain untested; no live-session plugin load, Home Manager edit,
 activation, remote creation or push was performed.
+
+
+### Final overview visual polish
+
+Empty grid captions are blank. Unoccupied cells use the configured background
+(default base00 black) with a one-pixel base02 outline; current/hover/drop
+highlights remain visible, and named specials keep their labels. Occupied cells
+retain their fill and cached thumbnails. Rust centers the visible composition's
+bounds, including output headers, all grids and the special strip; input uses the
+same transform. Captions choose the most common shortened app class (reverse-DNS
+prefix and .desktop suffix removed, lowercase), break ties by window order, and
+append +N for all additional windows.
+
+All four x86_64 flake checks passed, including 28 Rust tests and the complete VM
+suite. New pixel assertions verify base00 empty interiors and base02 outlines,
+blank captions, equal top/bottom margins in fit and full views, and a mapped
+multi-window fixture displaying firefox +3. The fit/full/short-label screenshots
+were inspected. Two earlier VM attempts timed out before their first overview
+output appeared; a diagnostic startup dump was added and the final complete run
+passed. No plugin was loaded into the live session and no Home Manager checkout
+was edited or activated. Work stops here as requested.

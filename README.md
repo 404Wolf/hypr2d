@@ -109,9 +109,11 @@ one cell on every side (clipped to the grid), with at least 3×3 cells.
 Keyboard selection expands the box when necessary. Press `a` to toggle all
 cells without changing workspace numbering. Panels retain physical monitor
 positions and each thumbnail retains its source monitor's aspect ratio.
-The combined layout fits the output width/height and is aligned near the top,
-leaving only space required by those aspect ratios and the special strip.
-Cell captions show the main app name, a window count, or `0` for empty cells.
+The combined layout fits the output width/height and is centered vertically,
+including the grids and special strip. Cell captions use the main app class's
+short name (for example `firefox` or `kitty`), followed by `+N` for additional
+windows. Empty grid cells have no caption: a thin base02 outline surrounds the
+base00 background. Occupied cells retain their thumbnails and configured fill.
 
 Configure appearance with one atomic JSON object (omitted fields use defaults):
 

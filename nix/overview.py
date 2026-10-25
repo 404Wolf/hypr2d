@@ -1,5 +1,6 @@
 """M4 rendering probe. All IPC and clients belong to the child PID below."""
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -51,7 +52,12 @@ with (artifacts / "compositor.log").open("w+") as log:
             return json.loads(ctl("-j", "monitors"))
         def probe(action):
             return json.loads(ctl("hypr2d", "probe", action))
-        wait(lambda: len(monitors()) == 1, "initial monitor")
+        try:
+            wait(lambda: len(monitors()) == 1, "initial monitor")
+        except AssertionError:
+            print("Initial outputs:",monitors(),flush=True)
+            print((artifacts / "compositor.log").read_text()[-16000:],flush=True)
+            raise
         assert not ctl("configerrors"), ctl("configerrors")
         ok("eval", 'hl.config({input={follow_mouse=0}, animations={enabled=false}, cursor={invisible=true}})')
         ok("output", "create", "headless")
@@ -207,8 +213,35 @@ with (artifacts / "compositor.log").open("w+") as log:
         assert fitted["fit"] and len(fitted["cells"])<130
         assert all(c["label"] != c["key"] for c in fitted["cells"] if not c["key"].startswith("special:"))
         screenshot("ui-fit-default")
+        def check_composition(ui):
+            top=min(l["rect"][1] for l in ui["labels"])
+            bottom=max(c["rect"][1]+c["rect"][3] for c in ui["cells"])
+            assert abs(top-(720-bottom))<2,(top,bottom)
+            assert all(not c["label"] for c in ui["cells"] if not c["occupied"] and not c["key"].startswith("special:"))
+        check_composition(fitted)
+        empty=next(c for c in fitted["cells"] if not c["occupied"] and not c["selected"] and not c["shown"] and not c["key"].startswith("special:"))
+        x,y,w,h=empty["rect"]
+        empty_image=Image.open(artifacts / "ui-fit-default-0.png").convert("RGB")
+        assert empty_image.getpixel((round(x+w/2),round(y+h/2)))==(0,0,0),"empty background must be base00"
+        assert empty_image.getpixel((math.floor(x-0.5),round(y+h/2)))==(53,53,53),"empty outline must be base02"
+        # Real mapped fixtures exercise short reverse-DNS class labels and +N.
+        label_windows=[]
+        for i in range(3):
+            before={w["address"] for w in mapped()}
+            process=subprocess.Popen(["foot","--config=/dev/null","--app-id=org.mozilla.firefox","--override=cursor.blink=no","--override=colors-dark.background=701010","sh","-c","printf '\\033[?25l'; sleep 600"],env=env,stdout=log,stderr=log,start_new_session=True)
+            clients.append(process)
+            wait(lambda:any(w["class"]=="org.mozilla.firefox" and w["address"] not in before for w in mapped()),"label fixture mapped")
+            address=next(w["address"] for w in mapped() if w["class"]=="org.mozilla.firefox" and w["address"] not in before)
+            label_windows.append(address)
+            lua(f'hl.dsp.window.move({{window="address:{address}",workspace={mons[0]["id"]+1},follow=false}})')
+        wait(lambda:any(c["label"]=="firefox +3" for c in ui_state()["ui"]["cells"]) and ui_state()["pending"]==0,"short main app plus extra window count")
+        time.sleep(0.2);screenshot("ui-short-labels")
+        check_composition(ui_state()["ui"])
+        for address in label_windows:lua(f'hl.dsp.window.close({{window="address:{address}"}})')
+        wait(lambda:all(w["address"] not in label_windows for w in mapped()) and ui_state()["pending"]==0,"label fixtures removed")
         keypress("a")
         wait(lambda:len(ui_state()["ui"]["cells"])==130,"full grid toggle")
+        check_composition(ui_state()["ui"])
         screenshot("ui-full-default")
         ok("hypr2d","overview-config",json.dumps({"fit":False,"font":"DejaVu Sans","font_size":18,"rounding":2,"border":"#4A4A4A"}))
         wait(lambda:ui_state().get("pending")==0,"theme refresh")

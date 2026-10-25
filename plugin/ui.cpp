@@ -246,9 +246,11 @@ class Pass final : public IPassElement {
                                      : c.hovered                                     ? color(style.hover, frame.alpha)
                                      : c.shown                                       ? color(style.current, frame.alpha)
                                                : color(c.colour ? c.colour : style.border, frame.alpha);
-            rect(box.copy().expand(2), borderColor);
-            rect(box, color(style.cell, frame.alpha));
-            if (auto it = cache.find(std::string(c.key)); it != cache.end())
+            rect(box.copy().expand(c.occupied || c.selected || c.hovered || c.shown || std::string(c.key) == std::string(frame.target) ? 2
+                                                                                                                                       : 1),
+                 borderColor);
+            rect(box, color(c.occupied ? style.cell : style.background, frame.alpha));
+            if (auto it = cache.find(std::string(c.key)); c.occupied && it != cache.end())
                 items.push_back(
                     makeUnique<CTexPassElement>(CTexPassElement::SRenderData{.tex = it->second->getTexture(),
                                                                              .box = box,

@@ -39,6 +39,8 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Maximize layout scale while preserving physical panel arrangement and monitor-aspect cells; default fit bounding box + one-cell margin, at least 3×3, `a` full-grid toggle
 - [x] Configurable OneDark Extra Dark palette/fonts, subtle rounding, readable app/count cell labels; verified in VM screenshots
 
+- [x] Final visual polish: blank outlined empty cells, vertically centered composition, short app-class labels with +N; Rust and VM screenshot checks
+
 ## M6 — Extension socket (no agent-specific code in this repo)
 - [x] Versioned JSON-lines socket: annotations (label/badge/dot/colour/tooltip on cells, specials, windows), reserved regions (rows with titles), placement, activate/drop callbacks, session-scoped cleanup on disconnect
 - [x] `hypr2d-client` Rust crate + protocol docs; overview and waybar render annotations
