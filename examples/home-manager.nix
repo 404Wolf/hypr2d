@@ -23,6 +23,6 @@
       rounding = 3;
     };
     gestures = { enable = true; fingers = 3; distance = 120; velocity = 0.8; natural = true; axisLock = 5; };
-    waybar = { enable = true; bar = "mainBar"; position = "left"; radius = 1; };
+    waybar = { enable = true; bar = "mainBar"; position = "left"; placement = "start"; radiusX = 4; radiusY = 1; };
   };
 }

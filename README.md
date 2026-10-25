@@ -157,12 +157,14 @@ Lua `configType` is required. The module defaults the Hyprland package to the
 same pinned flake input; an explicit package override must preserve that ABI. Unlisted outputs retain an 8×8 wrapping grid with
 the shared stride. Output names can be configured before hotplug.
 
-`waybar.enable` appends `custom/hypr2d` to the chosen named bar and position,
+`waybar.enable` adds `custom/hypr2d` to the chosen named bar and position,
 adds absolute CLI paths, event streaming and optional black OneDark CSS.
 Choose `waybar.bar` to match your existing named settings entry; configurations
 using Waybar's list form should convert to named entries before enabling this
 integration. `waybar.monitor = null` follows focus; otherwise it targets the
-named output. No interval or refresh signal is installed.
+named output. `waybar.placement = "start"` prepends it before existing modules;
+the default `"end"` appends it. `radiusX` and `radiusY` default to 4 and 1.
+No interval or refresh signal is installed.
 
 `gestures.enable = false` stops claiming swipes. When wiring this into your
 configuration, remove conflicting native/execGesture swipes and switch the
@@ -245,14 +247,17 @@ The CLI talks directly to Hyprland's Unix socket; it starts no subprocesses.
 It uses `HYPRLAND_INSTANCE_SIGNATURE` and `XDG_RUNTIME_DIR`, or accepts an exact
 `--instance SIGNATURE`. Tests always supply their own nested signature.
 
-`hypr2d waybar [--monitor NAME] [--radius 0..4]` emits newline-delimited JSON.
-Radius 1 gives a 3×3 minimap around the current cell (smaller grids show each
-cell only once). Without `--monitor`, it follows the focused monitor. The
-stream subscribes to socket2 before its first snapshot and then blocks on
-events. It updates on workspace/focus, monitor, window title/open/close/move,
-urgency and plugin lifecycle changes; identical records are suppressed. Plugin
-unload shows an unavailable state and reload resumes the same process. No
-interval, polling loop, refresh signal, or repeated process execution is used.
+`hypr2d waybar [--monitor NAME] [--radius-x 0..4] [--radius-y 0..4]`
+emits newline-delimited JSON. Defaults are radius X=4, Y=1: **9×3 dots**, centered
+on the current cell and wrapping with the grid (including repeated edge cells
+when the view is wider than the grid). `--radius N` remains a shorthand for both
+axes. Without `--monitor`, it follows the focused monitor.
+
+The stream subscribes to socket2 before its initial snapshot. Native window
+open/close/move, workspace create/destroy/move/change, focus, fullscreen, urgency,
+monitor, title and hypr2d events trigger a refresh, coalesced to one per 16 ms.
+It blocks when idle and suppresses identical output. Plugin unload/reload is
+handled without restarting the stream. No polling interval is used.
 
 Use [examples/waybar.jsonc](examples/waybar.jsonc) and
 [examples/waybar.css](examples/waybar.css), also installed in
@@ -260,7 +265,7 @@ Use [examples/waybar.jsonc](examples/waybar.jsonc) and
 
 ```json
 "custom/hypr2d": {
-  "exec": "hypr2d waybar --radius 1",
+  "exec": "hypr2d waybar --radius-x 4 --radius-y 1",
   "return-type": "json",
   "format": "{text}",
   "escape": false,
@@ -279,43 +284,42 @@ planned atomically in the plugin; the CLI does not calculate a cell and race
 another read/goto pair. Add `custom/hypr2d` to the bar's module list. Do not set
 `interval`, `signal` or `restart-interval`; keep `exec-on-event` false.
 
-The supplied CSS uses a black background, OneDark foreground `#abb2bf`, blue
-current `#61afef`, green occupied `#98c379`, dim empty `#4b5263` and red urgent
-`#e06c75`. Glyphs are ● current, ◉ occupied, · empty and ! urgent. Titles and
-application IDs in the tooltip are markup-escaped; the tooltip lists every
-occupied cell on the selected monitor, including cells outside the minimap.
+Every cell uses the same dot glyph. Pango spans set current blue (`theme.current`,
+#82AAFF), occupied white (`theme.label`, #EEFFFF), empty grey (`theme.hover`,
+#4A4A4A) and urgent red (#F07178). Extension annotations remain in the tooltip,
+so arbitrary badges cannot widen cells or add height. Titles and metadata are
+markup-escaped. Keep `escape: false`; no CSS state classes, underlines or borders
+are needed for colours.
 
-`class` is an array containing the states present in the visible minimap:
-`current`, `occupied`, `empty`, `urgent`; error states are `unavailable` and
-`outside-grid`. GTK CSS styles the custom module as one widget. Individual
-cell colors use Pango spans, while the aggregate classes allow module borders
-and other CSS styling. Keep `escape: false` for these spans; all window text is
-escaped before it enters markup. This follows Waybar's documented
-[custom JSON module format](https://github.com/Alexays/Waybar/wiki/Module:-Custom).
-
-The example CSS (full file linked above):
+The dot block uses a 4-point monospace span with `line_height="0.75"`, keeping
+three rows within a single 13px-text bar. Leave the bar's height automatic; do
+not enlarge it for this module. Minimal module CSS is:
 
 ```css
-window#waybar { background: #000000; color: #abb2bf; }
 #custom-hypr2d {
-    background: #000000;
-    color: #abb2bf;
     font-family: monospace;
-    font-size: 8px;
+    min-height: 0;
     padding: 0 8px;
     margin: 0 4px;
-    border-bottom: 2px solid #4b5263;
+    border: none;
 }
-#custom-hypr2d.empty { color: #4b5263; }
-#custom-hypr2d.occupied { border-bottom-color: #98c379; }
-#custom-hypr2d.current { border-bottom-color: #61afef; }
-#custom-hypr2d.urgent { border-bottom-color: #e06c75; }
-#custom-hypr2d.unavailable, #custom-hypr2d.outside-grid {
-    color: #e5c07b;
-    border-bottom-color: #e5c07b;
-}
-tooltip { background: #000000; color: #abb2bf; border: 1px solid #4b5263; }
 ```
+
+To put it at the far left, before an existing `cpu` module:
+
+```nix
+programs.hypr2d.waybar = {
+  enable = true;
+  position = "left";
+  placement = "start"; # mkBefore; "end" (the default) uses mkAfter
+  radiusX = 4;
+  radiusY = 1;
+};
+```
+
+The VM renders a real Waybar with the user's monospace 13px, `min-height: 0`
+settings, no fixed height, and `cpu` after the minimap. It compares layer heights
+with and without the module and checks all three dot rows in a screenshot.
 
 ## Overview rendering prototype
 

@@ -662,3 +662,40 @@ were inspected. Two earlier VM attempts timed out before their first overview
 output appeared; a diagnostic startup dump was added and the final complete run
 passed. No plugin was loaded into the live session and no Home Manager checkout
 was edited or activated. Work stops here as requested.
+
+
+### Compact live Waybar minimap
+
+The default viewport is 9 columns × 3 rows (radiusX=4, radiusY=1), wrapping
+according to the selected grid. Separate CLI --radius-x/--radius-y and Home
+Manager waybar.radiusX/radiusY configure the axes; the CLI's old --radius
+shorthand sets both. All cells use the same dot glyph. Pango foreground spans
+choose theme current blue, occupied label white, empty hover grey, or urgent
+#F07178. Extension annotations stay in the escaped tooltip so labels/badges
+cannot disrupt dot spacing or add height. CSS requires no state colours or
+borders. Home Manager waybar.placement defaults to end (mkAfter); start uses
+mkBefore, tested against an existing cpu module.
+
+A blocking socket2 reader feeds a bounded channel. The consumer blocks when
+idle, starts a fixed 16 ms coalescing window on relevant events and fetches at
+most once per window; continuous input cannot defer that deadline indefinitely.
+Workspace create/destroy/move, fullscreen and floating changes now join the
+existing window open/close/move, focus, monitor, title, urgency and plugin events.
+No periodic snapshot, subprocess refresh, or timer runs while idle. Tests move
+a real window with a native Lua dispatcher and assert changed streamed dots;
+Rust also checks event coverage and one refresh for a socket event burst.
+
+The real-Waybar VM regression uses monospace 13px, min-height:0, no fixed bar
+height, the user's horizontal module padding/margins, and cpu after the widget.
+The first 4.5-point attempt increased the bar from 17 to 18 pixels and was
+rejected. A 4-point monospace span (Pango size=4096, line_height=0.75) measures
+**17 pixels both without and with the module**. The screenshot contains three
+separate dot rows at y=1–4, 6–9 and 11–14 within that unchanged bar. The test
+also checks all nine columns and unclipped outer rows. Artifacts are exported
+under hypr2d-waybar-results, including with/without screenshots and heights.json.
+
+Final validation for this change: all four x86_64 flake checks passed (plugin,
+Rust/formatting/Clippy, Home Manager generation and complete VM integration),
+including 32 Rust tests and the real Waybar screenshot/height regression.
+The Waybar screenshot was inspected. No live-session load or Home Manager
+checkout edit/activation was performed.

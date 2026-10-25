@@ -6,12 +6,14 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const USAGE:&str="hypr2d [--instance SIGNATURE] state\nhypr2d [--instance SIGNATURE] move DIR [all] [--monitor NAME]\nhypr2d [--instance SIGNATURE] carry DIR\nhypr2d [--instance SIGNATURE] goto X Y [MONITOR]\nhypr2d [--instance SIGNATURE] waybar [--monitor NAME] [--radius 0..4]";
+const USAGE:&str="hypr2d [--instance SIGNATURE] state\nhypr2d [--instance SIGNATURE] move DIR [all] [--monitor NAME]\nhypr2d [--instance SIGNATURE] carry DIR\nhypr2d [--instance SIGNATURE] goto X Y [MONITOR]\nhypr2d [--instance SIGNATURE] waybar [--monitor NAME] [--radius-x 0..4] [--radius-y 0..4]";
 #[derive(Default)]
 struct Args {
     instance: Option<String>,
     monitor: Option<String>,
     radius: Option<u32>,
+    radius_x: Option<u32>,
+    radius_y: Option<u32>,
     words: Vec<String>,
 }
 impl Args {
@@ -22,7 +24,7 @@ impl Args {
             match arg.as_str() {
                 "--instance" => args.instance = Some(it.next().ok_or("missing instance")?),
                 "--monitor" => args.monitor = Some(it.next().ok_or("missing monitor")?),
-                "--radius" => {
+                "--radius" | "--radius-x" | "--radius-y" => {
                     let n = it
                         .next()
                         .ok_or("missing radius")?
@@ -31,7 +33,11 @@ impl Args {
                     if n > 4 {
                         return Err("radius must be 0..4".into());
                     }
-                    args.radius = Some(n);
+                    match arg.as_str() {
+                        "--radius-x" => args.radius_x = Some(n),
+                        "--radius-y" => args.radius_y = Some(n),
+                        _ => args.radius = Some(n),
+                    }
                 }
                 _ if arg.starts_with('-') => return Err(format!("unknown option: {arg}")),
                 _ => args.words.push(arg),
@@ -40,7 +46,7 @@ impl Args {
         Ok(args)
     }
     fn command(&self) -> Result<String, String> {
-        if self.radius.is_some() {
+        if self.radius.is_some() || self.radius_x.is_some() || self.radius_y.is_some() {
             return Err("--radius is only valid for waybar".into());
         }
         let words: Vec<_> = self.words.iter().map(String::as_str).collect();
@@ -126,7 +132,8 @@ fn run() -> Result<(), String> {
             || serde_json::from_str(&request(&path, "state -j")?).map_err(|e| e.to_string()),
             io::stdout().lock(),
             args.monitor.as_deref(),
-            args.radius.unwrap_or(1),
+            args.radius_x.or(args.radius).unwrap_or(4),
+            args.radius_y.or(args.radius).unwrap_or(1),
         )
         .map_err(|e| e.to_string())?;
     } else {

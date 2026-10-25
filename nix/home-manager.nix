@@ -26,7 +26,7 @@ let
   cli = "${cfg.package}/bin/hypr2d";
   monitorArg = lib.optionalString (cfg.waybar.monitor != null) " --monitor ${lib.escapeShellArg cfg.waybar.monitor}";
   module = {
-    exec = "${cli} waybar --radius ${toString cfg.waybar.radius}${monitorArg}";
+    exec = "${cli} waybar --radius-x ${toString cfg.waybar.radiusX} --radius-y ${toString cfg.waybar.radiusY}${monitorArg}";
     return-type = "json";
     format = "{text}";
     escape = false;
@@ -81,7 +81,9 @@ in {
       bar = mkOption { type = types.str; default = "mainBar"; description = "Named Waybar settings entry to extend."; };
       position = mkOption { type = types.enum [ "left" "center" "right" ]; default = "left"; description = "Bar module list to append to."; };
       monitor = mkOption { type = types.nullOr types.str; default = null; description = "Output name/id, or focused output when null."; };
-      radius = mkOption { type = types.ints.between 0 4; default = 1; description = "Minimap radius."; };
+      radiusX = mkOption { type = types.ints.between 0 4; default = 4; description = "Horizontal minimap radius."; };
+      radiusY = mkOption { type = types.ints.between 0 4; default = 1; description = "Vertical minimap radius."; };
+      placement = mkOption { type = types.enum [ "start" "end" ]; default = "end"; description = "Insert before or after existing modules in the selected bar section."; };
       style = mkOption { type = types.bool; default = true; description = "Append the black OneDark example CSS."; };
     };
   };
@@ -104,7 +106,7 @@ in {
     programs.waybar = mkIf cfg.waybar.enable {
       enable = lib.mkDefault true;
       settings.${cfg.waybar.bar} = {
-        "modules-${cfg.waybar.position}" = lib.mkAfter [ "custom/hypr2d" ];
+        "modules-${cfg.waybar.position}" = (if cfg.waybar.placement == "start" then lib.mkBefore else lib.mkAfter) [ "custom/hypr2d" ];
         "custom/hypr2d" = module;
       };
       style = lib.mkIf cfg.waybar.style (lib.mkAfter (builtins.replaceStrings [ "#abb2bf" "#4b5263" "#61afef" "#e5c07b" ] [ cfg.theme.label cfg.theme.border cfg.theme.current cfg.theme.target ] (builtins.readFile ../examples/waybar.css)));

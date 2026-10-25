@@ -8,6 +8,7 @@ let
       home.homeDirectory = "/home/hypr2d-test";
       home.stateVersion = "26.05";
       programs.hypr2d = settings;
+      programs.waybar.settings.mainBar.modules-left = [ "cpu" ];
     } ];
   };
   enabled = evaluate {
@@ -17,7 +18,7 @@ let
     theme.fontSize = 18;
     theme.rounding = 2;
     gestures = { fingers = 4; distance = 140; axisLock = 6; natural = false; };
-    waybar = { enable = true; monitor = "WAYLAND-1"; radius = 2; };
+    waybar = { enable = true; monitor = "WAYLAND-1"; radiusX = 2; radiusY = 1; placement = "start"; };
   };
   disabled = evaluate {};
   invalid = evaluate { enable = true; gestures.axisLock = 1000; };
@@ -30,7 +31,7 @@ let
     assert lib.elem c.programs.hypr2d.package c.wayland.windowManager.hyprland.plugins;
     assert c.programs.waybar.settings.mainBar."custom/hypr2d".exec-on-event == false;
     assert !(c.programs.waybar.settings.mainBar."custom/hypr2d" ? interval);
-    assert c.programs.waybar.settings.mainBar.modules-left == [ "custom/hypr2d" ];
+    assert c.programs.waybar.settings.mainBar.modules-left == [ "custom/hypr2d" "cpu" ];
     assert lib.hasInfix ("--monitor " + lib.escapeShellArg "WAYLAND-1") c.programs.waybar.settings.mainBar."custom/hypr2d".exec;
     assert !(disabled.config.xdg.configFile ? "hypr/hypr2d.json");
     assert !(builtins.tryEval invalid.activationPackage.drvPath).success;

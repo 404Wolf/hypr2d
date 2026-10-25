@@ -1,8 +1,7 @@
 {
-  "height": 32,
   "modules-left": ["custom/hypr2d"],
   "custom/hypr2d": {
-    "exec": "hypr2d waybar --radius 1",
+    "exec": "hypr2d waybar --radius-x 4 --radius-y 1",
     "return-type": "json",
     "format": "{text}",
     "escape": false,

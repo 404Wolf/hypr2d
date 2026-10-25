@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, BufRead, Write};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 #[derive(Deserialize)]
 pub struct Snapshot {
@@ -69,7 +71,7 @@ pub fn unavailable(message: &str) -> Record {
         class: vec!["unavailable".into()],
     }
 }
-pub fn render(snapshot: &Snapshot, selected: Option<&str>, radius: u32) -> Record {
+pub fn render(snapshot: &Snapshot, selected: Option<&str>, radius_x: u32, radius_y: u32) -> Record {
     if snapshot.version != 1 {
         return unavailable("Unsupported hypr2d state version");
     }
@@ -103,10 +105,11 @@ pub fn render(snapshot: &Snapshot, selected: Option<&str>, radius: u32) -> Recor
         return unavailable("Invalid grid dimensions");
     }
     let cells: HashMap<_, _> = m.cells.iter().map(|c| ((c.x, c.y), c)).collect();
-    let width = (2 * radius + 1).min(m.grid.columns);
-    let height = (2 * radius + 1).min(m.grid.rows);
+    let width = 2 * radius_x + 1;
+    let height = 2 * radius_y + 1;
     let mut classes = BTreeSet::new();
-    let mut text = String::from("<span font_family=\"monospace\">");
+    let mut text =
+        String::from("<span font_family=\"monospace\" size=\"4096\" line_height=\"0.75\">");
     for row in 0..height {
         if row > 0 {
             text.push('\n');
@@ -142,7 +145,7 @@ pub fn render(snapshot: &Snapshot, selected: Option<&str>, radius: u32) -> Recor
                 classes.insert("urgent");
             }
             let (glyph, color) = if urgent {
-                ("!", "#e06c75")
+                ("●", "#F07178")
             } else if active {
                 (
                     "●",
@@ -152,54 +155,27 @@ pub fn render(snapshot: &Snapshot, selected: Option<&str>, radius: u32) -> Recor
                 )
             } else if occupied {
                 (
-                    "◉",
+                    "●",
                     snapshot.overview_config["label"]
                         .as_str()
                         .unwrap_or("#EEFFFF"),
                 )
             } else {
                 (
-                    "·",
-                    snapshot.overview_config["border"]
+                    "●",
+                    snapshot.overview_config["hover"]
                         .as_str()
-                        .unwrap_or("#353535"),
+                        .unwrap_or("#4A4A4A"),
                 )
             };
-            let annotation = snapshot.extensions["annotations"]
-                .as_array()
-                .and_then(|items| {
-                    items.iter().rev().find(|a| {
-                        let t = &a["target"];
-                        t["kind"] == "cell"
-                            && t["monitor"].as_u64() == Some(m.id.into())
-                            && t["x"].as_u64() == Some(xy.0.into())
-                            && t["y"].as_u64() == Some(xy.1.into())
-                    })
-                })
-                .map(|a| &a["annotation"]);
-            if let Some(a) = annotation {
-                classes.insert("annotated");
-                let col = a["colour"].as_str().unwrap_or(color);
-                let badge = a["badge"].as_str().or(a["label"].as_str());
-                let value = badge.map(escape).unwrap_or_else(|| {
-                    if a["dot"] == true {
-                        "●".into()
-                    } else {
-                        glyph.into()
-                    }
-                });
-                text.push_str(&format!(
-                    "<span foreground=\"{}\">{value}</span>",
-                    escape(col)
-                ));
-            } else {
-                text.push_str(&format!("<span foreground=\"{color}\">{glyph}</span>"));
-            }
+            // State colours stay consistent; extension metadata remains in the
+            // tooltip instead of expanding the fixed 9×3 dot geometry.
+            text.push_str(&format!("<span foreground=\"{color}\">{glyph}</span>"));
         }
     }
     text.push_str("</span>");
     let mut tooltip = format!(
-        "<b>{}</b> · ({}, {}) · workspace {}\n● current · ◉ occupied · · empty · ! urgent",
+        "<b>{}</b> · ({}, {}) · workspace {}\n● current · ● occupied · ● empty · ● urgent",
         escape(&m.name),
         current.x,
         current.y,
@@ -299,6 +275,15 @@ fn relevant(event: &str) -> bool {
         "activewindow",
         "activewindowv2",
         "urgent",
+        "createworkspace",
+        "createworkspacev2",
+        "destroyworkspace",
+        "destroyworkspacev2",
+        "moveworkspace",
+        "moveworkspacev2",
+        "fullscreen",
+        "changefloatingmode",
+        "configreloaded",
         "activespecial",
         "activespecialv2",
     ]
@@ -318,49 +303,94 @@ fn refresh(
     out: &mut impl Write,
     last: &mut String,
     monitor: Option<&str>,
-    radius: u32,
+    radius_x: u32,
+    radius_y: u32,
 ) -> io::Result<()> {
     let record = match fetch() {
-        Ok(state) => render(&state, monitor, radius),
+        Ok(state) => render(&state, monitor, radius_x, radius_y),
         Err(_) => unavailable("hypr2d unavailable; waiting for compositor events"),
     };
     emit(out, last, record)
 }
-// The only loop blocks on socket2. Fetch once after subscription, then only on
-// relevant events. Identical rendered records are not emitted twice.
+// A blocking socket reader feeds readiness events. Idle means recv(), never a
+// timeout or snapshot request. A fixed 16ms deadline coalesces each burst without
+// allowing a continuous event stream to postpone a refresh indefinitely.
 pub fn stream(
-    mut events: impl BufRead,
+    mut events: impl BufRead + Send + 'static,
     mut fetch: impl FnMut() -> Result<Snapshot, String>,
     mut out: impl Write,
     monitor: Option<&str>,
-    radius: u32,
+    radius_x: u32,
+    radius_y: u32,
 ) -> io::Result<()> {
+    let (tx, rx) = mpsc::sync_channel(128);
+    std::thread::spawn(move || loop {
+        let mut line = String::new();
+        match events.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                if tx.send(Ok(line)).is_err() {
+                    break;
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(Err(e));
+                break;
+            }
+        }
+    });
     let mut last = String::new();
     let mut loaded = true;
-    refresh(&mut fetch, &mut out, &mut last, monitor, radius)?;
-    let mut line = String::new();
+    refresh(&mut fetch, &mut out, &mut last, monitor, radius_x, radius_y)?;
+    let mut pending: Option<Instant> = None;
     loop {
-        line.clear();
-        if events.read_line(&mut line)? == 0 {
-            break;
+        if pending.is_some_and(|deadline| Instant::now() >= deadline) {
+            if loaded {
+                refresh(&mut fetch, &mut out, &mut last, monitor, radius_x, radius_y)?;
+            }
+            pending = None;
+            continue;
         }
+        let next = if let Some(deadline) = pending {
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(line) => Some(line),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if loaded {
+                        refresh(&mut fetch, &mut out, &mut last, monitor, radius_x, radius_y)?;
+                    }
+                    pending = None;
+                    continue;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => None,
+            }
+        } else {
+            rx.recv().ok()
+        };
+        let Some(line) = next else {
+            if pending.is_some() && loaded {
+                refresh(&mut fetch, &mut out, &mut last, monitor, radius_x, radius_y)?;
+            }
+            break;
+        };
+        let line = line?;
         let Some((event, data)) = line.trim_end().split_once(">>") else {
             continue;
         };
         if event == "hypr2d" && data == "unloaded" {
             loaded = false;
+            pending = None;
             emit(
                 &mut out,
                 &mut last,
                 unavailable("hypr2d plugin unavailable; waiting for load"),
             )?;
-            continue;
-        }
-        if event == "hypr2d" && data == "ready" {
-            loaded = true;
-        }
-        if loaded && relevant(event) {
-            refresh(&mut fetch, &mut out, &mut last, monitor, radius)?;
+        } else {
+            if event == "hypr2d" && data == "ready" {
+                loaded = true;
+            }
+            if loaded && relevant(event) && pending.is_none() {
+                pending = Some(Instant::now() + Duration::from_millis(16));
+            }
         }
     }
     Ok(())
@@ -372,15 +402,91 @@ mod tests {
         serde_json::from_str(r#"{"version":1,"monitors":[{"id":0,"name":"DP<&","focused":true,"workspace":1,"grid":{"columns":2,"rows":1,"wrap":true},"cell":{"x":0,"y":0},"cells":[{"x":0,"y":0,"workspace":1,"windows":[]},{"x":1,"y":0,"workspace":11,"windows":[{"title":"<b>unsafe & title</b>","app_id":"app<","urgent":true}]}]}]}"#).unwrap()
     }
     #[test]
+    fn nine_by_three_uniform_dots_and_all_occupancy_events() {
+        let record = render(&fixture(), None, 4, 1);
+        assert_eq!(record.text.matches("foreground=").count(), 27);
+        assert_eq!(record.text.matches('●').count(), 27);
+        assert_eq!(record.text.matches('\n').count(), 2);
+        assert!(record.text.contains("size=\"4096\" line_height=\"0.75\""));
+        for event in [
+            "openwindow",
+            "closewindow",
+            "movewindow",
+            "movewindowv2",
+            "workspace",
+            "focusedmon",
+            "createworkspace",
+            "destroyworkspace",
+            "moveworkspace",
+            "fullscreen",
+            "urgent",
+            "hypr2d",
+        ] {
+            assert!(relevant(event), "missing {event}");
+        }
+    }
+    #[test]
+    fn moving_window_refreshes_once_for_a_socket_event_burst() {
+        use std::os::unix::net::UnixStream;
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Barrier,
+        };
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        let moved = Arc::new(AtomicBool::new(false));
+        let changed = moved.clone();
+        let barrier = Arc::new(Barrier::new(2));
+        let ready = barrier.clone();
+        let sender = std::thread::spawn(move || {
+            ready.wait();
+            changed.store(true, Ordering::SeqCst);
+            writer
+                .write_all(
+                    b"movewindowv2>>abc,1,1\nworkspace>>1\ncreateworkspace>>1\nfullscreen>>0\n",
+                )
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(40));
+        });
+        let mut calls = 0;
+        let mut output = Vec::new();
+        stream(
+            io::BufReader::new(reader),
+            || {
+                calls += 1;
+                let mut state = fixture();
+                if moved.load(Ordering::SeqCst) {
+                    let mut windows = std::mem::take(&mut state.monitors[0].cells[1].windows);
+                    windows[0].urgent = false;
+                    state.monitors[0].cells[0].windows = windows;
+                }
+                if calls == 1 {
+                    barrier.wait();
+                }
+                Ok(state)
+            },
+            &mut output,
+            None,
+            4,
+            1,
+        )
+        .unwrap();
+        sender.join().unwrap();
+        assert_eq!(calls, 2, "initial snapshot plus one frame-coalesced burst");
+        let lines: Vec<_> = std::str::from_utf8(&output).unwrap().lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_ne!(lines[0], lines[1]);
+        assert!(lines[1].contains("#4A4A4A"));
+    }
+    #[test]
     fn markup_states_and_small_grid_are_correct() {
-        let r = render(&fixture(), None, 1);
+        let r = render(&fixture(), None, 1, 1);
         for class in ["current", "empty", "occupied", "urgent"] {
             assert!(r.class.iter().any(|c| c == class));
         }
         assert!(r.tooltip.contains("&lt;b&gt;unsafe &amp; title&lt;/b&gt;"));
         assert!(!r.tooltip.contains("<b>unsafe"));
-        assert_eq!(r.text.matches("foreground=").count(), 2);
-        assert!(render(&fixture(), Some("missing"), 1)
+        assert_eq!(r.text.matches("foreground=").count(), 9);
+        assert!(render(&fixture(), Some("missing"), 1, 1)
             .class
             .contains(&"unavailable".into()));
     }
@@ -397,9 +503,10 @@ mod tests {
             &mut out,
             None,
             1,
+            1,
         )
         .unwrap();
-        assert_eq!(calls, 3); // initial snapshot + two relevant events
+        assert_eq!(calls, 2); // initial snapshot + one coalesced event burst
         assert_eq!(String::from_utf8(out).unwrap().lines().count(), 1);
     }
     #[test]
@@ -414,6 +521,7 @@ mod tests {
             },
             &mut out,
             None,
+            1,
             1,
         )
         .unwrap();
@@ -439,6 +547,7 @@ mod tests {
             &mut out,
             None,
             1,
+            1,
         )
         .unwrap();
         assert_eq!(calls, 2);
@@ -448,9 +557,11 @@ mod tests {
     fn non_wrapping_edges_and_outside_grid() {
         let mut s = fixture();
         s.monitors[0].grid.wrap = false;
-        let r = render(&s, None, 1);
-        assert_eq!(r.text.matches("foreground=").count(), 1);
+        let r = render(&s, None, 1, 1);
+        assert_eq!(r.text.matches("foreground=").count(), 2);
         s.monitors[0].cell = None;
-        assert!(render(&s, None, 1).class.contains(&"outside-grid".into()));
+        assert!(render(&s, None, 1, 1)
+            .class
+            .contains(&"outside-grid".into()));
     }
 }

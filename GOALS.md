@@ -50,4 +50,10 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [ ] The user's binds and gestures switched over (see DESIGN.md §Binds) in their home-manager repo, `workspace2d.sh` removed
   - User-owned follow-up: this task implements the module in this repo only; no Home Manager checkout edits or activation.
 
+## Live Waybar minimap feedback
+- [x] Native occupancy/position events refresh once per 16 ms burst, without polling; moving-window regression
+- [x] Configurable 9×3 dot view (radiusX=4, radiusY=1), wrapping, Pango state colours and no borders
+- [x] Three rows fit the existing automatic 13px-text bar: equal VM heights with/without the real Waybar module, screenshot verified
+- [x] Home Manager start/end placement; start puts the minimap before cpu
+
 ## Questions
