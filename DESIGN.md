@@ -1092,3 +1092,33 @@ All 58 Rust tests, formatting/Clippy and all four x86_64 flake checks pass. The
 complete final VM suite includes legacy crash/recovery, anchored/full minimap
 heights at 17 px, hotplug, overview interaction/state and event-latency checks.
 Physical trackpad tuning and deployment remain user-owned.
+
+### Overview pinch sequence ownership
+
+At the pinned revision, InputManager emits cancellable pinch begin/update/end
+before native CTrackpadGestures and client forwarding. Overview captures mouse,
+keyboard and swipe events, not pinch events. The existing overview toggle calls
+close without activating selection; it already cancels. A native pinch-in bind
+can toggle it, but supplies no pinch-out action. Plugin-owned cancellation was
+missing, rather than an overview-wide pinch swallow or a selection-committing
+toggle. Native Lua action functions fire at gesture end; callback tables may
+open at start. Both need to remain native for the whole opening sequence.
+
+Rust fixes ownership at pinch begin: only four-finger sequences begun while the
+overview is open are claimed. Absolute scale departure from 1.0 crosses the
+configurable threshold once; closing clears the drag and uncommitted press.
+Claim persists through animation/GL cleanup and all subsequent updates/end,
+preventing a native Lua callback from reopening. An opening sequence is never
+claimed midway, including when a native start callback opens the overview.
+Pinch activity excludes workspace swipe claims; pinch begin cancels any tracked
+swipe visuals. No focus, workspace or group dispatcher is used to cancel.
+The synthetic test helper is isolated behind HYPR2D_TESTING and invokes the real
+InputManager pinch path, exercising EventBus cancellation and native Lua gesture
+callbacks together rather than emitting only plugin events.
+
+Validation: all 61 Rust tests, formatting/Clippy and all four x86_64 flake
+checks passed. The 208 s VM run exercised native end-only and start-callback
+Lua openers, both cancellation directions, subthreshold travel, no reopen after
+GL cleanup, overlapping swipe rejection, two-monitor workspace preservation,
+and the laptop's grouped focus/order and visible special invariants. No live
+compositor was changed; physical pinch feel remains a deployment hand-test.

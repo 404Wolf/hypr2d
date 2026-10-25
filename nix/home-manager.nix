@@ -19,6 +19,7 @@ let
         assert(hl.plugin.hypr2d.configure(${luaString name}, {columns=${toString grid.columns},rows=${toString grid.rows},wrap=${bool grid.wrap},stride=${toString cfg.grid.stride}}))
       '') cfg.grids)}
       hl.plugin.hypr2d._execute(${luaString ("overview-config " + builtins.toJSON theme)})
+      assert(hl.plugin.hypr2d._execute("pinch-config ${toString cfg.pinch.cancelScale}"))
       hl.plugin.hypr2d._execute("swipe-enabled ${bool cfg.gestures.enable}")
       assert(hl.plugin.hypr2d.swipe_config({fingers=${toString cfg.gestures.fingers},distance=${toString cfg.gestures.distance},velocity=${toString cfg.gestures.velocity},natural=${bool cfg.gestures.natural},axis_lock=${toString cfg.gestures.axisLock},diagonal_width=${toString cfg.gestures.diagonalWidth},hysteresis=${toString cfg.gestures.hysteresis},hysteresis_distance=${toString cfg.gestures.hysteresisDistance},projection_decel=${toString cfg.gestures.projectionDecel},spring_stiffness=${toString cfg.gestures.springStiffness},sensitivity=${toString cfg.gestures.sensitivity}}))
       ${lib.optionalString cfg.overview.bind ''
@@ -85,6 +86,7 @@ in {
       fontSize = mkOption { type = types.ints.between 10 40; default = 16; description = "Label size in output pixels."; };
       rounding = mkOption { type = types.ints.between 0 4; default = 3; description = "Cell corner radius in output pixels."; };
     };
+    pinch.cancelScale = mkOption { type = types.number; default = 0.08; description = "Absolute pinch scale change that cancels an open overview with four fingers (0..1 exclusive). The opening Lua gesture is left native."; };
     gestures = {
       enable = mkOption { type = types.bool; default = true; description = "Claim tracked workspace swipes. Remove conflicting native/execGesture bindings when wiring this module."; };
       sensitivity = mkOption { type = types.number; default = 1.0; description = "Positive swipe travel/velocity gain. All gesture thresholds remain in screen-space logical pixels after gain."; };
@@ -119,6 +121,7 @@ in {
   };
   config = mkIf cfg.enable {
     assertions = [
+      { assertion = cfg.pinch.cancelScale > 0 && cfg.pinch.cancelScale < 1; message = "hypr2d pinch.cancelScale must be between 0 and 1 exclusive."; }
       { assertion = cfg.gestures.sensitivity > 0 && cfg.gestures.diagonalWidth > 0 && cfg.gestures.diagonalWidth < 22.5 && cfg.gestures.hysteresis >= 0 && cfg.gestures.hysteresis < cfg.gestures.diagonalWidth && cfg.gestures.hysteresisDistance > 0 && cfg.gestures.projectionDecel > 0 && cfg.gestures.springStiffness >= 1 && cfg.gestures.springStiffness <= 10000; message = "hypr2d requires positive sensitivity, diagonalWidth 0..22.5, hysteresis below diagonalWidth, positive hysteresisDistance/projectionDecel and springStiffness 1..10000."; }
       { assertion = lib.all (slot: slot < cfg.grid.stride) (builtins.attrValues cfg.monitorSlots); message = "hypr2d monitor slots must be less than the shared stride."; }
       { assertion = builtins.length (lib.unique (builtins.attrValues cfg.monitorSlots)) == builtins.length (builtins.attrValues cfg.monitorSlots); message = "hypr2d pinned monitor slots must be unique."; }
@@ -136,7 +139,7 @@ in {
       plugins = [ cfg.package ];
       extraConfig = lib.mkAfter lua;
     };
-    xdg.configFile."hypr/hypr2d.json".text = builtins.toJSON { version = 1; inherit theme; monitorSlots = cfg.monitorSlots; grid = { inherit (cfg.grid) stride; monitors = cfg.grids; }; gestures = cfg.gestures; };
+    xdg.configFile."hypr/hypr2d.json".text = builtins.toJSON { version = 1; inherit theme; monitorSlots = cfg.monitorSlots; grid = { inherit (cfg.grid) stride; monitors = cfg.grids; }; gestures = cfg.gestures; pinch = cfg.pinch; };
     programs.waybar = mkIf cfg.waybar.enable {
       enable = lib.mkDefault true;
       settings.${cfg.waybar.bar} = {

@@ -9,6 +9,7 @@ mod transport;
 mod ui;
 use overview::probe_report;
 use ui::Overview;
+mod pinch;
 pub mod swipe;
 use grid::{Cell, Direction, Grid};
 use serde_json::json;
@@ -346,6 +347,8 @@ mod ffi {
             rebuilt: &[String],
             dissolved: &[String],
         ) -> String;
+        fn pinch_event(self: &mut Core, phase: u8, fingers: u32, scale: f64, open: bool) -> u8;
+        fn pinch_active(self: &Core) -> bool;
         fn swipe(self: &mut Core, monitors: &[Monitor], input: SwipeInput) -> SwipeFrame;
         fn spike_round_trip(value: u32) -> u32;
         fn command(self: &mut Core, monitors: &[Monitor], windows: &[Window], input: &str)
@@ -365,6 +368,8 @@ pub struct Core {
     theme: theme::Theme,
     grids: HashMap<String, Grid>,
     stride: u32,
+    pinch: pinch::Pinch,
+    pinch_cancel_scale: f64,
     swipe_enabled: bool,
     swipe_config: swipe::Config,
     gesture: Option<swipe::Swipe>,
@@ -384,6 +389,8 @@ impl Default for Core {
             theme: theme::Theme::default(),
             grids: HashMap::new(),
             stride: 10,
+            pinch: pinch::Pinch::default(),
+            pinch_cancel_scale: 0.08,
             swipe_enabled: true,
             swipe_config: swipe::Config::default(),
             gesture: None,
@@ -461,6 +468,17 @@ impl Core {
             })
     }
 
+    fn pinch_event(&mut self, phase: u8, fingers: u32, scale: f64, open: bool) -> u8 {
+        guarded(|| {
+            let (claimed, close) =
+                self.pinch
+                    .event(phase, fingers, scale, open, self.pinch_cancel_scale);
+            u8::from(claimed) | (u8::from(close) << 1)
+        })
+    }
+    fn pinch_active(&self) -> bool {
+        guarded(|| self.pinch.active())
+    }
     fn command(
         &mut self,
         monitors: &[ffi::Monitor],
@@ -481,6 +499,18 @@ impl Core {
         windows: &[ffi::Window],
         input: &str,
     ) -> Result<ffi::Reply, String> {
+        if let Some(value) = input.strip_prefix("pinch-config ") {
+            let scale: f64 = value.parse().map_err(|_| "invalid pinch cancelScale")?;
+            if !scale.is_finite() || scale <= 0.0 || scale >= 1.0 {
+                return Err("pinch cancelScale must be finite and between 0 and 1".into());
+            }
+            self.pinch_cancel_scale = scale;
+            return Ok(ffi::Reply {
+                output: "ok".into(),
+                error: String::new(),
+                moves: vec![],
+            });
+        }
         if let Some(json) = input.strip_prefix("overview-config ") {
             self.theme = theme::Theme::parse(json)?;
             return Ok(ffi::Reply {
@@ -496,7 +526,7 @@ impl Core {
             error: String::new(),
         };
         if matches!(args.as_slice(), ["state"] | ["state", "-j"]) {
-            reply.output = json!({"version":1,"parked":self.parked_snapshot(windows),"extensions":self.extensions.snapshot(),"swipe_enabled":self.swipe_enabled,"overview_config":self.theme,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
+            reply.output = json!({"pinch_config":{"cancel_scale":self.pinch_cancel_scale},"version":1,"parked":self.parked_snapshot(windows),"extensions":self.extensions.snapshot(),"swipe_enabled":self.swipe_enabled,"overview_config":self.theme,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
                 let g = self.grid(m);
                 json!({"id":m.id,"slot":m.slot,"name":m.name,"workspace":m.workspace,"focused":m.focused,"grid":g,"cell":g.cell(m.workspace,m.slot),"offset":[m.offset_x,m.offset_y],
                     "cells":(0..g.rows).flat_map(|y|(0..g.columns).map(move |x|Cell{x,y})).filter_map(|c|g.id(c,m.slot).ok().map(|id|json!({"x":c.x,"y":c.y,"workspace":id,"windows":windows.iter().filter(|w|w.workspace==id).map(|w|json!({"address":w.address,"title":w.title,"app_id":w.app_id,"urgent":w.urgent})).collect::<Vec<_>>()}))).collect::<Vec<_>>()})
@@ -820,6 +850,18 @@ impl Default for ffi::UIStyle {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pinch_config_is_validated_atomically() {
+        let mut core = Core::default();
+        assert!(core.command(&[], &[], "pinch-config 0.12").error.is_empty());
+        for bad in ["0", "-0.1", "1", "NaN", "inf", "text"] {
+            assert!(!core
+                .command(&[], &[], &format!("pinch-config {bad}"))
+                .error
+                .is_empty());
+            assert_eq!(core.pinch_cancel_scale, 0.12);
+        }
+    }
     #[test]
     fn swipe_gain_config_preserves_legacy_forms_and_rejects_invalid_atomically() {
         let mut core = Core::default();

@@ -210,6 +210,30 @@ and a plugin-free Hyprland parent, so CI does not need a live desktop. KVM is re
 `nix flake check` includes that integration test, Rust tests/lints/formatting,
 C++ formatting and the plugin build. The upstream-main build is non-blocking.
 
+## Overview pinch cancellation
+
+Keep the native four-finger opening bind:
+
+```lua
+hl.gesture({ fingers = 4, direction = 'pinchin', action = hl.plugin.hypr2d.overview() })
+```
+
+While the overview is open, a new four-finger pinch in either direction cancels
+it, including any drag or uncommitted selection. Focus, group current members,
+all monitors' current workspaces and visible specials remain unchanged. The
+plugin consumes that entire cancellation gesture, so its end cannot reopen the
+overview. The opening gesture itself finishes normally. Swipes remain separate.
+
+The default cancellation scale change is 8% from 1.0. Configure it with
+`programs.hypr2d.pinch.cancelScale = 0.08;` (strictly between 0 and 1), or at
+runtime with `hyprctl hypr2d pinch-config 0.08`. A subthreshold
+pinch does not close the overview. Closing uses the normal short animation.
+
+Hand-test after deployment: pinch-in opens; lift, then pinch-in and pinch-out
+each cancel without reopening; move the selection first and repeat with a
+visible special and a non-head group member focused. Verify four-finger swipes
+do not act as pinches.
+
 ## Tracked swipe
 
 The plugin consumes three-finger swipes before Hyprland's built-in handlers.

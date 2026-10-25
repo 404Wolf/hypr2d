@@ -247,6 +247,12 @@ with (artifacts / "compositor.log").open("w+") as log:
                 print((artifacts/"compositor.log").read_text()[-20000:],flush=True)
                 raise
             time.sleep(0.2)
+        multi_before=json.loads(ctl("hypr2d","overview","invariants"))
+        open_ui()
+        keypress("Right");keypress("Tab")
+        ok("eval",'hl.plugin.hypr2d._test_pinch("begin",4); hl.plugin.hypr2d._test_pinch("update",4,0.8); hl.plugin.hypr2d._test_pinch("end",false)')
+        wait(lambda:ui_state().get("open") is False,"two-monitor pinch cancel")
+        assert json.loads(ctl("hypr2d","overview","invariants"))==multi_before,"pinch preserves every monitor workspace and focus"
         open_ui()
         fitted=ui_state()["ui"]
         assert fitted["fit"] and len(fitted["cells"])<130
@@ -902,6 +908,10 @@ with (artifacts / "compositor.log").open("w+") as log:
         assert invariants()==baseline,"closing must preserve group state"
         screenshot("hardware-after")
         assert ImageChops.difference(Image.open(artifacts/"hardware-before-0.png").convert("RGB"),Image.open(artifacts/"hardware-after-0.png").convert("RGB")).getbbox() is None,"group/cursor scene unchanged"
+        open_ui();keypress("Right")
+        ok("eval",'hl.plugin.hypr2d._test_pinch("begin",4); hl.plugin.hypr2d._test_pinch("update",4,1.2); hl.plugin.hypr2d._test_pinch("end",false)')
+        wait(lambda:ui_state().get("open") is False,"pinch with non-head group member focused")
+        assert invariants()==baseline,"pinch must preserve originally focused group member"
         # Already-visible special: opening/closing may not toggle it or focus it.
         lua('hl.dsp.workspace.toggle_special("8")')
         time.sleep(.2); shown=invariants()
@@ -910,6 +920,46 @@ with (artifacts / "compositor.log").open("w+") as log:
             keypress("Escape");wait(lambda:ui_state().get("open") is False,"group repeat close")
             assert invariants()==shown
             assert ui_state()["deleted_gl_objects"]
+        # Pinches run through InputManager, not just EventBus: a native Lua
+        # opener is present, so an incorrectly forwarded end would reopen it.
+        ok("eval", 'pinch_opens=0; hl.gesture({fingers=4,direction="pinchin",action=function() pinch_opens=pinch_opens+1; hl.plugin.hypr2d.overview()() end})')
+        def pinch(phase, value=None):
+            args=f'"{phase}"'
+            if phase=="begin": args+=f",{value or 4}"
+            elif phase=="update": args+=f",4,{value}"
+            elif phase=="end": args+=",false"
+            ok("eval",f'hl.plugin.hypr2d._test_pinch({args})')
+        ok("hypr2d","pinch-config","0.08")
+        ok("eval",'assert(hl.plugin.hypr2d.swipe_config({fingers=4}))')
+        for scale in (0.85,1.15):
+            pinch("begin");pinch("update",1.2);pinch("end")
+            wait(lambda:ui_state().get("pending")==0,"native pinch opens overview")
+            # All monitors, specials, focus, every group/current, window order.
+            assert invariants()==shown
+            keypress("Right");keypress("Tab") # uncommitted selection must not apply
+            pinch("begin")
+            pinch("update",1.03)
+            assert ui_state().get("ui",{}).get("open"),"subthreshold pinch must not close"
+            # A concurrent swipe sequence must never claim pinch translation.
+            ok("eval",'hl.plugin.hypr2d._test_swipe("begin",4,nil,false); hl.plugin.hypr2d._test_swipe("update",900,0,false)')
+            pinch("update",scale)
+            wait(lambda:ui_state().get("open") is False,"pinch cancels overview")
+            # Keep fingers down past GL cleanup, then update/end: still claimed.
+            pinch("update",1.3);pinch("end")
+            ok("eval",'hl.plugin.hypr2d._test_swipe("end",false,nil,false)')
+            time.sleep(.2)
+            assert ui_state().get("open") is False,"closing pinch must not reopen"
+            assert invariants()==shown,"pinch restores focus/groups/order/workspaces/specials"
+        ok("eval",'assert(pinch_opens==2,"cancellation leaked to native Lua gesture")')
+        # Native opening callback at gesture START must likewise finish untouched.
+        ok("eval",'hl.gesture({fingers=4,direction="pinchin",action="unset"}); hl.gesture({fingers=4,direction="pinchin",action={start=function() hl.plugin.hypr2d.overview()() end}})')
+        pinch("begin");pinch("update",1.2);pinch("update",1.4);pinch("end")
+        wait(lambda:ui_state().get("pending")==0,"start-callback opening pinch survives updates")
+        pinch("begin");pinch("update",0.85);pinch("end")
+        wait(lambda:ui_state().get("open") is False,"start-callback bind cannot reopen cancellation")
+        assert invariants()==shown
+        ok("eval",'hl.gesture({fingers=4,direction="pinchin",action="unset"})')
+        print("PASS pinch: native Lua opening, in/out cancel, no reopen, swipe isolation, grouped focus/special/workspace/order preservation")
         lua('hl.dsp.workspace.toggle_special("8")')
         lua(f'hl.dsp.focus({{window="address:{first}"}})')
         win=real_window(first)

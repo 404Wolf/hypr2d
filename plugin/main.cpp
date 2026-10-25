@@ -18,6 +18,7 @@
 #include <hyprland/src/ipc/s2/S2.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopTimer.hpp>
+#include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/output/Monitor.hpp>
 #include <hyprland/src/plugins/PluginAPI.hpp>
 #include <hyprland/src/render/Renderer.hpp>
@@ -32,6 +33,7 @@ extern "C" {
 static std::optional<rust::Box<hypr2d::Core>> core;
 static CHyprSignalListener workspaceListener;
 static CHyprSignalListener swipeBeginListener, swipeUpdateListener, swipeEndListener, renderListener, monitorListener;
+static CHyprSignalListener pinchBeginListener, pinchUpdateListener, pinchEndListener;
 static bool testingEnabled = false;
 static bool swipeClaimed = false, applyingSwipe = false;
 static bool swipeAnimating = false;
@@ -371,6 +373,19 @@ static int testSwipeLua(lua_State *L) {
     lua_pushboolean(L, info.cancelled);
     return 1;
 }
+// Exercise the real InputManager pipeline, including native Lua gestures.
+static int testPinchLua(lua_State *L) {
+    const std::string phase = luaL_checkstring(L, 1);
+    if (phase == "begin")
+        g_pInputManager->onPinchBegin({.fingers = static_cast<uint32_t>(luaL_checkinteger(L, 2))});
+    else if (phase == "update")
+        g_pInputManager->onPinchUpdate({.fingers = static_cast<uint32_t>(luaL_checkinteger(L, 2)), .scale = luaL_checknumber(L, 3)});
+    else if (phase == "end")
+        g_pInputManager->onPinchEnd({.cancelled = bool(lua_toboolean(L, 2))});
+    else
+        return luaL_error(L, "expected begin/update/end");
+    return 0;
+}
 APICALL EXPORT std::string PLUGIN_API_VERSION() { return HYPRLAND_API_VERSION; }
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     if (HyprlandAPI::getHyprlandVersion(handle).hash != GIT_COMMIT_HASH)
@@ -402,7 +417,35 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
             cancelSwipe();
         IPC::Socket2::sock()->postEvent({"hypr2d", "changed"});
     });
+    pinchBeginListener = Event::bus()->m_events.gesture.pinch.begin.listen([](IPointer::SPinchBeginEvent e, Event::SCallbackInfo &info) {
+        try {
+            cancelSwipe();
+            swipeClaimed = false;
+            info.cancelled |= ((*core)->pinch_event(0, e.fingers, 1., OverviewUI::active()) & 1) != 0;
+        } catch (...) {
+            LOG(Log::ERR, "hypr2d: pinch begin failed");
+        }
+    });
+    pinchUpdateListener = Event::bus()->m_events.gesture.pinch.update.listen([](IPointer::SPinchUpdateEvent e, Event::SCallbackInfo &info) {
+        try {
+            const auto result = (*core)->pinch_event(1, e.fingers, e.scale, OverviewUI::active());
+            info.cancelled |= (result & 1) != 0;
+            if (result & 2)
+                OverviewUI::command("overview close");
+        } catch (...) {
+            LOG(Log::ERR, "hypr2d: pinch update failed");
+        }
+    });
+    pinchEndListener = Event::bus()->m_events.gesture.pinch.end.listen([](IPointer::SPinchEndEvent, Event::SCallbackInfo &info) {
+        try {
+            info.cancelled |= ((*core)->pinch_event(2, 0, 1., OverviewUI::active()) & 1) != 0;
+        } catch (...) {
+            LOG(Log::ERR, "hypr2d: pinch end failed");
+        }
+    });
     swipeBeginListener = Event::bus()->m_events.gesture.swipe.begin.listen([](IPointer::SSwipeBeginEvent e, Event::SCallbackInfo &info) {
+        if ((*core)->pinch_active())
+            return; // Pinch translation is never workspace swipe travel.
         if (OverviewUI::active()) {
             swipeClaimed = true; // Consume the entire sequence, including after close.
             info.cancelled = true;
@@ -445,6 +488,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     if (const char *testing = getenv("HYPR2D_TESTING"); testing && std::string(testing) == "1") {
         testingEnabled = true;
         HyprlandAPI::addLuaFunction(handle, "hypr2d", "_test_swipe", testSwipeLua);
+        HyprlandAPI::addLuaFunction(handle, "hypr2d", "_test_pinch", testPinchLua);
         OverviewProbe::init();
     }
     OverviewUI::init(&**core);
@@ -475,6 +519,9 @@ APICALL EXPORT void PLUGIN_EXIT() {
         OverviewProbe::shutdown();
     testingEnabled = false;
     IPC::Socket2::sock()->postEvent({"hypr2d", "unloaded"});
+    pinchBeginListener.reset();
+    pinchUpdateListener.reset();
+    pinchEndListener.reset();
     swipeBeginListener.reset();
     swipeUpdateListener.reset();
     swipeEndListener.reset();

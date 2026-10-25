@@ -1125,7 +1125,12 @@ impl Overview {
         })
     }
     pub fn overview_close(&mut self, now: f64) {
-        guarded(|| self.closing = Some(now));
+        guarded(|| {
+            self.drag = None;
+            self.pressed = None;
+            self.cancelled_release = true;
+            self.closing.get_or_insert(now);
+        });
     }
 }
 impl Default for ffi::UIFrame {
