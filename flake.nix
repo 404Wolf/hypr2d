@@ -52,7 +52,7 @@
       };
       nested = pkgs.writeShellApplication {
         name = "hypr2d-nested";
-        runtimeInputs = [ compositor (pkgs.python3.withPackages (p: [ p.pillow ])) pkgs.foot pkgs.waybar pkgs.grim ];
+        runtimeInputs = [ compositor (pkgs.python3.withPackages (p: [ p.pillow ])) pkgs.foot pkgs.waybar pkgs.grim pkgs.wtype pkgs.wlrctl ];
         text = builtins.replaceStrings [ "@PLUGIN@" "@SMOKE@" "@CLI@" "@EXAMPLES@" "@OVERVIEW@" ] [ "${plugin}/lib/libhypr2d.so" "${./nix/smoke.py}" "${rust}/bin/hypr2d" "${./examples}" "${./nix/overview.py}" ] (builtins.readFile ./nix/nested.sh);
       };
       parentConfig = pkgs.writeText "hypr2d-ci-parent.lua" ''

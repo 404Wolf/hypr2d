@@ -190,6 +190,82 @@ with (artifacts / "compositor.log").open("w+") as log:
         screenshot("shown-after")
         compare("shown-after", "shown-before")
         lua('hl.dsp.workspace.toggle_special("probe-1")')
+        # Full production UI: real virtual-keyboard/pointer protocol clients,
+        # all scoped to the nested child Wayland socket in this VM.
+        def ui_state():
+            return json.loads(ctl("hypr2d", "overview", "state"))
+        def keypress(name):
+            subprocess.run(["wtype", "-k", name], env=env, check=True, timeout=10)
+        def open_ui():
+            lua('hl.plugin.hypr2d.overview()')
+            wait(lambda: ui_state().get("pending") == 0, "UI captures settle")
+            time.sleep(0.2)
+        open_ui()
+        ui = ui_state()["ui"]
+        assert len(ui["cells"]) == 130, ui
+        assert any(c["key"] == "special:probe-0" and c["label"] == "probe-0" for c in ui["cells"])
+        assert ui_state()["captures"] >= 10, ui_state()
+        screenshot("ui-open")
+        ui_image=Image.open(artifacts / "ui-open-0.png").convert("RGB")
+        for panel,m in enumerate(mons):
+            keys=[str(10*x+m["id"]+1) for x in range(4)]+[f"special:probe-{panel}"]
+            for j,k in enumerate(keys):
+                c=next(c for c in ui["cells"] if c["key"]==k)
+                x,y,w,h=c["rect"]
+                actual=ui_image.getpixel((round(x+w/2),round(y+h/2)))
+                expected=tuple(bytes.fromhex(colors[panel*5+j]))
+                assert max(abs(a-b) for a,b in zip(actual,expected)) <= 3, (k,actual,expected)
+        # Keep newly created empty specials in the strip until overview close.
+        lua('hl.dsp.workspace.toggle_special("empty")')
+        lua('hl.dsp.workspace.toggle_special("empty")')
+        wait(lambda:any(c["key"]=="special:empty" and not c["occupied"] for c in ui_state()["ui"]["cells"]),"empty special retained")
+        head=mons[-1]["name"]
+        ok("eval",f'hl.monitor({{output="{head}",mode="1280x720@60",position="0x-720",scale=1}})')
+        wait(lambda:ui_state()["ui"]["panels"][1]["rect"][1] < ui_state()["ui"]["panels"][0]["rect"][1],"physical vertical arrangement")
+        ok("eval",f'hl.monitor({{output="{head}",mode="1280x720@60",position="1280x0",scale=1}})')
+        wait(lambda:ui_state().get("pending")==0,"layout capture settle")
+        captures = ui_state()["captures"]
+        time.sleep(0.25)
+        assert ui_state()["captures"] == captures, "idle UI must not recapture"
+        hidden=next(w for w in mapped() if w["class"]=="hypr2d-probe-0-3")
+        children=Path(f'/proc/{hidden["pid"]}/task/{hidden["pid"]}/children').read_text().split()
+        shell_pid=children[0]
+        old_capture_count=ui_state()["captures"]
+        fd=os.open(f"/proc/{shell_pid}/fd/1",os.O_WRONLY)
+        os.write(fd,b"\x1b]11;#207040\x07\x1b[2J")
+        os.close(fd)
+        wait(lambda:ui_state()["captures"]>old_capture_count,"hidden surface commit refreshes thumbnail")
+        time.sleep(0.2)
+        assert ui_state()["captures"] <= old_capture_count+3,"only the changed cell should refresh"
+        screenshot("ui-live")
+        live=Image.open(artifacts / "ui-live-0.png").convert("RGB")
+        changed=next(c for c in ui_state()["ui"]["cells"] if c["key"]==str(31+mons[0]["id"]))
+        x,y,w,h=changed["rect"]
+        assert live.getpixel((round(x+w/2),round(y+h/2)))==(32,112,64)
+        assert next(w["title"] for w in mapped() if w["address"]==hidden["address"])==hidden["title"]
+        keypress("l")
+        wait(lambda: any(c["selected"] and c["key"] in ("11","12") for c in ui_state()["ui"]["cells"]), "keyboard right")
+        for _ in range(3):
+            before=next(c["key"] for c in ui_state()["ui"]["cells"] if c["selected"])
+            keypress("Tab")
+            wait(lambda:next(c["key"] for c in ui_state()["ui"]["cells"] if c["selected"]) != before,"Tab changes group")
+            if any(c["selected"] and c["key"].startswith("special:") for c in ui_state()["ui"]["cells"]):
+                break
+        assert any(c["selected"] and c["key"].startswith("special:") for c in ui_state()["ui"]["cells"]),"special keyboard strip"
+        keypress("Escape")
+        wait(lambda: ui_state().get("open") is False, "Esc closes")
+        open_ui()
+        target = next(c for c in ui_state()["ui"]["cells"] if c["key"] == str(mons[-1]["id"]+81))
+        x,y,w,h = target["rect"]
+        focused = next(m for m in monitors() if m["focused"])
+        lua(f'hl.dsp.cursor.move({{x={focused["x"]+x+w/2},y={focused["y"]+y+h/2}}})')
+        subprocess.run(["wlrctl", "pointer", "click", "left"], env=env, check=True, timeout=10)
+        wait(lambda: ui_state().get("open") is False, "click activates cell")
+        assert any(m["activeWorkspace"]["id"] == mons[-1]["id"]+81 for m in monitors())
+        open_ui()
+        ok("hypr2d", "overview", "close")
+        wait(lambda: ui_state().get("open") is False, "close animation completes")
+        print("PASS M4 UI: physical panels, special labels, idle cache, keyboard groups, Esc and pointer activation")
         # One IPC eval performs a real animated transition followed immediately
         # by the capture, without allowing the animation to settle first.
         ok("eval", 'hl.config({animations={enabled=true}}); hl.dispatch(hl.plugin.hypr2d.move("right")); hl.plugin.hypr2d._execute("probe open")')

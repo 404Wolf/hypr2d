@@ -81,6 +81,19 @@ end)
 end
 ```
 
+Suggested overview bind (Lua, Hyprland 0.56):
+
+```lua
+hl.bind("SUPER + TAB", hl.plugin.hypr2d.overview())
+```
+
+The callable toggles the overview. Inside it, use hjkl/arrows, Tab/Shift-Tab to
+switch monitor panels and the special strip, Enter to activate, or Esc to close.
+Click a cell to activate it. `hyprctl hypr2d overview` is the equivalent IPC
+command; `overview open`, `overview close` and `overview state` are also available.
+All monitor grids appear together in their physical arrangement on each output.
+Specials are labelled; empty ones are dim and currently shown ones highlighted.
+
 ## Validation
 
 `nix develop --command cargo test --workspace` runs the pure Rust tests.
@@ -230,9 +243,9 @@ tooltip { background: #000000; color: #abb2bf; border: 1px solid #4b5263; }
 
 ## Overview rendering prototype
 
-M4 is paused at its rendering approval gate. The full overview command and UI
-are not implemented. The test-only contact sheet captures both monitors' 8×8
-grids and special workspaces into thumbnail-sized RGBA8 framebuffers.
+The production overview uses the approved thumbnail rendering path. Its test-only
+contact sheet remains available for capacity, state restoration and resource
+regressions; the VM suite also drives the production UI with virtual input.
 
 Run the deterministic screenshot and 25-cycle resource checks in the VM:
 

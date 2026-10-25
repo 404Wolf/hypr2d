@@ -465,3 +465,43 @@ cache; the prototype suppresses snapshot blur and does not establish a bound
 for every effect. Vulkan support, damage-driven refresh, frame-callback policy,
 physical monitor layout and input/focus behavior remain work for the full M4
 implementation. Stop here until the user approves that work.
+
+### M4 production overview
+
+The approved path now has a Rust-owned layout and interaction model in
+`core/src/ui.rs`. Panels follow the physical output bounding box, including
+negative coordinates and vertical arrangements. Every output displays the same
+combined overview, fitted to that output, so all grids remain accessible from
+any monitor. Special workspaces have a labelled strip, dim empty cells and a
+highlight for currently shown specials. Empty specials discovered while open
+stay alive until close. Normal cell numbers appear on selection/hover/current
+cells, avoiding a large burst of label rasterization on open.
+
+Lua exposes `hl.plugin.hypr2d.overview()` as a callable constructor, consistent
+with the other commands; README §Binds includes SUPER+TAB. Arrow/hjkl movement,
+Tab/Shift-Tab panel/strip traversal, Enter, Esc and pointer activation are handled
+by cancellable input listeners. Consumed key releases remain consumed even if
+the overview closes between press and release; keys pressed before opening can
+finish through native handling. Opening and explicit closing use a 100 ms fade.
+Selection activates the requested monitor/workspace through native actions.
+
+Only occupied cells allocate capture buffers. Normal empty cells share the
+painted background. Source surface commits queue the affected cell; window
+metadata/geometry changes are compared in Rust to invalidate source/destination
+cells. Rendering drains a deduplicated queue with a 2 ms submission budget per
+compositor render event. The capture path reuses buffers and omits the spike's
+`glFinish`. Captured displayed clients receive frame callbacks so animated
+hidden clients can produce their next buffer. When idle there are no capture
+requests, polling timers or periodic subprocesses. Closing/unload releases
+textures, labels, input/render/surface listeners and temporary special refs.
+
+M4 validation passed the complete disposable VM suite (including M1–M3 and the
+25-cycle rendering probe), 18 Rust tests, rustfmt/Clippy and C++ formatting.
+Production UI screenshots verify the ten occupied normal/special thumbnail
+colors. Virtual keyboard and pointer clients exercise navigation, Tab traversal,
+Esc and clicking an empty cell on the other monitor. Tests also rearrange the
+headless output vertically, create/hide an empty special while open, check idle
+capture counts, and change a hidden terminal's pixels through its own PTY
+without changing its title. Only the changed thumbnail refreshes, and its new
+pixels are checked in a screenshot. All test instances exit; no live-session
+plugin load or Home Manager write is used.

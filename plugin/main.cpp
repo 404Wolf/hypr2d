@@ -1,5 +1,6 @@
 #include "hypr2d-core/src/lib.rs.h"
 #include "overview.hpp"
+#include "ui.hpp"
 #include <algorithm>
 #include <chrono>
 #include <hyprland/src/animation/WorkspaceAnimationController.hpp>
@@ -166,6 +167,10 @@ static bool feedSwipe(hypr2d::SwipePhase phase, uint32_t fingers = 0, double dx 
 }
 static std::string execute(const std::string &input) {
     try {
+        if (input == "overview" || input.starts_with("overview ")) {
+            cancelSwipe();
+            return OverviewUI::command(input);
+        }
         auto ms = monitors();
         if (input.starts_with("probe "))
             return testingEnabled ? OverviewProbe::command(**core, ms, input) : "error: test-only command";
@@ -243,6 +248,7 @@ static int moveLua(lua_State *L) {
     }
     return dispatcher(L, cmd);
 }
+static int overviewLua(lua_State *L) { return dispatcher(L, "overview"); }
 static int carryLua(lua_State *L) { return dispatcher(L, "carry " + std::string(luaL_checkstring(L, 1))); }
 static int gotoLua(lua_State *L) {
     const auto x = luaL_checkinteger(L, 1), y = luaL_checkinteger(L, 2);
@@ -315,6 +321,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     LOG(Log::INFO, "hypr2d M0: C++ -> Rust -> C++: 41 -> {}", hypr2d::spike_round_trip(41));
     for (const auto &[name, fn] : std::vector<std::pair<std::string, PLUGIN_LUA_FN>>{{"move", moveLua},
                                                                                      {"carry", carryLua},
+                                                                                     {"overview", overviewLua},
                                                                                      {"goto_cell", gotoLua},
                                                                                      {"configure", configureLua},
                                                                                      {"_execute", invoke},
@@ -334,6 +341,10 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         IPC::Socket2::sock()->postEvent({"hypr2d", "changed"});
     });
     swipeBeginListener = Event::bus()->m_events.gesture.swipe.begin.listen([](IPointer::SSwipeBeginEvent e, Event::SCallbackInfo &info) {
+        if (OverviewUI::active()) {
+            info.cancelled = true;
+            return;
+        }
         if (swipeClaimed)
             cancelSwipe();
         // Leave special workspaces and unrelated finger counts to native handlers.
@@ -371,10 +382,12 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         HyprlandAPI::addLuaFunction(handle, "hypr2d", "_test_swipe", testSwipeLua);
         OverviewProbe::init();
     }
+    OverviewUI::init(&**core);
     IPC::Socket2::sock()->postEvent({"hypr2d", "ready"});
     return {"hypr2d", "2D workspace grid", "Wolf Mermelstein", "0.2.0"};
 }
 APICALL EXPORT void PLUGIN_EXIT() {
+    OverviewUI::shutdown();
     if (testingEnabled)
         OverviewProbe::shutdown();
     testingEnabled = false;

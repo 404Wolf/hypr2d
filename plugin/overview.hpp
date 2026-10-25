@@ -1,8 +1,10 @@
 #pragma once
 #include "hypr2d-core/src/lib.rs.h"
+#include <hyprland/src/render/Framebuffer.hpp>
 #include <string>
 #include <vector>
 namespace OverviewProbe {
+SP<Render::IFramebuffer> capture(const hypr2d::ProbeCell &cell, SP<Render::IFramebuffer> fb, bool finish);
 void init();
 void close();
 void shutdown();

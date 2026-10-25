@@ -50,7 +50,7 @@ struct WorkspaceState {
 };
 // Capture runs between frames, synchronously. Only current animation values are
 // overridden, never goals, timing, callbacks, registrations, or visibility.
-static SP<Render::IFramebuffer> capture(const hypr2d::ProbeCell &cell) {
+SP<Render::IFramebuffer> capture(const hypr2d::ProbeCell &cell, SP<Render::IFramebuffer> fb, bool finish) {
     auto &r = *g_pHyprRenderer;
     auto m = findMonitor(cell.monitor);
     if (!m)
@@ -127,7 +127,8 @@ static SP<Render::IFramebuffer> capture(const hypr2d::ProbeCell &cell) {
     }
     r.m_bBlockSurfaceFeedback = true;
     r.m_bRenderingSnapshot = true;
-    auto fb = r.createFB("hypr2d-probe");
+    if (!fb)
+        fb = r.createFB("hypr2d-thumbnail");
     if (!fb->alloc(cell.capture_width, cell.capture_height, DRM_FORMAT_ARGB8888))
         throw std::runtime_error("probe framebuffer allocation failed");
     fb->getTexture()->bind();
@@ -156,7 +157,8 @@ static SP<Render::IFramebuffer> capture(const hypr2d::ProbeCell &cell) {
         (r.*RendererAccess::workspaceDraw())(m, target, Time::steadyNow(),
                                              CBox{0, 0, double(cell.capture_width), double(cell.capture_height)});
     r.endRender();
-    glFinish(); // Test-only serialized GPU completion timing, never a production policy.
+    if (finish)
+        glFinish(); // Test-only completion measurement.
     return fb;
 }
 class ProbePass final : public IPassElement {
@@ -239,7 +241,7 @@ std::string command(hypr2d::Core &core, const std::vector<hypr2d::Monitor> &moni
         renderer = reinterpret_cast<const char *>(glGetString(GL_RENDERER));
         for (const auto &c : plan) {
             const auto begin = std::chrono::steady_clock::now();
-            images.push_back(capture(c));
+            images.push_back(capture(c, {}, true));
             times.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count());
         }
         deleted = false;

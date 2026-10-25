@@ -1,6 +1,8 @@
 pub mod grid;
 mod overview;
+mod ui;
 use overview::probe_report;
+use ui::Overview;
 pub mod swipe;
 use grid::{Cell, Direction, Grid};
 use serde_json::json;
@@ -87,7 +89,83 @@ mod ffi {
         capture_width: u32,
         capture_height: u32,
     }
+    struct UIRect {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    }
+    struct UIOutput {
+        id: u32,
+        name: String,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        workspace: u32,
+        focused: bool,
+    }
+    struct UISpecial {
+        monitor: u32,
+        name: String,
+        shown: bool,
+    }
+    struct UIWindow {
+        id: String,
+        workspace: String,
+        monitor: u32,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        floating: bool,
+        title: String,
+    }
+    struct UICell {
+        key: String,
+        monitor: u32,
+        rect: UIRect,
+        label: String,
+        selected: bool,
+        hovered: bool,
+        occupied: bool,
+        shown: bool,
+    }
+    struct UILabel {
+        rect: UIRect,
+        text: String,
+    }
+    struct UIFrame {
+        alive: bool,
+        animating: bool,
+        alpha: f64,
+        cells: Vec<UICell>,
+        labels: Vec<UILabel>,
+    }
     extern "Rust" {
+        type Overview;
+        fn overview_reconcile(self: &mut Overview, replacement: Box<Overview>) -> Vec<String>;
+        fn overview_windows(self: &mut Overview, windows: &[UIWindow]) -> Vec<String>;
+        fn overview_state(self: &Overview, width: f64, height: f64, now: f64) -> String;
+        fn overview_new(
+            self: &Core,
+            outputs: &[UIOutput],
+            specials: &[UISpecial],
+            windows: &[UIWindow],
+            now: f64,
+        ) -> Box<Overview>;
+        fn overview_frame(self: &Overview, width: f64, height: f64, now: f64) -> UIFrame;
+        fn overview_pointer(
+            self: &mut Overview,
+            width: f64,
+            height: f64,
+            x: f64,
+            y: f64,
+            click: bool,
+        ) -> String;
+        fn overview_key(self: &mut Overview, key: u32, shift: bool, now: f64) -> String;
+        fn overview_close(self: &mut Overview, now: f64);
+
         fn probe_plan(
             self: &Core,
             monitors: &[Monitor],

@@ -27,9 +27,9 @@ changed; flag anything that blocks you at the bottom under "Questions".
 
 ## M4 — Overview
 - [x] Rendering prototype: thumbnail-sized full-fake normal/special captures from two monitors, custom-pass composition, cost/memory measurements, and VM screenshot/state/resource tests
-  - Rendering approval gate only; full UI remains unimplemented pending the user’s go-ahead. See DESIGN.md §Findings.
-- [ ] `hypr2d:overview` shows ALL monitors' grids at once (one panel per monitor, laid out like the physical monitors) plus the special-workspace strip, with live thumbnails
-- [ ] Keyboard (hjkl/arrows, tab between monitors, Enter, Esc) and mouse (click a cell to go there)
+  - Rendering prototype approved; full M4 UI implemented and VM-tested below. See DESIGN.md §Findings.
+- [x] `hypr2d:overview` shows ALL monitors' grids at once (one panel per monitor, laid out like the physical monitors) plus the special-workspace strip, with live thumbnails
+- [x] Keyboard (hjkl/arrows, tab between monitors, Enter, Esc) and mouse (click a cell to go there)
 
 ## M5 — Drag & drop in the overview
 - [ ] Drag a window between cells, between monitors' grids, and into/out of special workspaces; drop on a window to swap; floating windows placed at the drop point
