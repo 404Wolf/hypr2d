@@ -10,6 +10,7 @@ let
     inherit (cfg.theme) background cell border hover current target label font rounding;
     font_size = cfg.theme.fontSize;
     fit = cfg.overview.fit;
+    gap = cfg.overview.gap;
   };
   lua = ''
     -- hypr2d: plugin loads before this section through HM's plugins option.
@@ -60,6 +61,7 @@ in {
       }; });
     };
     overview = {
+      gap = mkOption { type = types.ints.between 0 32; default = 0; description = "Spacing between overview cells, including specials (before layout scaling)."; };
       fit = mkOption { type = types.bool; default = true; description = "Show used bounds plus a one-cell margin; a toggles the full grid."; };
       bind = mkOption { type = types.bool; default = false; description = "Replace SUPER+TAB with the overview bind."; };
     };

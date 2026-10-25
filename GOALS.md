@@ -64,4 +64,10 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Center a 2256×1504 3:2 eDP-1 at layout origin (8934, 6682), with consistent gaps; Rust geometry and VM screenshot checks
 - [x] Preserve grouped-window focus/current members/order and normal/special workspace state; replace the conflicting SUPER+Tab bind and exercise it in the VM
 
+## Additional live feedback
+- [x] Zero/configurable overview gaps, direct thumbnail capture/filtering, label scrims and app-named numeric specials; VM screenshots
+- [x] Reproduce an app-hidden cursor in the VM and give the overview a scoped native cursor override
+- [x] VM minimap latency below 50 ms from commit/native events on swipe, carry, drop, map/unmap, specials, monitor and external workspace focus
+- [ ] Stable persisted monitor slots, parked workspace lifecycle, parked overview cards/expansion, minimap tooltip and hotplug VM regressions
+
 ## Questions

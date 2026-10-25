@@ -135,6 +135,7 @@ mod ffi {
         font: String,
         font_size: u32,
         rounding: u32,
+        gap: u32,
     }
     struct ExtensionAction {
         token: u64,
@@ -599,6 +600,7 @@ impl Core {
                 font: t.font.clone(),
                 font_size: t.font_size,
                 rounding: t.rounding,
+                gap: t.gap,
             }
         })
     }
@@ -616,6 +618,7 @@ impl Default for ffi::UIStyle {
             font: "sans-serif".into(),
             font_size: 16,
             rounding: 3,
+            gap: 0,
         }
     }
 }

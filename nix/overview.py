@@ -240,7 +240,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         x,y,w,h=empty["rect"]
         empty_image=Image.open(artifacts / "ui-fit-default-0.png").convert("RGB")
         assert empty_image.getpixel((round(x+w/2),round(y+h/2)))==(0,0,0),"empty background must be base00"
-        assert empty_image.getpixel((math.floor(x-0.5),round(y+h/2)))==(53,53,53),"empty outline must be base02"
+        assert empty_image.getpixel((round(x),round(y+h/2)))==(53,53,53),"empty outline must be base02"
         # Real mapped fixtures exercise short reverse-DNS class labels and +N.
         label_windows=[]
         for i in range(3):
@@ -274,7 +274,7 @@ with (artifacts / "compositor.log").open("w+") as log:
             for j,k in enumerate(keys):
                 c=next(c for c in ui["cells"] if c["key"]==k)
                 x,y,w,h=c["rect"]
-                actual=ui_image.getpixel((round(x+w/2),round(y+h/2)))
+                actual=ui_image.getpixel((round(x+w/2),round(y+h*.75)))
                 expected=tuple(bytes.fromhex(colors[panel*5+j]))
                 assert max(abs(a-b) for a,b in zip(actual,expected)) <= 3, (k,actual,expected)
         # Keep newly created empty specials in the strip until overview close.
@@ -372,6 +372,8 @@ with (artifacts / "compositor.log").open("w+") as log:
         a=next(w["address"] for w in mapped() if w["class"]=="hypr2d-probe-0-0")
         b=next(w["address"] for w in mapped() if w["class"]=="hypr2d-probe-0-1")
         c=next(w["address"] for w in mapped() if w["class"]=="hypr2d-probe-1-1")
+        exec(Path(os.environ["HYPR2D_LATENCY_HELPER"]).read_text())
+        drag_latency = MinimapLatency(instance, cli, log)
         open_ui()
         begin_drag(a);move_drag(cell_point(str(81+mons[0]["id"])))
         screenshot("ui-drag-ghost")
@@ -380,7 +382,11 @@ with (artifacts / "compositor.log").open("w+") as log:
         gp=ghost_image.getpixel((round(gx),round(gy)))
         assert gp[0]>gp[1]+20 and gp[0]>40,("ghost must render source pixels",gp)
         assert ui_state()["ui"]["target"]==str(81+mons[0]["id"])
-        finish_drag()
+        drag_latency.expect("overview-drop",lambda:pointer_command("up"),
+            lambda r:f'workspace {81+mons[0]["id"]}</b>\n' in r["tooltip"] and "hypr2d-probe-0-0" in r["tooltip"],event="movewindowv2")
+        (artifacts/"minimap-drag-latency.json").write_text(json.dumps(drag_latency.results,indent=2))
+        drag_latency.close()
+        wait(lambda:ui_state()["pending"]==0,"latency drop settles")
         wait(lambda:real_window(a)["workspace"]["id"]==81+mons[0]["id"],"same-monitor drop")
         begin_drag(a);move_drag(cell_point(str(81+mons[1]["id"])),display=1);finish_drag()
         wait(lambda:real_window(a)["workspace"]["id"]==81+mons[1]["id"] and real_window(a)["monitor"]==mons[1]["id"],"cross-monitor drop")
@@ -560,7 +566,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         ok("hypr2d","goto","0","0",str(edp["id"]))
         def laptop_fixture(app):
             pattern = "\x1b[?25l\x1b[97mPIXEL CAPTURE\n0123456789 abcdef\nSharp thumbnail detail\nGroups stay unchanged\n"
-            clients.append(subprocess.Popen(["foot","--config=/dev/null",f"--app-id={app}","--override=font=monospace:size=32","--override=cursor.blink=no","sh","-c",'printf "%s" "$1"; sleep 600',"fixture",pattern],env=env,stdout=log,stderr=log,start_new_session=True))
+            clients.append(subprocess.Popen(["foot","--config=/dev/null",f"--app-id={app}","--override=font=monospace:size=32","--override=cursor.blink=no","--override=mouse.hide-when-typing=yes","sh","-c",'printf "%s" "$1"; sleep 600',"fixture",pattern],env=env,stdout=log,stderr=log,start_new_session=True))
             wait(lambda:any(w["class"]==app for w in mapped()),"laptop fixture")
             return next(w["address"] for w in mapped() if w["class"]==app)
         first=laptop_fixture("kitty")
@@ -575,9 +581,9 @@ with (artifacts / "compositor.log").open("w+") as log:
         ok("hypr2d","goto","1","0",str(edp["id"]))
         hidden=laptop_fixture("hidden-cell")
         ok("hypr2d","goto","0","0",str(edp["id"]))
-        lua('hl.dsp.workspace.toggle_special("laptop")')
-        special=laptop_fixture("special-cell")
-        lua('hl.dsp.workspace.toggle_special("laptop")')
+        lua('hl.dsp.workspace.toggle_special("8")')
+        special=laptop_fixture("obsidian")
+        lua('hl.dsp.workspace.toggle_special("8")')
         # A hidden group too, to cover EVERY group's current member.
         ok("hypr2d","goto","2","0",str(edp["id"]))
         hidden_first=laptop_fixture("hidden-group-first")
@@ -621,7 +627,9 @@ with (artifacts / "compositor.log").open("w+") as log:
 
         for image in state["images"]:
             cell=next(c for c in geometries["cells"] if c["key"]==image["key"])
+            assert image["direct"] and image["width"]==image["drawn_width"] and image["height"]==image["drawn_height"]
             assert image["width"]==math.ceil(cell["rect"][2]) and image["height"]==math.ceil(cell["rect"][3]),(image,cell)
+        assert next(c for c in geometries["cells"] if c["key"]=="special:8")["label"]=="obsidian"
         fitted_width=state["images"][0]["width"]
         assert fitted_width>160,state["images"]
         assert sum(i["width"]*i["height"]*4*4/3 for i in state["images"])<=64*1024*1024
@@ -651,13 +659,49 @@ with (artifacts / "compositor.log").open("w+") as log:
         screenshot("hardware-after")
         assert ImageChops.difference(Image.open(artifacts/"hardware-before-0.png").convert("RGB"),Image.open(artifacts/"hardware-after-0.png").convert("RGB")).getbbox() is None,"group/cursor scene unchanged"
         # Already-visible special: opening/closing may not toggle it or focus it.
-        lua('hl.dsp.workspace.toggle_special("laptop")')
+        lua('hl.dsp.workspace.toggle_special("8")')
         time.sleep(.2); shown=invariants()
         for _ in range(5):
             open_ui();assert invariants()==shown
             keypress("Escape");wait(lambda:ui_state().get("open") is False,"group repeat close")
             assert invariants()==shown
             assert ui_state()["deleted_gl_objects"]
+        lua('hl.dsp.workspace.toggle_special("8")')
+        lua(f'hl.dsp.focus({{window="address:{first}"}})')
+        win=real_window(first)
+        lua(f'hl.dsp.cursor.move({{x={win["at"][0]+win["size"][0]/2},y={win["at"][1]+win["size"][1]/2}}})')
+        keypress("x")
+        time.sleep(.2)
+        hidden_cursor=json.loads(ctl("hypr2d","overview","cursor"))
+        assert not hidden_cursor["texture"],("fixture must reproduce a missing app cursor image",hidden_cursor)
+        screenshot("app-hidden-cursor-before")
+        ok("hypr2d","overview","open")
+        wait(lambda:ui_state().get("pending")==0,"app-hidden cursor capture")
+        time.sleep(.2)
+        visible_cursor=json.loads(ctl("hypr2d","overview","cursor"))
+        assert visible_cursor["texture"] and visible_cursor["should_render"],visible_cursor
+        (artifacts/"app-cursor-state.json").write_text(json.dumps({"before":hidden_cursor,"open":visible_cursor},indent=2))
+        screenshot("app-hidden-cursor-overview")
+        cursor=json.loads(ctl("-j","cursorpos"))
+        point=(cursor["x"]-edp["x"],cursor["y"]-edp["y"])
+        hidden_image=Image.open(artifacts/"app-hidden-cursor-overview-0.png").convert("RGB")
+        cx,cy=map(round,point)
+        assert any(max(hidden_image.getpixel((x,y)))>180 for x in range(cx,cx+20) for y in range(cy,cy+30)),"overview must own a visible arrow even when app cursor was hidden"
+        ok("eval",'hl.config({cursor={invisible=true}})')
+        wait(lambda:not json.loads(ctl("hypr2d","overview","cursor"))["should_render"],"native cursor hiding timer")
+        ok("hypr2d","overview","refresh")
+        wait(lambda:ui_state().get("pending")==0,"cursor-free overlay repaint")
+        time.sleep(.2)
+        screenshot("app-hidden-cursor-overlay-without-arrow")
+        no_arrow=Image.open(artifacts/"app-hidden-cursor-overlay-without-arrow-0.png").convert("RGB")
+        cursor_difference=ImageChops.difference(hidden_image,no_arrow)
+        changed=sum(p!=(0,0,0) for p in cursor_difference.get_flattened_data())
+        assert 20<changed<2500,("cursor must be composited above the overview content",changed)
+        ok("eval",'hl.config({cursor={invisible=false}})')
+        wait(lambda:json.loads(ctl("hypr2d","overview","cursor"))["should_render"],"native cursor showing timer")
+        ok("hypr2d","overview","close")
+        wait(lambda:ui_state().get("open") is False,"app-hidden cursor close")
+        assert not json.loads(ctl("hypr2d","overview","cursor"))["texture"],"restore hidden app cursor on close"
         (artifacts/"hardware-invariants.json").write_text(json.dumps({"before":baseline,"after":invariants(),"shown":shown},indent=2))
         print("PASS hardware: eDP-1 2256x1504 scale1 at 8934x6682, display-sized captures/fit toggle, software cursor screenshot, group/focus/order/workspace/special preservation")
         # Unload/reload comes LAST: loading a plugin may reload Lua config,

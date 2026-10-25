@@ -146,6 +146,8 @@ SP<Render::IFramebuffer> capture(const hypr2d::ProbeCell &cell, SP<Render::IFram
     CRegion damageRegion{0, 0, m->m_transformedSize.x, m->m_transformedSize.y};
     if (!r.beginFullFakeRender(m, damageRegion, fb))
         throw std::runtime_error("probe full-fake begin failed");
+    if (r.m_renderData.currentFB != fb || r.m_renderData.currentFB->m_size != fb->m_size)
+        throw std::runtime_error("capture is not rendering directly into thumbnail");
     if (!cell.special.empty()) {
         r.m_renderPass.add(makeUnique<CClearPassElement>(CClearPassElement::SClearData{CHyprColor(0.02, 0.02, 0.02, 1.0)}));
         Render::SRenderModifData mod;
@@ -158,15 +160,11 @@ SP<Render::IFramebuffer> capture(const hypr2d::ProbeCell &cell, SP<Render::IFram
             m, target, Time::steadyNow(),
             CBox{0, 0, double(cell.capture_width), cell.capture_width * m->m_transformedSize.y / m->m_transformedSize.x});
     r.endRender();
-    // Full-size cell textures still minify on other outputs and during layout
-    // transitions. Retain a mip chain and use trilinear minification.
-    if (!finish) {
-        fb->getTexture()->bind();
-        glGenerateMipmap(GL_TEXTURE_2D);
-        fb->getTexture()->minFilter = GL_LINEAR_MIPMAP_LINEAR;
-        fb->getTexture()->magFilter = GL_LINEAR;
-        fb->getTexture()->unbind();
-    }
+    // Simple FULL_FAKE renders directly into the destination: no full-output
+    // work buffer or export resample. At settled size composition samples level
+    // zero once; avoid trilinear mip blending softening near-1:1 thumbnails.
+    fb->getTexture()->minFilter = GL_LINEAR;
+    fb->getTexture()->magFilter = GL_NEAREST;
     if (finish)
         glFinish(); // Test-only completion measurement.
     return fb;

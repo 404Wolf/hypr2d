@@ -15,6 +15,7 @@
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
 #include <hyprland/src/pointer/PointerManager.hpp>
+#include <hyprland/src/pointer/cursor/CursorShapeOverrideController.hpp>
 #include <hyprland/src/protocols/core/Compositor.hpp>
 #include <hyprland/src/protocols/core/Subcompositor.hpp>
 #include <hyprland/src/render/Renderer.hpp>
@@ -126,6 +127,7 @@ static void release() {
     g_pHyprRenderer->m_renderPass.removeAllOfType("hypr2d-overview");
     surfaceListeners.clear();
     ui.reset();
+    Pointer::Cursor::overrideController->unsetOverride(Pointer::Cursor::CURSOR_OVERRIDE_SPECIAL_ACTION);
     std::vector<GLuint> textures, buffers;
     for (auto &[key, fb] : cache) {
         textures.push_back(fb->getTexture()->m_texID);
@@ -228,7 +230,7 @@ class Pass final : public IPassElement {
         auto style = core->ui_style();
         auto rect = [&](const CBox &box, CHyprColor color) {
             items.push_back(makeUnique<CRectPassElement>(
-                CRectPassElement::SRectData{.box = box, .color = color, .round = static_cast<int>(style.rounding)}));
+                CRectPassElement::SRectData{.box = box, .color = color, .round = static_cast<int>(style.gap ? style.rounding : 0)}));
         };
         auto label = [&](const std::string &str, const CBox &box, float opacity = 1.f, uint32_t labelColor = 0) {
             auto tex = text(str, static_cast<int>(style.font_size), std::clamp(static_cast<int>(box.w), 1, 1000),
@@ -239,30 +241,37 @@ class Pass final : public IPassElement {
                                                  .box = {box.x, box.y, std::min(box.w, tex->m_size.x), std::min(box.h, tex->m_size.y)},
                                                  .a = float(frame.alpha * opacity)}));
         };
-        const double uiScale = frame.labels.empty() ? 1.0 : frame.labels[0].rect.height / 24.0;
         rect({0, 0, size.x, size.y}, color(style.background, frame.alpha));
         for (auto &c : frame.cells) {
-            CBox box{c.rect.x, c.rect.y, c.rect.width, c.rect.height};
+            CBox box{std::round(c.rect.x), std::round(c.rect.y), std::ceil(c.rect.width), std::ceil(c.rect.height)};
             const auto borderColor = std::string(c.key) == std::string(frame.target) ? color(style.target, frame.alpha)
                                      : c.selected                                    ? color(style.current, frame.alpha)
                                      : c.hovered                                     ? color(style.hover, frame.alpha)
                                      : c.shown                                       ? color(style.current, frame.alpha)
                                                : color(c.colour ? c.colour : style.border, frame.alpha);
-            rect(box.copy().expand(c.occupied || c.selected || c.hovered || c.shown || std::string(c.key) == std::string(frame.target) ? 2
-                                                                                                                                       : 1),
-                 borderColor);
             rect(box, color(c.occupied ? style.cell : style.background, frame.alpha));
             if (auto it = cache.find(std::string(c.key)); c.occupied && it != cache.end())
                 items.push_back(
                     makeUnique<CTexPassElement>(CTexPassElement::SRenderData{.tex = it->second->getTexture(),
                                                                              .box = box,
                                                                              .a = float(frame.alpha * (c.occupied ? 1.0 : 0.35)),
-                                                                             .round = static_cast<int>(style.rounding)}));
-            if (!c.label.empty())
-                label(std::string(c.label),
-                      {box.x + 3 * uiScale, box.y + 2 * uiScale, std::max(1.0, box.w - 6 * uiScale),
-                       std::min(static_cast<double>(style.font_size + 6), box.h * 0.45)},
-                      c.occupied ? 1.f : 0.45f);
+                                                                             .round = static_cast<int>(style.gap ? style.rounding : 0)}));
+            // One physical pixel, drawn inside the cell: zero-gap tiles share
+            // edges without the old expanded two-pixel halos.
+            rect({box.x, box.y, box.w, 1}, borderColor);
+            rect({box.x, box.y + box.h - 1, box.w, 1}, borderColor);
+            rect({box.x, box.y, 1, box.h}, borderColor);
+            rect({box.x + box.w - 1, box.y, 1, box.h}, borderColor);
+            if (!c.label.empty()) {
+                const auto caption = text(std::string(c.label), static_cast<int>(style.font_size),
+                                          std::clamp(static_cast<int>(box.w - 8), 1, 1000), style.label);
+                if (caption) {
+                    const auto h = std::min(box.h * 0.45, caption->m_size.y + 4);
+                    rect({box.x + 1, box.y + 1, std::min(box.w - 2, caption->m_size.x + 8), h}, color(style.background, 0.8 * frame.alpha));
+                    label(std::string(c.label), {box.x + 5, box.y + 3, std::max(1.0, box.w - 10), std::max(1.0, h - 4)},
+                          c.occupied ? 1.f : 0.45f);
+                }
+            }
         }
         for (auto &l : frame.labels) {
             CBox b{l.rect.x, l.rect.y, l.rect.width, l.rect.height};
@@ -463,6 +472,9 @@ void init(hypr2d::Core *c) {
                         break;
                     const auto &cap = *planned;
                     try {
+                        if (!cache[k] || cache[k]->m_size != Vector2D{double(cap.capture_width), double(cap.capture_height)})
+                            LOG(Log::INFO, "hypr2d capture {} framebuffer={}x{} drawn={}x{} physical pixels", k, cap.capture_width,
+                                cap.capture_height, cap.width, cap.height);
                         double t = now();
                         cache[k] = OverviewProbe::capture(cap, cache[k], false);
                         captureMs += now() - t;
@@ -628,6 +640,14 @@ std::string command(const std::string &input) {
             }
         return result + "]}";
     }
+    if (input == "overview cursor") {
+        auto m = Desktop::focusState()->monitor();
+        const auto &image = Pointer::mgr()->currentCursorImage();
+        return std::format("{{\"overview_open\":{},\"should_render\":{},\"texture\":{},\"image_width\":{},\"image_height\":{},\"software_"
+                           "locked\":{},\"hardware_visible\":{}}}",
+                           active(), g_pHyprRenderer->shouldRenderCursor(), bool(Pointer::mgr()->getCurrentCursorTexture()), image.size.x,
+                           image.size.y, m && Pointer::mgr()->softwareLockedFor(m), m && Pointer::mgr()->hasVisibleHWCursor(m));
+    }
     if (input == "overview state") {
         if (!ui)
             return deletedObjects ? "{\"open\":false,\"deleted_gl_objects\":true}" : "{\"open\":false,\"deleted_gl_objects\":false}";
@@ -636,7 +656,11 @@ std::string command(const std::string &input) {
         for (auto &[key, fb] : cache) {
             if (images.size() > 1)
                 images += ",";
-            images += std::format("{{\"key\":\"{}\",\"width\":{},\"height\":{}}}", escapeJSONStrings(key), fb->m_size.x, fb->m_size.y);
+            auto frame = (*ui)->overview_frame(m ? m->m_transformedSize.x : 1000.0, m ? m->m_transformedSize.y : 700.0, now());
+            auto cell = std::ranges::find_if(frame.cells, [&](const auto &c) { return std::string(c.key) == key; });
+            const auto drawn = cell == frame.cells.end() ? Vector2D{} : Vector2D{std::ceil(cell->rect.width), std::ceil(cell->rect.height)};
+            images += std::format("{{\"key\":\"{}\",\"width\":{},\"height\":{},\"drawn_width\":{},\"drawn_height\":{},\"direct\":true}}",
+                                  escapeJSONStrings(key), fb->m_size.x, fb->m_size.y, drawn.x, drawn.y);
         }
         images += "]";
         return std::format("{{\"ui\":{},\"captures\":{},\"capture_ms\":{},\"pending\":{},\"images\":{}}}",
@@ -666,6 +690,7 @@ std::string command(const std::string &input) {
     captures = 0;
     captureMs = 0;
     build();
+    Pointer::Cursor::overrideController->setOverride("left_ptr", Pointer::Cursor::CURSOR_OVERRIDE_SPECIAL_ACTION);
     damage();
     IPC::Socket2::sock()->postEvent({"hypr2d", "overview>>open"});
     return "ok";

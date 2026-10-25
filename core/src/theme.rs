@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default, deny_unknown_fields)]
 pub struct Theme {
     pub fit: bool,
+    pub gap: u32,
     pub background: String,
     pub cell: String,
     pub border: String,
@@ -18,6 +19,7 @@ impl Default for Theme {
     fn default() -> Self {
         Self {
             fit: true,
+            gap: 0,
             background: "#000000".into(),
             cell: "#303030".into(),
             border: "#353535".into(),
@@ -50,11 +52,13 @@ impl Theme {
         }
         if !(10..=40).contains(&t.font_size)
             || t.rounding > 4
+            || t.gap > 32
             || t.font.is_empty()
             || t.font.len() > 128
         {
             return Err(
-                "font_size must be 10..40, rounding 0..4, font nonempty and <=128 bytes".into(),
+                "font_size must be 10..40, rounding 0..4, gap 0..32, font nonempty and <=128 bytes"
+                    .into(),
             );
         }
         Ok(t)

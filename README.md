@@ -127,6 +127,22 @@ Colours use `#RRGGBB`; font size is 10–40 output pixels and rounding is 0–4 
 These defaults match base16 OneDark Extra Dark. Runtime changes apply while
 open. Grid capture size stays at 160 pixels wide, independent of layout size.
 
+Overview cells and special tiles default to flush spacing with one-pixel inset
+borders. Set `programs.hypr2d.overview.gap` (0–32, before layout scaling) to
+increase spacing. Labels have an 80% background-colour scrim. Numeric special
+workspace identifiers use the main app's short name; named specials and extension
+labels take precedence.
+
+Captures use Hyprland's simple full-fake path directly into the displayed
+physical thumbnail dimensions, without the normal full-output export resample.
+The cache remains budgeted at 64 MiB (conservative mip-inclusive accounting).
+`hyprctl hypr2d overview state` reports framebuffer and drawn physical dimensions;
+layout changes log both. `hyprctl hypr2d overview cursor` reports cursor-image
+availability and native software/hardware state for hardware diagnostics.
+`hyprctl hypr2d overview open` and `close` are idempotent, unlike the Lua toggle.
+The overview temporarily owns an arrow cursor and restores the application's
+cursor, including a hidden image, when it closes.
+
 ## Extension clients
 
 The plugin serves a versioned, connection-scoped JSON-lines protocol at
@@ -325,6 +341,14 @@ The VM renders a real Waybar with the user's monospace 13px, `min-height: 0`
 settings, no fixed height, and `cpu` after the minimap. It compares layer heights
 with and without the module and checks all three dot rows in a screenshot.
 
+Minimap colours can be overridden independently of the overview theme:
+`programs.hypr2d.waybar.colors = { current = "#9CBEFF"; occupied = "#A8A8A8"; };`
+Each of `current`, `occupied`, `empty` and `urgent` defaults to `null`,
+preserving the existing theme-derived colours (and fixed urgent red).
+The CLI equivalents are `--current-color '#9CBEFF'`,
+`--occupied-color '#A8A8A8'`, `--empty-color '#4A4A4A'` and
+`--urgent-color '#F07178'`; quote hex values in shell commands.
+
 ## Overview rendering prototype
 
 The production overview uses the approved thumbnail rendering path. Its test-only
@@ -354,11 +378,3 @@ when finished. It performs no screenshot comparisons or repeated leak test;
 those belong in the VM, independently of the host's frame callbacks.
 See DESIGN.md §Findings for API constraints, measurements and the recommended
 capture-on-open / per-cell damage-driven design.
-
-Minimap colours can be overridden independently of the overview theme:
-`programs.hypr2d.waybar.colors = { current = "#9CBEFF"; occupied = "#A8A8A8"; };`
-Each of `current`, `occupied`, `empty` and `urgent` defaults to `null`,
-preserving the existing theme-derived colours (and fixed urgent red).
-The CLI equivalents are `--current-color '#9CBEFF'`,
-`--occupied-color '#A8A8A8'`, `--empty-color '#4A4A4A'` and
-`--urgent-color '#F07178'`; quote hex values in shell commands.

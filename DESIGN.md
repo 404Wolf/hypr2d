@@ -767,3 +767,48 @@ cycles, the exact laptop regressions, the Waybar equal-height test and Home
 Manager generation. Both overview and Waybar screenshots were inspected. No
 plugin was loaded into the live session and no Home Manager checkout was edited
 or activated.
+
+### Additional live feedback: cursor ownership, flush tiles and latency
+
+The prior cursor regression covered a present software cursor image only.
+A new VM fixture enables foot's hide-when-typing behaviour, focuses its grouped
+window and types before opening the overview. Diagnostics reproduce an absent
+cursor texture even with no hardware cursors and no keyboard/timeout hiding.
+Requeuing renderSoftwareCursorsFor cannot draw a missing image. The overview now
+uses the native cursor shape override controller while open; application cursor
+requests remain recorded by InputManager and are restored on close. A paired
+screencopy with cursor visibility toggled verifies actual composited cursor
+pixels above the overlay, independently of grim's optional cursor synthesis.
+This reproduces a concrete missing-cursor path; Radeon-specific verification
+still belongs to the user after deployment.
+
+The exact pinned beginFullFakeRender wrapper already passes simple=true to
+beginRender. It therefore renders directly to the requested framebuffer with
+RPT_EXPORT and no full-output export resample. Capture now asserts that target,
+logs allocated and drawn physical dimensions, aligns composition to integer
+physical pixels and removes the trilinear mip chain at near-1:1 presentation.
+Level-zero linear minification remains for smaller presentations; magnification
+uses nearest sampling. The existing 64 MiB mip-inclusive planner is conservative
+for the smaller level-zero-only payload.
+
+Overview spacing defaults to zero and is configurable through overview.gap.
+Zero-gap cells have square corners and one-pixel inset borders. Captions use an
+80% theme-background scrim, capped below the cell midpoint. Numeric special
+identifiers use the same shortened main app label as normal cells; named
+specials and extension labels take precedence.
+
+VM latency checks timestamp the actual commit/native socket2 event and the
+arrival of a changed JSON line, excluding hyprctl subprocess startup.
+Swipe, carry, overview drop, open/close on another cell, moves into/out of
+specials, monitor focus and external workspace focus all retain the strict
+50 ms bound. No missing production event was found in these paths. The real
+Waybar equal-height test remains in the same suite.
+
+Final x86_64 validation passed all four flake checks and the additional module
+gap-option assertion, with 35 Rust tests. The nine measured event-to-line
+latencies were 3.4–39.3 ms. The VM screenshot shows special:8 labelled obsidian,
+zero-gap tiles, label scrims and a composited cursor; capture and drawn sizes
+match at 528×352 for normal cells and 399×266 for the special. Before/after
+state, grouped windows, GL deletion, bounded memory and repeated-cycle checks
+remain passing. The screenshot and a 1:1 crop of the supplied live screenshot
+were inspected. No live compositor load or Home Manager checkout edit occurred.

@@ -255,13 +255,57 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         state_before_move=json.loads(cli_command("state"))
         view=next(m for m in state_before_move["monitors"] if m["id"]==mid)
         destination=next(c["workspace"] for c in view["cells"] if not c["windows"] and c["y"]==view["cell"]["y"] and c["x"]!=view["cell"]["x"])
-        lua=f'hl.dsp.window.move({{window="class:^hypr2d-title-test$",workspace={destination},follow=false}})'
-        assert ctl("dispatch",lua)=="ok"
+        move_expression=f'hl.dsp.window.move({{window="class:^hypr2d-title-test$",workspace={destination},follow=false}})'
+        assert ctl("dispatch",move_expression)=="ok"
         moved=record_when(lambda r:r["text"]!=titled["text"] and "hypr2d &lt;title&gt;" in r["tooltip"])
         assert f"workspace {destination}</b>\n" in moved["tooltip"],moved
         title_client.terminate()
         title_client.wait(timeout=10)
         record_when(lambda r: "hypr2d &lt;title&gt;" not in r["tooltip"])
+        # Exercise all native/plugin paths, measuring actual streamed lines.
+        exec(Path(os.environ["HYPR2D_LATENCY_HELPER"]).read_text())
+        command("goto","0","0",str(mid))
+        assert ctl("output","create","headless")=="ok"
+        wait_for(lambda:len(state())==2,"latency second monitor")
+        second=next(m for m in state() if m["id"]!=mid)
+        latency = MinimapLatency(instance, cli, output)
+        command("goto", "0", "0", str(mid))
+        synthetic("begin", 3)
+        synthetic("update", -300, 0)
+        latency.expect("tracked-swipe", lambda:synthetic("end", False), lambda r:r["alt"]=="1,0",event="workspace")
+        settle()
+        command("goto","0","1",str(mid))
+        latency.expect("carry", lambda:lua('hl.plugin.hypr2d.carry("right")'), lambda r:r["alt"]=="1,1",event="movewindowv2")
+        # Current carried window supplies an unambiguous title on a hidden cell.
+        win=next(w for w in json.loads(ctl("-j","clients")) if w["class"]=="hypr2d-test")
+        address=win["address"]
+        target=21+mid
+        latency.expect("external-workspace-focus", lambda:lua(f'hl.dsp.focus({{workspace={target}}})'), lambda r:r["alt"]=="2,0",event="workspace")
+        latency.expect("focused-monitor", lambda:lua(f'hl.dsp.focus({{monitor="{second["name"]}"}})'), lambda r:second["name"] in r["tooltip"],event="focusedmon")
+        lua(f'hl.dsp.focus({{monitor="{first["name"]}"}})')
+        # Move into/out of special changes occupancy in the grid tooltip.
+        latency.expect("window-to-special", lambda:lua(f'hl.dsp.window.move({{window="address:{address}",workspace="special:latency",follow=false}})'),
+            lambda r:"hypr2d-test" not in r["tooltip"], event="movewindowv2")
+        latency.expect("window-from-special", lambda:lua(f'hl.dsp.window.move({{window="address:{address}",workspace={81+mid},follow=false}})'),
+            lambda r:"hypr2d-test" in r["tooltip"], event="movewindowv2")
+        # A new client is assigned to a different cell before mapping.
+        ok_rule=ctl("eval",f'hl.window_rule({{match={{class="^hypr2d-latency-open$"}},workspace="{31+mid} silent"}})')
+        assert ok_rule=="ok",ok_rule
+        def map_latency():
+            client=subprocess.Popen(["foot","--config=/dev/null","--app-id=hypr2d-latency-open","sh","-c","sleep 120"],env=env,stdout=output,stderr=output,start_new_session=True)
+            clients.append(client)
+        latency.expect("openwindow-other-cell",map_latency,lambda r:"hypr2d-latency-open" in r["tooltip"],event="openwindow")
+        opened=next(w for w in json.loads(ctl("-j","clients")) if w["class"]=="hypr2d-latency-open")
+        latency.expect("closewindow-other-cell",lambda:lua(f'hl.dsp.window.close({{window="address:{opened["address"]}"}})'),
+            lambda r:"hypr2d-latency-open" not in r["tooltip"],event="closewindow")
+        Path("/tmp/hypr2d-waybar-results").mkdir(exist_ok=True)
+        Path("/tmp/hypr2d-waybar-results/latency.json").write_text(json.dumps(latency.results,indent=2))
+        latency.close()
+        assert ctl("output","remove",second["name"])=="ok"
+        command("goto","1","0",str(mid))
+        # Drain the first stream to its restored cell before lifecycle checks.
+        buffer=b""
+        while select.select([module.stdout],[],[],.08)[0]:os.read(module.stdout.fileno(),65536)
         assert ctl("plugin", "unload", plugin) == "ok"
         record_when(lambda r: "unavailable" in r["class"])
         assert module.poll() is None

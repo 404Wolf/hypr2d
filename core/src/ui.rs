@@ -2,7 +2,7 @@
 use crate::{ffi, grid::Cell, guarded, Core};
 use std::collections::BTreeSet;
 mod drag;
-const GAP: f64 = 6.0;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Rect {
     x: f64,
@@ -60,6 +60,7 @@ pub struct Overview {
     annotations: std::collections::BTreeMap<String, hypr2d_client::Annotation>,
     regions: Vec<(u32, u32, String)>,
     fit: bool,
+    gap: f64,
     panels: Vec<Rect>,
     windows: Vec<Window>,
     outputs: Vec<(u32, f64, f64)>,
@@ -86,6 +87,7 @@ impl Core {
         guarded(|| {
             let mut ui = Overview {
                 fit: self.theme.fit,
+                gap: f64::from(self.theme.gap),
                 started: now,
                 windows: window_snapshot(windows),
                 outputs: outputs.iter().map(|m| (m.id, m.width, m.height)).collect(),
@@ -164,7 +166,7 @@ impl Core {
                     key: s.name.clone(),
                     monitor: s.monitor,
                     rect: Rect::default(),
-                    label: s.name.strip_prefix("special:").unwrap_or(&s.name).into(),
+                    label: special_label(&s.name, cell_label(windows, &s.name)),
                     group: outputs.len(),
                     x: i as u32,
                     y: 0,
@@ -255,11 +257,11 @@ impl Overview {
             let (x0, nx) = bounds(true, cols);
             let (y0, ny) = bounds(false, rows);
             let ratio = self.outputs[g].2 / self.outputs[g].1;
-            let w = ((p.w - GAP * f64::from(nx)) / f64::from(nx))
-                .min((p.h - 30. - GAP * f64::from(ny - 1)) / f64::from(ny) / ratio)
+            let w = ((p.w - self.gap * f64::from(nx)) / f64::from(nx))
+                .min((p.h - 30. - self.gap * f64::from(ny - 1)) / f64::from(ny) / ratio)
                 .max(1.);
-            let grid_w = w * f64::from(nx) + GAP * f64::from(nx - 1);
-            let grid_h = w * ratio * f64::from(ny) + GAP * f64::from(ny - 1);
+            let grid_w = w * f64::from(nx) + self.gap * f64::from(nx - 1);
+            let grid_h = w * ratio * f64::from(ny) + self.gap * f64::from(ny - 1);
             let left = p.x + (p.w - grid_w) / 2.;
             let top = p.y + 30. + (p.h - 30. - grid_h) / 2.;
             self.headers[g].0.y = top - 30.;
@@ -268,8 +270,8 @@ impl Overview {
             for c in self.cells.iter_mut().filter(|c| c.group == g) {
                 c.visible = c.x >= x0 && c.x < x0 + nx && c.y >= y0 && c.y < y0 + ny;
                 c.rect = Rect {
-                    x: left + (c.x as f64 - x0 as f64) * (w + GAP),
-                    y: top + (c.y as f64 - y0 as f64) * (w * ratio + GAP),
+                    x: left + (c.x as f64 - x0 as f64) * (w + self.gap),
+                    y: top + (c.y as f64 - y0 as f64) * (w * ratio + self.gap),
                     w,
                     h: w * ratio,
                 };
@@ -295,7 +297,7 @@ impl Overview {
         if let Some((r, _)) = self.headers.last_mut() {
             *r = Rect {
                 x: left,
-                y: bottom + GAP,
+                y: bottom + self.gap,
                 w: right - left,
                 h: 24.,
             };
@@ -318,14 +320,14 @@ impl Overview {
                 .find(|o| o.0 == c.monitor)
                 .map(|o| o.2 / o.1)
                 .unwrap_or(2. / 3.);
-            let w = ((right - left - GAP * (n - 1.)) / n).min(150.);
+            let w = ((right - left - self.gap * (n - 1.)) / n).min(150.);
             c.rect = Rect {
                 x,
-                y: bottom + 30. + GAP,
+                y: bottom + 30. + self.gap,
                 w,
                 h: w * ratio,
             };
-            x += w + GAP;
+            x += w + self.gap;
         }
         self.canvas_height = self
             .cells
@@ -376,8 +378,8 @@ impl Overview {
                     },
                     x: 0.,
                     y: 0.,
-                    width: 0.,
-                    height: 0.,
+                    width: (c.rect.w * scale).ceil(),
+                    height: (c.rect.h * scale).ceil(),
                     capture_width: pixels(c.rect.w),
                     capture_height: pixels(c.rect.h),
                 })
@@ -400,9 +402,12 @@ impl Overview {
             self.validate_drag();
             for c in &mut self.cells {
                 c.occupied = self.windows.iter().any(|w| w.workspace == c.key);
-                if !c.key.starts_with("special:") {
-                    c.label = owned_label(&self.windows, &c.key);
-                }
+                let app = owned_label(&self.windows, &c.key);
+                c.label = if c.key.starts_with("special:") {
+                    special_label(&c.key, app)
+                } else {
+                    app
+                };
             }
             self.reflow();
             dirty.into_iter().collect()
@@ -807,6 +812,17 @@ fn short_app(class: &str) -> String {
         name
     }
 }
+// Numeric special identifiers are key bindings, not useful display names.
+fn special_label(key: &str, app: String) -> String {
+    let name = key.strip_prefix("special:").unwrap_or(key);
+    if !name.is_empty() && name.parse::<u32>().is_err() {
+        name.into()
+    } else if !app.is_empty() {
+        app
+    } else {
+        String::new()
+    }
+}
 fn app_label<'a>(apps: impl Iterator<Item = &'a str>) -> String {
     let apps: Vec<_> = apps.map(short_app).collect();
     let mut counts = std::collections::HashMap::new();
@@ -872,6 +888,49 @@ mod tests {
             height: 720.0,
             workspace: id + 1,
             focused: id == 0,
+        }
+    }
+    #[test]
+    fn flush_cells_configurable_gap_and_special_names() {
+        assert_eq!(crate::theme::Theme::default().gap, 0);
+        assert!(crate::theme::Theme::parse(r#"{"gap":33}"#).is_err());
+        assert_eq!(
+            special_label("special:8", "obsidian +1".into()),
+            "obsidian +1"
+        );
+        assert_eq!(special_label("special:music", "spotify".into()), "music");
+        assert_eq!(special_label("special:6", String::new()), "");
+        for gap in [0., 6.] {
+            let mut core = Core::default();
+            core.theme.gap = gap as u32;
+            let ui = core.overview_new(
+                &[output(0, 8934., 6682.)],
+                &[
+                    ffi::UISpecial {
+                        monitor: 0,
+                        name: "special:8".into(),
+                        shown: false,
+                    },
+                    ffi::UISpecial {
+                        monitor: 0,
+                        name: "special:6".into(),
+                        shown: false,
+                    },
+                ],
+                &[],
+                0.,
+            );
+            let a = ui.cells[0].rect;
+            let b = ui.cells[1].rect;
+            assert!((b.x - a.x - a.w - gap).abs() < 1e-6);
+            let specials: Vec<_> = ui
+                .cells
+                .iter()
+                .filter(|c| c.key.starts_with("special:"))
+                .collect();
+            assert!(
+                (specials[1].rect.x - specials[0].rect.x - specials[0].rect.w - gap).abs() < 1e-6
+            );
         }
     }
     #[test]

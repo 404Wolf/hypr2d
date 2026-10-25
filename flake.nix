@@ -70,7 +70,7 @@
       nested = pkgs.writeShellApplication {
         name = "hypr2d-nested";
         runtimeInputs = [ compositor (pkgs.python3.withPackages (p: [ p.pillow ])) pkgs.foot pkgs.waybar pkgs.grim pkgs.wtype pkgs.wlrctl testPointer ];
-        text = builtins.replaceStrings [ "@PLUGIN@" "@SMOKE@" "@CLI@" "@EXAMPLES@" "@OVERVIEW@" "@HMLUA@" ] [ "${plugin}/lib/libhypr2d.so" "${./nix/smoke.py}" "${rust}/bin/hypr2d" "${./examples}" "${./nix/overview.py}" "${moduleTest.lua}" ] (builtins.readFile ./nix/nested.sh);
+        text = builtins.replaceStrings [ "@PLUGIN@" "@SMOKE@" "@CLI@" "@EXAMPLES@" "@OVERVIEW@" "@HMLUA@" "@LATENCY@" ] [ "${plugin}/lib/libhypr2d.so" "${./nix/smoke.py}" "${rust}/bin/hypr2d" "${./examples}" "${./nix/overview.py}" "${moduleTest.lua}" "${./nix/latency.py}" ] (builtins.readFile ./nix/nested.sh);
       };
       parentConfig = pkgs.writeText "hypr2d-ci-parent.lua" ''
         hl.monitor({ output = "", mode = "1280x720@60", position = "auto", scale = 1 })

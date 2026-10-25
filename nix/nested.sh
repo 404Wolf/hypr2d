@@ -1,3 +1,4 @@
+export HYPR2D_LATENCY_HELPER="@LATENCY@"
 # An isolated config; never inherit the live instance signature for IPC.
 test_dir=$(mktemp -d -t hypr2d-nested.XXXXXX)
 trap 'rm -rf "$test_dir"' EXIT
