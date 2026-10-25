@@ -2,7 +2,7 @@
 use crate::{ffi, grid::Cell, guarded, Core};
 use std::collections::BTreeSet;
 mod drag;
-const WIDTH: f64 = 1000.0;
+const GAP: f64 = 6.0;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Rect {
     x: f64,
@@ -92,7 +92,6 @@ impl Core {
                 ..Default::default()
             };
             if outputs.is_empty() {
-                ui.canvas_height = 700.0;
                 ui.closing = Some(now - 100.0);
                 return Box::new(ui);
             }
@@ -133,11 +132,6 @@ impl Core {
                     },
                     m.name.clone(),
                 ));
-                let ratio = m.height / m.width;
-                let w = ((panel.w - 16.0) / grid.columns as f64)
-                    .min((panel.h - 40.0) / grid.rows as f64 / ratio)
-                    .max(4.0);
-                let h = w * ratio;
                 for y in 0..grid.rows {
                     for x in 0..grid.columns {
                         if let Ok(id) = grid.id(Cell { x, y }, m.id) {
@@ -149,12 +143,7 @@ impl Core {
                             ui.cells.push(CellView {
                                 key: key.clone(),
                                 monitor: m.id,
-                                rect: Rect {
-                                    x: panel.x + 8.0 + x as f64 * w,
-                                    y: panel.y + 30.0 + y as f64 * h,
-                                    w: (w - 3.0).max(1.0),
-                                    h: ((w - 3.0) * ratio).max(1.0),
-                                },
+                                rect: Rect::default(),
                                 label: cell_label(windows, &key),
                                 group,
                                 x,
@@ -168,28 +157,13 @@ impl Core {
                     }
                 }
             }
-            let strip_y = 24.0 + (max_y - min_y) * scale + 24.0;
-            ui.canvas_height = strip_y + 22.0 + 72.0 + 28.0;
-            ui.headers.push((
-                Rect {
-                    x: 24.0,
-                    y: strip_y,
-                    w: 950.0,
-                    h: 22.0,
-                },
-                "Special workspaces".into(),
-            ));
-            let w = (950.0 / specials.len().max(1) as f64).min(150.0);
+            ui.headers
+                .push((Rect::default(), "Special workspaces".into()));
             for (i, s) in specials.iter().enumerate() {
                 ui.cells.push(CellView {
                     key: s.name.clone(),
                     monitor: s.monitor,
-                    rect: Rect {
-                        x: 24.0 + i as f64 * w,
-                        y: strip_y + 28.0,
-                        w: w - 5.0,
-                        h: 72.0,
-                    },
+                    rect: Rect::default(),
                     label: s.name.strip_prefix("special:").unwrap_or(&s.name).into(),
                     group: outputs.len(),
                     x: i as u32,
@@ -281,17 +255,134 @@ impl Overview {
             let (x0, nx) = bounds(true, cols);
             let (y0, ny) = bounds(false, rows);
             let ratio = self.outputs[g].2 / self.outputs[g].1;
-            let w = ((p.w - 8.) / f64::from(nx)).min((p.h - 34.) / f64::from(ny) / ratio);
+            let w = ((p.w - GAP * f64::from(nx)) / f64::from(nx))
+                .min((p.h - 30. - GAP * f64::from(ny - 1)) / f64::from(ny) / ratio)
+                .max(1.);
+            let grid_w = w * f64::from(nx) + GAP * f64::from(nx - 1);
+            let grid_h = w * ratio * f64::from(ny) + GAP * f64::from(ny - 1);
+            let left = p.x + (p.w - grid_w) / 2.;
+            let top = p.y + 30. + (p.h - 30. - grid_h) / 2.;
+            self.headers[g].0.y = top - 30.;
+            self.headers[g].0.x = left;
+            self.headers[g].0.w = grid_w;
             for c in self.cells.iter_mut().filter(|c| c.group == g) {
                 c.visible = c.x >= x0 && c.x < x0 + nx && c.y >= y0 && c.y < y0 + ny;
                 c.rect = Rect {
-                    x: p.x + 4. + (c.x as f64 - x0 as f64) * w,
-                    y: p.y + 30. + (c.y as f64 - y0 as f64) * w * ratio,
-                    w: (w - 3.).max(1.),
-                    h: ((w - 3.) * ratio).max(1.),
+                    x: left + (c.x as f64 - x0 as f64) * (w + GAP),
+                    y: top + (c.y as f64 - y0 as f64) * (w * ratio + GAP),
+                    w,
+                    h: w * ratio,
                 };
             }
         }
+        let normal: Vec<_> = self
+            .cells
+            .iter()
+            .filter(|c| c.group < self.panels.len() && c.visible)
+            .collect();
+        let left = normal
+            .iter()
+            .map(|c| c.rect.x)
+            .fold(f64::INFINITY, f64::min);
+        let right = normal
+            .iter()
+            .map(|c| c.rect.x + c.rect.w)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let bottom = normal
+            .iter()
+            .map(|c| c.rect.y + c.rect.h)
+            .fold(0., f64::max);
+        if let Some((r, _)) = self.headers.last_mut() {
+            *r = Rect {
+                x: left,
+                y: bottom + GAP,
+                w: right - left,
+                h: 24.,
+            };
+        }
+        let n = self
+            .cells
+            .iter()
+            .filter(|c| c.group == self.panels.len())
+            .count()
+            .max(1) as f64;
+        let mut x = left;
+        for c in self
+            .cells
+            .iter_mut()
+            .filter(|c| c.group == self.panels.len())
+        {
+            let ratio = self
+                .outputs
+                .iter()
+                .find(|o| o.0 == c.monitor)
+                .map(|o| o.2 / o.1)
+                .unwrap_or(2. / 3.);
+            let w = ((right - left - GAP * (n - 1.)) / n).min(150.);
+            c.rect = Rect {
+                x,
+                y: bottom + 30. + GAP,
+                w,
+                h: w * ratio,
+            };
+            x += w + GAP;
+        }
+        self.canvas_height = self
+            .cells
+            .iter()
+            .filter(|c| c.visible)
+            .map(|c| c.rect.y + c.rect.h)
+            .fold(bottom + 30., f64::max)
+            + 28.;
+    }
+    /// Only visible occupied cells retain textures. Shared cache uses the largest
+    /// presentation across outputs; 64 MiB RGBA8+mip payload caps extreme layouts.
+    pub fn overview_captures(&self, viewports: &[ffi::UIRect]) -> Vec<ffi::ProbeCell> {
+        guarded(|| {
+            let scale = viewports
+                .iter()
+                .map(|v| self.transform(v.width, v.height).0)
+                .fold(0., f64::max);
+            let cells: Vec<_> = self
+                .cells
+                .iter()
+                .filter(|c| c.visible && c.occupied)
+                .collect();
+            let area: f64 = cells
+                .iter()
+                .map(|c| (c.rect.w * scale).ceil() * (c.rect.h * scale).ceil())
+                .sum();
+            let budget_scale = (64. * 1024. * 1024. / (area.max(1.) * 4. * 4. / 3.))
+                .sqrt()
+                .min(1.);
+            let pixels = |n: f64| {
+                let n = n * scale * budget_scale;
+                (if budget_scale < 1. {
+                    n.floor()
+                } else {
+                    n.ceil()
+                })
+                .max(1.) as u32
+            };
+            cells
+                .into_iter()
+                .map(|c| ffi::ProbeCell {
+                    monitor: c.monitor,
+                    workspace: c.key.parse().unwrap_or(0),
+                    special: if c.key.starts_with("special:") {
+                        c.key.clone()
+                    } else {
+                        String::new()
+                    },
+                    x: 0.,
+                    y: 0.,
+                    width: 0.,
+                    height: 0.,
+                    capture_width: pixels(c.rect.w),
+                    capture_height: pixels(c.rect.h),
+                })
+                .collect()
+        })
     }
     pub fn overview_windows(&mut self, windows: &[ffi::UIWindow]) -> Vec<String> {
         guarded(|| {
@@ -542,20 +633,32 @@ impl Overview {
             .filter(|c| c.visible)
             .map(|c| c.rect)
             .chain(self.headers.iter().map(|(r, _)| *r));
-        let (top, bottom) = bounds.fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), r| {
-            (lo.min(r.y), hi.max(r.y + r.h))
-        });
-        let (top, bottom) = if top.is_finite() {
-            (top, bottom)
-        } else {
-            (0., self.canvas_height.max(1.))
-        };
-        let extent = (bottom - top).max(1.);
-        let s = (width / WIDTH).min((height - 24.).max(1.) / extent);
+        let (left, top, right, bottom) = bounds.fold(
+            (
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ),
+            |(l, t, r, b), rect| {
+                (
+                    l.min(rect.x),
+                    t.min(rect.y),
+                    r.max(rect.x + rect.w),
+                    b.max(rect.y + rect.h),
+                )
+            },
+        );
+        if !left.is_finite() {
+            return (1., 0., 0.);
+        }
+        let w = (right - left).max(1.);
+        let h = (bottom - top).max(1.);
+        let s = ((width - 24.).max(1.) / w).min((height - 24.).max(1.) / h);
         (
             s,
-            (width - WIDTH * s) / 2.,
-            (height - extent * s) / 2. - top * s,
+            (width - w * s) / 2. - left * s,
+            (height - h * s) / 2. - top * s,
         )
     }
     pub fn overview_pointer(
@@ -770,6 +873,132 @@ mod tests {
             workspace: id + 1,
             focused: id == 0,
         }
+    }
+    #[test]
+    fn edp_three_two_nonzero_origin_center_gaps_and_pixel_captures() {
+        let mut output = output(0, 8934., 6682.);
+        output.name = "eDP-1".into();
+        output.width = 2256.;
+        output.height = 1504.;
+        let windows = [ffi::UIWindow {
+            id: "group-current".into(),
+            workspace: "1".into(),
+            monitor: 0,
+            x: 0.,
+            y: 0.,
+            width: 2256.,
+            height: 1504.,
+            floating: false,
+            title: "kitty".into(),
+        }];
+        let core = Core::default();
+        let mut ui = core.overview_new(
+            &[output],
+            &[ffi::UISpecial {
+                monitor: 0,
+                name: "special:chat".into(),
+                shown: false,
+            }],
+            &windows,
+            0.,
+        );
+        let viewport = [ffi::UIRect {
+            x: 0.,
+            y: 0.,
+            width: 2256.,
+            height: 1504.,
+        }];
+        let mut previous_width = 0;
+        for full in [false, true, false] {
+            ui.fit = !full;
+            ui.reflow();
+            let f = ui.overview_frame(2256., 1504., 101.);
+            let rects: Vec<_> = f
+                .cells
+                .iter()
+                .map(|c| &c.rect)
+                .chain(f.labels.iter().map(|l| &l.rect))
+                .collect();
+            let l = rects.iter().map(|r| r.x).fold(f64::INFINITY, f64::min);
+            let r = rects.iter().map(|r| r.x + r.width).fold(0., f64::max);
+            let t = rects.iter().map(|r| r.y).fold(f64::INFINITY, f64::min);
+            let b = rects.iter().map(|r| r.y + r.height).fold(0., f64::max);
+            assert!((l - (2256. - r)).abs() < 1e-6);
+            assert!((t - (1504. - b)).abs() < 1e-6);
+            let a = &f.cells[0].rect;
+            let right = &f.cells[1].rect;
+            let below = &f.cells[if full { 8 } else { 3 }].rect;
+            assert!((a.width / a.height - 1.5).abs() < 1e-6);
+            assert!(((right.x - a.x - a.width) - (below.y - a.y - a.height)).abs() < 1e-6);
+            let plan = ui.overview_captures(&viewport);
+            assert_eq!(plan.len(), 1);
+            assert_eq!(plan[0].capture_width, a.width.ceil() as u32);
+            assert_eq!(plan[0].capture_height, a.height.ceil() as u32);
+            if full {
+                assert!(plan[0].capture_width < previous_width);
+            }
+            previous_width = plan[0].capture_width;
+            let double = ui.overview_captures(&[ffi::UIRect {
+                x: 0.,
+                y: 0.,
+                width: 4512.,
+                height: 3008.,
+            }]);
+            assert!(double[0].capture_width > plan[0].capture_width);
+        }
+        // Translation of the physical desktop must not translate local UI.
+        let mut origin = super::tests::output(0, 0., 0.);
+        origin.name = "eDP-1".into();
+        origin.width = 2256.;
+        origin.height = 1504.;
+        let other = core.overview_new(
+            &[origin],
+            &[ffi::UISpecial {
+                monitor: 0,
+                name: "special:chat".into(),
+                shown: false,
+            }],
+            &windows,
+            0.,
+        );
+        assert_eq!(ui.cells[0].rect, other.cells[0].rect);
+    }
+    #[test]
+    fn capture_cache_budget_and_largest_scaled_output() {
+        let mut laptop = output(0, 8934., 6682.);
+        laptop.name = "eDP-1".into();
+        laptop.width = 2256.;
+        laptop.height = 1504.;
+        let windows: Vec<_> = (0..64)
+            .map(|i| ffi::UIWindow {
+                id: i.to_string(),
+                workspace: (10 * i + 1).to_string(),
+                monitor: 0,
+                x: 0.,
+                y: 0.,
+                width: 2256.,
+                height: 1504.,
+                floating: false,
+                title: "kitty".into(),
+            })
+            .collect();
+        let ui = Core::default().overview_new(&[laptop], &[], &windows, 0.);
+        let viewport = |width, height| ffi::UIRect {
+            x: 0.,
+            y: 0.,
+            width,
+            height,
+        };
+        let normal = ui.overview_captures(&[viewport(2256., 1504.)]);
+        let scaled = ui.overview_captures(&[viewport(2256., 1504.), viewport(4512., 3008.)]);
+        assert!(scaled[0].capture_width > normal[0].capture_width);
+        let extreme = ui.overview_captures(&[viewport(30000., 20000.)]);
+        assert_eq!(extreme.len(), 64);
+        let bytes: f64 = extreme
+            .iter()
+            .map(|c| f64::from(c.capture_width) * f64::from(c.capture_height) * 4. * 4. / 3.)
+            .sum();
+        assert!(bytes <= 64. * 1024. * 1024.);
     }
     #[test]
     fn short_app_labels_and_centered_visible_composition() {

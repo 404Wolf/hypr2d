@@ -219,6 +219,7 @@ mod ffi {
             windows: &[UIWindow],
             now: f64,
         ) -> Box<Overview>;
+        fn overview_captures(self: &Overview, viewports: &[UIRect]) -> Vec<ProbeCell>;
         fn overview_frame(self: &Overview, width: f64, height: f64, now: f64) -> UIFrame;
         fn overview_pointer(
             self: &mut Overview,
