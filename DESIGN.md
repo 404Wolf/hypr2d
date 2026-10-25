@@ -984,6 +984,15 @@ establish the old swap's causal chain more precisely:
   `out_of_group` dispatcher in a disposable compositor. This explains the live
   symptoms; the provided log cannot identify the live faulting instruction.
 
+The saved VM crash report confirms SIGSEGV in
+`CDwindleAlgorithm::calculateWorkspace`, reached through
+`CAlgorithm::recalculate` → `ITarget::swap` → `CLayoutManager::switchTargets` →
+`CGroup::remove` → `moveWindowOutOfGroupHelper` → the public Lua dispatcher.
+Thus the reproduced singleton fails while recalculating the orphan layout,
+before its final window-target space-update callback. Quarantining that orphan
+algorithm before reinsertion is necessary; merely detaching the member first
+would repeat the fault.
+
 The same pinned 0.56 source is used throughout: `layout/target/Target.cpp`,
 `WindowGroupTarget.cpp`, `WindowTarget.cpp`, `layout/LayoutManager.cpp`,
 `layout/space/Space.cpp`, `desktop/view/Group.cpp`, and
