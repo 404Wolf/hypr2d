@@ -5,10 +5,12 @@
 #include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/state/WindowState.hpp>
+#include <hyprland/src/desktop/view/Group.hpp>
 #include <hyprland/src/desktop/view/window/Window.hpp>
 #include <hyprland/src/desktop/view/window/WindowMetadata.hpp>
 #include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
 #include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/helpers/MiscFunctions.hpp>
 #include <hyprland/src/ipc/s2/S2.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
@@ -424,6 +426,19 @@ void init(hypr2d::Core *c) {
             build();
             frame = (*ui)->overview_frame(1000, 700, now());
         }
+        std::vector<hypr2d::UIRect> viewports;
+        for (auto &m : State::monitorState()->monitors())
+            viewports.push_back({0, 0, m->m_transformedSize.x, m->m_transformedSize.y});
+        auto plans = (*ui)->overview_captures({viewports.data(), viewports.size()});
+        std::set<std::string> visible;
+        for (auto &cap : plans) {
+            auto k = cap.special.empty() ? std::to_string(cap.workspace) : std::string(cap.special);
+            visible.insert(k);
+            auto old = cache.find(k);
+            if (old == cache.end() || old->second->m_size != Vector2D{double(cap.capture_width), double(cap.capture_height)})
+                mark(k);
+        }
+        std::erase_if(cache, [&](const auto &entry) { return !visible.contains(entry.first); });
         const double start = now();
         capturing = true;
         while (!dirty.empty() && now() - start < 2.0) {
@@ -441,15 +456,12 @@ void init(hypr2d::Core *c) {
                             mon = m;
                     if (!mon)
                         break;
-                    hypr2d::ProbeCell cap{cell.monitor,
-                                          k.starts_with("special:") ? 0u : static_cast<uint32_t>(std::stoul(k)),
-                                          k.starts_with("special:") ? k : "",
-                                          0,
-                                          0,
-                                          0,
-                                          0,
-                                          160,
-                                          static_cast<uint32_t>(std::max(1.0, std::round(160 * mon->m_size.y / mon->m_size.x)))};
+                    auto planned = std::ranges::find_if(plans, [&](const auto &p) {
+                        return (p.special.empty() ? std::to_string(p.workspace) : std::string(p.special)) == k;
+                    });
+                    if (planned == plans.end())
+                        break;
+                    const auto &cap = *planned;
                     try {
                         double t = now();
                         cache[k] = OverviewProbe::capture(cap, cache[k], false);
@@ -464,7 +476,8 @@ void init(hypr2d::Core *c) {
                                                                                       void *) { surface->frame(Time::steadyNow()); },
                                                                                    nullptr);
                             }
-                    } catch (const std::exception &) {
+                    } catch (const std::exception &error) {
+                        LOG(Log::ERR, "hypr2d capture {}: {}", k, error.what());
                         cache.erase(k);
                     }
                     break;
@@ -477,8 +490,18 @@ void init(hypr2d::Core *c) {
     listeners.push_back(e.render.stage.listen([](eRenderStage stage) {
         if (ui && !capturing && stage == RENDER_LAST_MOMENT) {
             auto m = g_pHyprRenderer->m_renderData.pMonitor.lock();
-            g_pHyprRenderer->m_renderPass.add(
-                makeUnique<Pass>((*ui)->overview_frame(m->m_transformedSize.x, m->m_transformedSize.y, now()), m->m_transformedSize));
+            auto frame = (*ui)->overview_frame(m->m_transformedSize.x, m->m_transformedSize.y, now());
+            const bool more = frame.animating || !dirty.empty();
+            g_pHyprRenderer->m_renderPass.add(makeUnique<Pass>(std::move(frame), m->m_transformedSize));
+            // pre-render requests can be consumed by this frame's commit.
+            // During rendering scheduleFrame also sets pendingFrame, which the
+            // native renderer schedules AFTER commit (essential on headless).
+            if (more)
+                m->scheduleFrame(Aquamarine::IOutput::AQ_SCHEDULE_DAMAGE);
+            // Native cursors are queued before LAST_MOMENT. Queue the native
+            // software cursor again above our overlay, respecting visibility/HW.
+            if (g_pHyprRenderer->shouldRenderCursor())
+                Pointer::mgr()->renderSoftwareCursorsFor(m, Time::steadyNow(), g_pHyprRenderer->m_renderData.damage);
         }
     }));
     listeners.push_back(e.input.mouse.move.listen([](Vector2D, Event::SCallbackInfo &info) {
@@ -568,13 +591,57 @@ std::string command(const std::string &input) {
         }
         return "ok";
     }
+    if (input == "overview invariants" && std::getenv("HYPR2D_TESTING")) {
+        auto address = [](PHLWINDOW w) { return std::format("0x{:x}", reinterpret_cast<uintptr_t>(w.get())); };
+        std::string result = std::format("{{\"focus\":\"{}\",\"order\":[", address(Desktop::focusState()->window()));
+        bool first = true;
+        for (auto &w : Desktop::windowState()->windows()) {
+            if (!first)
+                result += ",";
+            first = false;
+            result += std::format("\"{}\"", address(w));
+        }
+        result += "],\"outputs\":[";
+        first = true;
+        for (auto &m : State::monitorState()->monitors()) {
+            if (!first)
+                result += ",";
+            first = false;
+            result += std::format("{{\"name\":\"{}\",\"enabled\":{}}}", escapeJSONStrings(m->m_name), m->m_enabled);
+        }
+        result += "],\"groups\":[";
+        first = true;
+        for (auto &weak : Desktop::View::groups())
+            if (auto g = weak.lock()) {
+                if (!first)
+                    result += ",";
+                first = false;
+                result += std::format("{{\"current\":\"{}\",\"members\":[", address(g->current()));
+                bool memberFirst = true;
+                for (auto &w : g->windows()) {
+                    if (!memberFirst)
+                        result += ",";
+                    memberFirst = false;
+                    result += std::format("\"{}\"", address(w.lock()));
+                }
+                result += "]}";
+            }
+        return result + "]}";
+    }
     if (input == "overview state") {
         if (!ui)
             return deletedObjects ? "{\"open\":false,\"deleted_gl_objects\":true}" : "{\"open\":false,\"deleted_gl_objects\":false}";
         auto m = Desktop::focusState()->monitor();
-        return std::format("{{\"ui\":{},\"captures\":{},\"capture_ms\":{},\"pending\":{}}}",
+        std::string images = "[";
+        for (auto &[key, fb] : cache) {
+            if (images.size() > 1)
+                images += ",";
+            images += std::format("{{\"key\":\"{}\",\"width\":{},\"height\":{}}}", escapeJSONStrings(key), fb->m_size.x, fb->m_size.y);
+        }
+        images += "]";
+        return std::format("{{\"ui\":{},\"captures\":{},\"capture_ms\":{},\"pending\":{},\"images\":{}}}",
                            std::string((*ui)->overview_state(m ? m->m_size.x : 1000.0, m ? m->m_size.y : 700.0, now())), captures,
-                           captureMs, dirty.size());
+                           captureMs, dirty.size(), images);
     }
     if (input == "overview close") {
         if (ui)

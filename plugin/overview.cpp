@@ -154,9 +154,19 @@ SP<Render::IFramebuffer> capture(const hypr2d::ProbeCell &cell, SP<Render::IFram
         (r.*RendererAccess::windowsDraw())(m, target, Time::steadyNow());
         r.m_renderPass.add(makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{Render::SRenderModifData{}}));
     } else
-        (r.*RendererAccess::workspaceDraw())(m, target, Time::steadyNow(),
-                                             CBox{0, 0, double(cell.capture_width), double(cell.capture_height)});
+        (r.*RendererAccess::workspaceDraw())(
+            m, target, Time::steadyNow(),
+            CBox{0, 0, double(cell.capture_width), cell.capture_width * m->m_transformedSize.y / m->m_transformedSize.x});
     r.endRender();
+    // Full-size cell textures still minify on other outputs and during layout
+    // transitions. Retain a mip chain and use trilinear minification.
+    if (!finish) {
+        fb->getTexture()->bind();
+        glGenerateMipmap(GL_TEXTURE_2D);
+        fb->getTexture()->minFilter = GL_LINEAR_MIPMAP_LINEAR;
+        fb->getTexture()->magFilter = GL_LINEAR;
+        fb->getTexture()->unbind();
+    }
     if (finish)
         glFinish(); // Test-only completion measurement.
     return fb;
