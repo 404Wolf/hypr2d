@@ -835,3 +835,51 @@ height, left alignment and an exact 8px × scale box-to-panel gap. The VM
 asserts the measured Pango header height and physical geometry and its
 2256×1504 screenshot was inspected. Capture plans continue to match the
 responsive drawn geometry; native input and all drag/resource tests pass.
+
+### Overview stack drops
+
+A window hit is a stack target by default; holding Shift changes it to a swap.
+The target has its own outlined `stack`/`swap` caption, while empty-space drops
+highlight the cell. Native group operations detach only the dragged member
+before adding it to the target group and selecting it. Source/target group locks
+and Hyprland's global group lock are checked before mutation; refusal flashes the
+target for 180 ms. An emptied special is removed from the open overview at the
+same rebuild as the drop, without changing the normal grid's cell geometry.
+
+### Unsafe grouped cross-workspace swap regression
+
+The deployed overview called `Config::Actions::swapWith` synchronously inside
+its mouse-release listener. In 0.56 this exchanges layout targets/spaces; for a
+group, `CWindowGroupTarget::onUpdateSpace` calls each member's window-target
+update, whose ghost space still points at the old workspace. It does not perform
+`CGroup::updateWorkspace`, which updates those ghost spaces. The VM reproduced
+a mapped special-workspace member with no matching layout target, followed by a
+compositor segfault during cleanup. A shutdown segfault was also observed when
+exiting with live group fixtures on the replacement path; the suite now closes
+all fixture clients normally and requires a zero compositor exit status. An
+ungrouped normal/special swap did not
+create a group in this reproduction. The live singleton creation and individual
+app-scope exit are therefore not independently attributed to that mechanism.
+
+Window-target drops were disabled in containment commit `5f8031e`. The replacement
+runs in a cancellable Wayland idle callback after input returns, outside rendering.
+Rust generates public Lua dispatcher operations: detach the dragged member via
+`hl.dsp.window.move({out_of_group=true})`, silent workspace moves with
+`follow=false`, and group toggle/active dispatchers. An exact target group uses
+public `HL.Group:add` (the directional group dispatcher cannot name an arbitrary
+overview target). Cross-workspace swaps use two silent moves, retaining a strong
+source-workspace reference through both. Same-workspace swaps use the public
+swap dispatcher after detaching members. No direct target/space swaps or group
+mutation calls remain in the drop shim.
+
+`hyprctl hypr2d doctor` is read-only JSON. Rust compares all mapped windows,
+workspace layout targets and counts, target spaces, and every group's ordered
+members/current member. Singleton groups are warnings, since Hyprland permits
+them; missing/duplicate targets or disagreement are errors. The VM asserts
+consistency and unchanged mapped-client addresses after every scripted drop,
+including normal/special swaps and two-member source groups.
+
+The final VM run passes with `group:focus_removed_window=false`, verifies native
+unmap of all fixtures and a zero compositor exit status, and observes no client
+process exit or unmap during drops. Rust tests and Clippy pass. Stack/swap outlines
+and immediate special-strip shrink were inspected in the VM screenshots.

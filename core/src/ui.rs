@@ -61,6 +61,9 @@ pub struct Overview {
     annotations: std::collections::BTreeMap<String, hypr2d_client::Annotation>,
     regions: Vec<(u32, u32, String)>,
     fit: bool,
+    shift: bool,
+    refused: String,
+    refused_until: f64,
     gap: f64,
     font_height: f64,
     gap_pixels: f64,
@@ -467,6 +470,9 @@ impl Overview {
     pub fn overview_reconcile(&mut self, mut replacement: Box<Overview>) -> Vec<String> {
         guarded(|| {
             replacement.fit = self.fit;
+            replacement.shift = self.shift;
+            replacement.refused = self.refused.clone();
+            replacement.refused_until = self.refused_until;
             replacement.header_height = self.header_height;
             replacement.header_gap = self.header_gap;
             replacement.reflow();
@@ -547,7 +553,7 @@ impl Overview {
         guarded(|| {
             let f = self.overview_frame(width, height, now);
             let (s, ox, oy) = self.transform(width, height);
-            serde_json::json!({"labels":f.labels.iter().map(|l|serde_json::json!({"text":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>(),"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":f.labels.iter().take(self.headers.len()).map(|l|serde_json::json!({"label":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>()}).to_string()
+            serde_json::json!({"labels":f.labels.iter().map(|l|serde_json::json!({"text":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>(),"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"drop_mode":f.drop_mode,"refused":f.refused,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":f.labels.iter().take(self.headers.len()).map(|l|serde_json::json!({"label":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>()}).to_string()
         })
     }
     pub fn overview_frame(&self, width: f64, height: f64, now: f64) -> ffi::UIFrame {
@@ -570,10 +576,25 @@ impl Overview {
             };
             ffi::UIFrame {
                 ghost,
+                drop_mode: if windows.iter().any(|w| w.target) {
+                    if self.shift {
+                        "swap"
+                    } else {
+                        "stack"
+                    }
+                } else {
+                    "move"
+                }
+                .into(),
                 windows,
+                refused: if now < self.refused_until {
+                    self.refused.clone()
+                } else {
+                    String::new()
+                },
                 target,
                 alive: self.closing.is_none() || progress > 0.0,
-                animating: progress > 0.0 && progress < 1.0,
+                animating: progress > 0.0 && progress < 1.0 || now < self.refused_until,
                 alpha: progress * progress * (3.0 - 2.0 * progress),
                 cells: self
                     .cells
@@ -864,6 +885,15 @@ impl Overview {
             String::new()
         })
     }
+    pub fn overview_modifiers(&mut self, shift: bool) {
+        guarded(|| self.shift = shift)
+    }
+    pub fn overview_refuse(&mut self, window: &str, now: f64) {
+        guarded(|| {
+            self.refused = window.into();
+            self.refused_until = now + 180.;
+        })
+    }
     pub fn overview_close(&mut self, now: f64) {
         guarded(|| self.closing = Some(now));
     }
@@ -874,6 +904,8 @@ impl Default for ffi::UIFrame {
             ghost: ffi::UIGhost::default(),
             windows: vec![],
             target: String::new(),
+            drop_mode: String::new(),
+            refused: String::new(),
             alive: false,
             animating: false,
             alpha: 0.0,

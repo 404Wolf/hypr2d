@@ -138,7 +138,12 @@ impl Overview {
                     .unwrap_or_default();
                 return ffi::UIDrop {
                     window: d.window.id,
-                    swap,
+                    stack: if self.shift {
+                        String::new()
+                    } else {
+                        swap.clone()
+                    },
+                    swap: if self.shift { swap } else { String::new() },
                     workspace: c.key.clone(),
                     monitor: c.monitor,
                     x: ((self.pointer.0 - c.rect.x) / c.rect.w * size_x - d.grab.0),
@@ -164,13 +169,16 @@ impl Overview {
         convert: impl Fn(Rect) -> ffi::UIRect,
     ) -> (ffi::UIGhost, Vec<ffi::UIWindowView>, String) {
         let dragged = self.drag.as_ref().filter(|d| d.active);
-        let target = dragged
+        let mut target = dragged
             .and_then(|_| self.hover.and_then(|i| self.cells.get(i)))
             .map(|c| c.key.clone())
             .unwrap_or_default();
         let hovered = self
             .hit_window(dragged.map(|d| d.window.id.as_str()))
             .map(|w| w.id.as_str());
+        if dragged.is_some() && hovered.is_some() {
+            target.clear();
+        }
         let windows = self
             .windows
             .iter()
@@ -217,6 +225,7 @@ impl Default for ffi::UIDrop {
         Self {
             window: String::new(),
             swap: String::new(),
+            stack: String::new(),
             workspace: String::new(),
             monitor: 0,
             x: 0.0,
@@ -291,7 +300,7 @@ mod tests {
         ui.overview_press(1000.0, 700.0, x, y);
     }
     #[test]
-    fn swap_and_ghost_use_window_hit_geometry() {
+    fn stack_and_ghost_use_window_hit_geometry() {
         let mut ui = model();
         press(&mut ui);
         let f = ui.overview_frame(1000.0, 700.0, 101.0);
@@ -300,17 +309,38 @@ mod tests {
         ui.overview_pointer(1000.0, 700.0, x, y, false);
         let frame = ui.overview_frame(1000.0, 700.0, 101.0);
         assert!(frame.ghost.visible);
+        assert_eq!(frame.drop_mode, "stack");
+        assert!(frame.target.is_empty());
         assert_eq!(frame.ghost.key, "1");
         assert!(frame.windows.iter().any(|w| w.id == "b" && w.target));
         let drop = ui.overview_release(1000.0, 700.0, x, y);
         assert_eq!(
             (
                 drop.window.as_str(),
-                drop.swap.as_str(),
+                drop.stack.as_str(),
                 drop.workspace.as_str()
             ),
             ("a", "b", "2")
         );
+    }
+    #[test]
+    fn shift_drop_swaps_and_refusal_flash_expires() {
+        let mut ui = model();
+        press(&mut ui);
+        ui.overview_modifiers(true);
+        let f = ui.overview_frame(1000., 700., 101.);
+        let r = &f.windows[1].rect;
+        let x = r.x + r.width / 2.;
+        let y = r.y + r.height / 2.;
+        ui.overview_pointer(1000., 700., x, y, false);
+        assert_eq!(ui.overview_frame(1000., 700., 101.).drop_mode, "swap");
+        let drop = ui.overview_release(1000., 700., x, y);
+        assert_eq!(drop.swap, "b");
+        assert!(drop.stack.is_empty());
+        ui.overview_refuse("b", 101.);
+        assert_eq!(ui.overview_frame(1000., 700., 150.).refused, "b");
+        assert!(ui.overview_frame(1000., 700., 150.).animating);
+        assert!(ui.overview_frame(1000., 700., 300.).refused.is_empty());
     }
     #[test]
     fn floating_drop_retains_grab_offset_on_other_monitor_and_special() {

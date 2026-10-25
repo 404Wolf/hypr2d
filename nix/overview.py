@@ -57,8 +57,16 @@ with (artifacts / "compositor.log").open("w+") as log:
             return json.loads(ctl("-j", "monitors"))
         def probe(action):
             return json.loads(ctl("hypr2d", "probe", action))
+        # Aquamarine occasionally retires its bootstrap fallback before making
+        # the first Wayland output after the preceding child exits. Explicitly
+        # create this VM child's development window if bootstrap left none.
+        ready_deadline=time.monotonic()+2
+        while time.monotonic()<ready_deadline and not any(m["name"]!="FALLBACK" for m in monitors()):
+            time.sleep(.05)
+        if not any(m["name"]!="FALLBACK" for m in monitors()):
+            ok("output","create","wayland","WAYLAND-BOOTSTRAP")
         try:
-            wait(lambda: len(monitors()) == 1, "initial monitor")
+            wait(lambda: len(monitors()) == 1 and monitors()[0]["name"]!="FALLBACK", "initial monitor")
         except AssertionError:
             print("Initial outputs:",monitors(),flush=True)
             print((artifacts / "compositor.log").read_text()[-16000:],flush=True)
@@ -366,9 +374,23 @@ with (artifacts / "compositor.log").open("w+") as log:
             x,y=point
             pointer_command(f'move {mons[display]["x"]+x-current["x"]} {mons[display]["y"]+y-current["y"]}')
             wait(lambda:ui_state()["ui"]["dragging"],"drag threshold")
-        def finish_drag():
+        def hold_shift():
+            modifier=subprocess.Popen(["wtype","-M","shift","-s","4000","-m","shift"],env=env,stdout=log,stderr=log,start_new_session=True)
+            clients.append(modifier);time.sleep(.15)
+            pointer_command("move 1 0")
+            wait(lambda:ui_state()["ui"]["drop_mode"]=="swap","Shift selects swap")
+            return modifier
+        def finish_drag(shift=False):
+            living={w["address"] for w in mapped()}
+            processes=[p for p in clients if isinstance(p.args,list) and p.args[0]=="foot" and p.poll() is None]
+            modifier=hold_shift() if shift else None
             pointer_command("up")
             wait(lambda:not ui_state()["ui"]["dragging"] and ui_state()["pending"]==0,"drop settles")
+            if modifier:modifier.wait(timeout=10)
+            diagnosis=json.loads(ctl("hypr2d","doctor"))
+            assert diagnosis["ok"],diagnosis
+            assert {w["address"] for w in mapped()}==living,"drop killed or unmapped a client"
+            assert all(p.poll() is None for p in processes),"drop terminated a client process"
         a=next(w["address"] for w in mapped() if w["class"]=="hypr2d-probe-0-0")
         b=next(w["address"] for w in mapped() if w["class"]=="hypr2d-probe-0-1")
         c=next(w["address"] for w in mapped() if w["class"]=="hypr2d-probe-1-1")
@@ -397,15 +419,15 @@ with (artifacts / "compositor.log").open("w+") as log:
         begin_drag(a)
         r=drawn_window(b)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2))
         assert any(w["id"]==b and w["target"] for w in ui_state()["ui"]["windows"])
-        screenshot("ui-swap-target")
-        finish_drag()
+        modifier=hold_shift();screenshot("ui-swap-target")
+        finish_drag();modifier.wait(timeout=10)
         wait(lambda:real_window(a)["workspace"]["id"]==11+mons[0]["id"] and real_window(b)["workspace"]["id"]==171+mons[0]["id"],"window swap")
-        begin_drag(a);r=drawn_window(c)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2));finish_drag()
+        begin_drag(a);r=drawn_window(c)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2));finish_drag(shift=True)
         wait(lambda:real_window(a)["monitor"]==mons[1]["id"] and real_window(c)["monitor"]==mons[0]["id"],"cross-monitor swap")
         # Swap a fullscreen target through native state transitions, retaining its mode.
         lua(f'hl.dsp.window.fullscreen({{window="address:{b}",mode="fullscreen",action="set"}})')
         wait(lambda:real_window(b)["fullscreen"]>0 and ui_state()["pending"]==0,"fullscreen target")
-        begin_drag(a);r=drawn_window(b)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2));finish_drag()
+        begin_drag(a);r=drawn_window(b)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2));finish_drag(shift=True)
         wait(lambda:real_window(a)["workspace"]["id"]==171+mons[0]["id"],"fullscreen swap")
         assert real_window(b)["fullscreen"]>0
         # Floating placement retains the press point within the window.
@@ -444,6 +466,96 @@ with (artifacts / "compositor.log").open("w+") as log:
         wait(lambda:all(w["address"]!=a for w in mapped()) and not ui_state()["ui"]["dragging"],"closed drag source")
         pointer_command("up")
         keypress("Escape");wait(lambda:ui_state().get("open") is False,"close after cancelled source")
+        def stack_fixture(app,x,y):
+            ok("hypr2d","goto",str(x),str(y),str(mons[0]["id"]))
+            client=subprocess.Popen(["foot","--config=/dev/null",f"--app-id={app}","--override=cursor.blink=no","sh","-c","sleep 600"],env=env,stdout=log,stderr=log,start_new_session=True)
+            clients.append(client)
+            wait(lambda:any(w["class"]==app for w in mapped()),"stack fixture")
+            return next(w["address"] for w in mapped() if w["class"]==app)
+        # Also exercise the native detach path that focuses the remaining group.
+        ok("eval",'hl.config({group={focus_removed_window=false}})')
+        # Reproduce live normal/special swaps before the group feature tests.
+        sx=stack_fixture("swap-normal",2,4)
+        sy=stack_fixture("swap-special",3,4)
+        sentinel=stack_fixture("special-sentinel",4,4)
+        lua(f'hl.dsp.window.move({{window="address:{sy}",workspace="special:swap-accounting",follow=false}})')
+        lua(f'hl.dsp.window.move({{window="address:{sentinel}",workspace="special:sentinel",follow=false}})')
+        open_ui()
+        for grouped in [False,True]:
+            if grouped:
+                lua(f'hl.dsp.group.toggle({{window="address:{sx}"}})')
+                wait(lambda:bool(real_window(sx)["grouped"]),"grouped swap source")
+                partner=stack_fixture("swap-partner",5,4)
+                ok("eval",f'local a=hl.get_window("address:{sx}"); local b=hl.get_window("address:{partner}"); a.group:add(b)')
+                wait(lambda:len(real_window(sx)["grouped"])==2,"two-member swap source")
+                # Select the visible member for the drag, as on the user's laptop.
+                sx,partner=partner,sx
+            before_addresses={w["address"] for w in mapped()}
+            begin_drag(sx);r=drawn_window(sy)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2));finish_drag(shift=True)
+            diagnosis=json.loads(ctl("hypr2d","doctor"))
+            (artifacts/f"drop-doctor-grouped-{grouped}.json").write_text(json.dumps(diagnosis,indent=2))
+            assert diagnosis["ok"],diagnosis
+            assert {w["address"] for w in mapped()}==before_addresses,"drop killed or unmapped a client"
+            assert real_window(sentinel)["workspace"]["name"]=="special:sentinel"
+            if not grouped:assert not real_window(sx)["grouped"] and not real_window(sy)["grouped"],"swap created singleton groups"
+        keypress("Escape");wait(lambda:ui_state().get("open") is False,"accounting test close")
+        accounting_addresses=[sx,sy,sentinel,partner]
+        for address in accounting_addresses:lua(f'hl.dsp.window.close({{window="address:{address}"}})')
+        wait(lambda:all(w["address"] not in accounting_addresses for w in mapped()),"accounting fixture cleanup")
+        sa=stack_fixture("stack-a",3,3)
+        sb=stack_fixture("stack-b",4,3)
+        sc=stack_fixture("stack-c",5,3)
+        open_ui()
+        begin_drag(sa);r=drawn_window(sb)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2))
+        assert ui_state()["ui"]["drop_mode"]=="stack" and not ui_state()["ui"]["target"]
+        screenshot("ui-stack-target")
+        finish_drag()
+        wait(lambda:set(real_window(sa)["grouped"])=={sa,sb},"cross-cell stack")
+        assert not next(cell for cell in ui_state()["ui"]["cells"] if cell["key"]==str(271+mons[0]["id"]))["occupied"],"empty source grid cell updates immediately"
+        groups=json.loads(ctl("hypr2d","overview","invariants"))["groups"]
+        assert next(g for g in groups if sa in g["members"])["current"]==sa
+        begin_drag(sc);r=drawn_window(sa)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2));finish_drag()
+        wait(lambda:set(real_window(sc)["grouped"])=={sa,sb,sc},"stack onto existing group")
+        assert next(g for g in json.loads(ctl("hypr2d","overview","invariants"))["groups"] if sc in g["members"])["current"]==sc
+        # Moving a member out leaves the rest of its former group behind.
+        begin_drag(sc);move_drag(cell_point(str(291+mons[0]["id"])));finish_drag()
+        wait(lambda:not real_window(sc)["grouped"] and set(real_window(sa)["grouped"])=={sa,sb},"detach only dragged member")
+        # A dedicated special loses its last tile as soon as the drop completes.
+        lua('hl.dsp.workspace.toggle_special("drop-last")')
+        sd=stack_fixture("stack-special",6,3)
+        lua(f'hl.dsp.window.move({{window="address:{sd}",workspace="special:drop-last",follow=false}})')
+        wait(lambda:any(cell["key"]=="special:drop-last" for cell in ui_state()["ui"]["cells"]) and ui_state()["pending"]==0,"last-window special")
+        begin_drag(sc);r=drawn_window(sd)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2));finish_drag()
+        wait(lambda:set(real_window(sc)["grouped"])=={sc,sd} and real_window(sc)["workspace"]["name"]=="special:drop-last","stack into special")
+        begin_drag(sc);move_drag(cell_point(str(291+mons[0]["id"])));finish_drag()
+        wait(lambda:not real_window(sc)["grouped"] and real_window(sc)["workspace"]["id"]==291+mons[0]["id"],"detach group member out of special")
+        begin_drag(sd);move_drag(cell_point(str(311+mons[0]["id"])));finish_drag()
+        wait(lambda:all(cell["key"]!="special:drop-last" for cell in ui_state()["ui"]["cells"]),"empty special tile removed immediately")
+        screenshot("ui-stack-special-removed")
+        # Native active-group locks are checked before any detach/move.
+        lua(f'hl.dsp.focus({{window="address:{sa}"}})')
+        lua('hl.dsp.group.lock_active({action="set"})')
+        locked=json.loads(ctl("hypr2d","overview","invariants"))
+        begin_drag(sc);r=drawn_window(sa)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2))
+        pointer_command("up")
+        wait(lambda:ui_state()["ui"]["refused"]==sa,"locked-group refusal flash")
+        assert json.loads(ctl("hypr2d","overview","invariants"))==locked,"refusal preserves focus, group order/members/locks"
+        assert not real_window(sc)["grouped"] and real_window(sc)["workspace"]["id"]==291+mons[0]["id"]
+        screenshot("ui-stack-locked-refusal")
+        # A locked source group cannot be detached even onto empty space.
+        begin_drag(sa);move_drag(cell_point(str(321+mons[0]["id"])))
+        pointer_command("up")
+        assert json.loads(ctl("hypr2d","overview","invariants"))==locked,"locked source cannot leave its group"
+        lua('hl.dsp.group.lock_active({action="unset"})')
+        lua('hl.dsp.group.lock({action="set"})')
+        global_locked=json.loads(ctl("hypr2d","overview","invariants"))
+        begin_drag(sc);r=drawn_window(sa)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2));pointer_command("up")
+        assert json.loads(ctl("hypr2d","overview","invariants"))==global_locked,"global group lock cannot be bypassed"
+        lua('hl.dsp.group.lock({action="unset"})')
+        keypress("Escape");wait(lambda:ui_state().get("open") is False,"stack test close")
+        for address in [sa,sb,sc,sd]:lua(f'hl.dsp.window.close({{window="address:{address}"}})')
+        wait(lambda:all(w["address"] not in [sa,sb,sc,sd] for w in mapped()),"stack fixture cleanup")
+        print("PASS stack: cross-cell/new/existing group, active member, detach source member, Shift swaps, empty-special removal, locked refusal",flush=True)
         screenshot("ui-clean-before")
         ui_runs=[]
         for cycle in range(20):
@@ -712,6 +824,12 @@ with (artifacts / "compositor.log").open("w+") as log:
         assert not json.loads(ctl("hypr2d","overview","cursor"))["texture"],"restore hidden app cursor on close"
         (artifacts/"hardware-invariants.json").write_text(json.dumps({"before":baseline,"after":invariants(),"shown":shown},indent=2))
         print("PASS hardware: eDP-1 2256x1504 scale1 at 8934x6682, display-sized captures/fit toggle, software cursor screenshot, group/focus/order/workspace/special preservation")
+        # Close fixtures normally before compositor shutdown. This also proves
+        # group/special bookkeeping survives native unmap after the drop tests.
+        assert json.loads(ctl("hypr2d","doctor"))["ok"]
+        for win in mapped():lua(f'hl.dsp.window.close({{window="address:{win["address"]}"}})')
+        wait(lambda:not mapped(),"all fixture clients close normally")
+        assert json.loads(ctl("hypr2d","doctor"))["ok"]
         # Unload/reload comes LAST: loading a plugin may reload Lua config,
         # which must not race the exact monitor and grouped-window fixture.
         probe("full")
@@ -720,6 +838,9 @@ with (artifacts / "compositor.log").open("w+") as log:
         ok("plugin", "load", plugin)
         results = {"instance":instance.name,"small":small,"runs":runs,"screenshot_changed_pixels":diffs,"ui_cycles":ui_runs,"final_memory":process_memory()}
         (artifacts / "results.json").write_text(json.dumps(results, indent=2))
+        ctl("dispatch","hl.dsp.exit()")
+        child.wait(timeout=10)
+        assert child.returncode==0,("clean compositor exit",child.returncode)
         print(f"PASS M4 rendering prototype: 2 outputs, normal/special capture, 25 full cycles, deleted GL objects, exact screenshots; {artifacts}")
     finally:
         if child.poll() is None and instance:

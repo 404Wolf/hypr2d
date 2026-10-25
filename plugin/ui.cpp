@@ -2,17 +2,22 @@
 #include "overview.hpp"
 #include <chrono>
 #include <deque>
+#include <hyprland/src/config/lua/ConfigManager.hpp>
 #include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/state/WindowState.hpp>
 #include <hyprland/src/desktop/view/Group.hpp>
 #include <hyprland/src/desktop/view/window/Window.hpp>
+#include <hyprland/src/desktop/view/window/WindowGroupMembership.hpp>
 #include <hyprland/src/desktop/view/window/WindowMetadata.hpp>
 #include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/helpers/MiscFunctions.hpp>
 #include <hyprland/src/ipc/s2/S2.hpp>
+#include <hyprland/src/layout/space/Space.hpp>
+#include <hyprland/src/layout/target/Target.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
+#include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
 #include <hyprland/src/pointer/PointerManager.hpp>
 #include <hyprland/src/pointer/cursor/CursorShapeOverrideController.hpp>
@@ -42,7 +47,9 @@ static Vector2D pointer;
 static uint32_t captures = 0;
 static double captureMs = 0;
 static std::set<uint32_t> swallowedKeys;
+static std::set<std::string> emptiedSpecials;
 static bool swallowedButton = false;
+static std::vector<uint64_t> pendingDrops;
 static double now() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 static void damage() {
     for (auto &m : State::monitorState()->monitors()) {
@@ -108,6 +115,13 @@ static void build() {
                            m == Desktop::focusState()->monitor()});
     for (auto &w : State::Workspace::state()->workspaces())
         if (w->type() == Workspace::eWorkspaceType::SPECIAL && w->m_monitor) {
+            const auto name = w->addressableName();
+            const bool occupied = std::ranges::any_of(Desktop::windowState()->windows(),
+                                                      [&](const auto &win) { return win->mapped() && win->m_workspace == w; });
+            if (occupied)
+                emptiedSpecials.erase(name);
+            if (emptiedSpecials.contains(name))
+                continue;
             heldSpecials.push_back(w.lock());
             specials.push_back(
                 {static_cast<uint32_t>(w->m_monitor->m_id), w->addressableName(), w->m_monitor->m_activeSpecialWorkspace == w});
@@ -133,6 +147,9 @@ static void build() {
     rebuild = false;
 }
 static void release() {
+    for (auto id : pendingDrops)
+        g_pEventLoopManager->removeDoLater(id);
+    pendingDrops.clear();
     g_pHyprRenderer->m_renderPass.removeAllOfType("hypr2d-overview");
     surfaceListeners.clear();
     ui.reset();
@@ -153,6 +170,7 @@ static void release() {
         deletedObjects &= !glIsFramebuffer(id);
     dirty.clear();
     heldSpecials.clear();
+    emptiedSpecials.clear();
     rebuild = false;
     IPC::Socket2::sock()->postEvent({"hypr2d", "overview>>close"});
     damage();
@@ -289,19 +307,24 @@ class Pass final : public IPassElement {
                 rect(b, color(style.cell, frame.alpha));
             label(std::string(l.text), b, 1.f, l.colour);
         }
-        for (auto &w : frame.windows)
-            if (w.target) {
-                CBox b{w.rect.x, w.rect.y, w.rect.width, w.rect.height};
-                auto col = color(style.target, frame.alpha);
-                rect({b.x, b.y, b.w, 2}, col);
-                rect({b.x, b.y + b.h - 2, b.w, 2}, col);
-                rect({b.x, b.y, 2, b.h}, col);
-                rect({b.x + b.w - 2, b.y, 2, b.h}, col);
-            }
         if (frame.ghost.visible) {
             if (auto it = cache.find(std::string(frame.ghost.key)); it != cache.end())
                 items.push_back(makeUnique<GhostPass>(it->second->getTexture(), frame.ghost, float(0.72 * frame.alpha)));
         }
+        for (auto &w : frame.windows)
+            if (w.target || std::string(w.id) == std::string(frame.refused)) {
+                CBox b{w.rect.x, w.rect.y, w.rect.width, w.rect.height};
+                const bool refused = std::string(w.id) == std::string(frame.refused);
+                auto col = color(refused ? 0xF07178 : style.target, frame.alpha);
+                rect({b.x, b.y, b.w, 2}, col);
+                rect({b.x, b.y + b.h - 2, b.w, 2}, col);
+                rect({b.x, b.y, 2, b.h}, col);
+                rect({b.x + b.w - 2, b.y, 2, b.h}, col);
+                const auto mode = refused ? std::string("locked") : std::string(frame.drop_mode);
+                rect({b.x + 2, b.y + 2, std::min(b.w - 4, 72.0 * outputScale), 24.0 * outputScale},
+                     color(style.background, 0.8 * frame.alpha));
+                label(mode, {b.x + 4, b.y + 3, std::max(1.0, b.w - 8), 24.0 * outputScale}, 1.f, refused ? 0xF07178 : style.target);
+            }
         return items;
     }
     bool needsLiveBlur() override { return false; }
@@ -318,9 +341,6 @@ static PHLWINDOW findWindow(const std::string &id) {
     return nullptr;
 }
 static void applyDrop(const hypr2d::UIDrop &drop) {
-    // Temporarily refuse window-target drops while native swap corruption is investigated.
-    if (!drop.swap.empty())
-        return;
     if (!drop.activate.empty()) {
         activate(std::string(drop.activate));
         return;
@@ -330,50 +350,52 @@ static void applyDrop(const hypr2d::UIDrop &drop) {
     auto w = findWindow(std::string(drop.window));
     if (!w || !w->m_workspace)
         return;
-    auto source = key(w->m_workspace);
+    const auto sourceWorkspace = w->m_workspace; // Keep its monitor/space alive through both silent swap moves.
+    auto source = key(sourceWorkspace);
+    auto other = findWindow(std::string(drop.stack.empty() ? drop.swap : drop.stack));
+    if ((!drop.stack.empty() || !drop.swap.empty()) &&
+        (!other || other == w || !other->m_workspace || key(other->m_workspace) != std::string(drop.workspace)))
+        return;
+    { // Do not retain native groups across detach dispatchers: an empty group must expire.
+        const auto oldGroup = w->grouping().group();
+        const auto targetGroup = other ? other->grouping().group() : nullptr;
+        const bool groupOperation = oldGroup || !drop.stack.empty() || targetGroup;
+        if ((groupOperation && Desktop::windowState()->groupsLocked()) || (oldGroup && oldGroup->locked()) ||
+            (targetGroup && (targetGroup->locked() || targetGroup->denied()))) {
+            (*ui)->overview_refuse(other ? (drop.stack.empty() ? drop.swap : drop.stack) : drop.window, now());
+            damage();
+            return;
+        }
+    }
     auto focus = Desktop::focusState()->monitor();
     const auto savedPointer = Pointer::mgr()->position();
     Hyprutils::Utils::CScopeGuard restore([&] {
         if (focus)
             (void)Config::Actions::focusMonitor(focus);
         (void)Config::Actions::moveCursor(savedPointer);
+        if (source.starts_with("special:") && !std::ranges::any_of(Desktop::windowState()->windows(), [&](const auto &win) {
+                return win->mapped() && win->m_workspace && key(win->m_workspace) == source;
+            }))
+            emptiedSpecials.insert(source);
         mark(source);
         mark(std::string(drop.workspace));
         rebuild = true;
         damage();
     });
-    if (!drop.swap.empty()) {
-        auto other = findWindow(std::string(drop.swap));
-        if (!other || other == w || !other->m_workspace || key(other->m_workspace) != std::string(drop.workspace))
-            return;
-        auto first = Fullscreen::controller()->getFullscreenModes(w), second = Fullscreen::controller()->getFullscreenModes(other);
-        (void)Config::Actions::fullscreenWindow(Fullscreen::FSMODE_NONE, Fullscreen::FSMODE_NONE, false, w);
-        (void)Config::Actions::fullscreenWindow(Fullscreen::FSMODE_NONE, Fullscreen::FSMODE_NONE, false, other);
-        auto result = Config::Actions::swapWith(other, w);
-        (void)Config::Actions::fullscreenWindow(first.internal, first.client, false, w);
-        (void)Config::Actions::fullscreenWindow(second.internal, second.client, false, other);
-        if (!result)
-            return;
-    } else {
-        PHLMONITOR mon;
-        for (auto &m : State::monitorState()->monitors())
-            if (m->m_id == drop.monitor)
-                mon = m;
-        if (!mon)
-            return;
-        PHLWORKSPACE target;
-        for (auto &ws : State::Workspace::state()->workspaces())
-            if (key(ws.lock()) == std::string(drop.workspace))
-                target = ws.lock();
-        if (!target && !std::string(drop.workspace).starts_with("special:"))
-            target = State::Workspace::state()->createNumbered(
-                Workspace::SWorkspaceNumberedID{static_cast<uint32_t>(std::stoul(std::string(drop.workspace)))}, mon);
-        if (!target || target->m_monitor != mon)
-            return;
-        if (!Config::Actions::moveToWorkspace(target, true, w))
-            return;
-        if (drop.floating && w->isFloating())
-            (void)Config::Actions::move(mon->m_position + Vector2D{drop.x, drop.y}, false, w);
+    PHLMONITOR mon;
+    for (auto &m : State::monitorState()->monitors())
+        if (m->m_id == drop.monitor)
+            mon = m;
+    if (!mon)
+        return;
+    auto lua = dynamicPointerCast<Config::Lua::CConfigManager>(WP<Config::IConfigManager>(Config::mgr()));
+    if (!lua)
+        return;
+    const auto script = core ? hypr2d::drop_script(drop, source, mon->m_position.x + drop.x, mon->m_position.y + drop.y) : rust::String{};
+    if (auto error = lua->eval(std::string(script))) {
+        (*ui)->overview_refuse(drop.window, now());
+        LOG(Log::ERR, "hypr2d drop dispatcher: {}", *error);
+        return;
     }
     core->extension_event("drop", drop.workspace, drop.window);
     IPC::Socket2::sock()->postEvent({"hypr2d", std::format("drop>>{},{}", std::string(drop.window), std::string(drop.workspace))});
@@ -414,14 +436,29 @@ static void movePointer(Vector2D global, int phase) {
     if (!ui)
         return;
     pointer = global;
+    if (auto kb = g_pSeatManager->m_keyboard.lock())
+        (*ui)->overview_modifiers(xkb_state_mod_name_is_active(kb->m_xkbState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) > 0);
+    else
+        (*ui)->overview_modifiers(false);
     for (auto &m : State::monitorState()->monitors())
         if (CBox{m->m_position, m->m_size}.containsPoint(global)) {
             auto p = global - m->m_position;
             if (phase == 1)
                 (*ui)->overview_press(m->m_size.x, m->m_size.y, p.x, p.y);
-            else if (phase == 2)
-                applyDrop((*ui)->overview_release(m->m_size.x, m->m_size.y, p.x, p.y));
-            else
+            else if (phase == 2) {
+                auto drop = (*ui)->overview_release(m->m_size.x, m->m_size.y, p.x, p.y);
+                pendingDrops.push_back(g_pEventLoopManager->doLater([drop] {
+                    if (!ui || g_pHyprRenderer->m_renderData.currentFB)
+                        return;
+                    try {
+                        applyDrop(drop);
+                    } catch (const std::exception &error) {
+                        LOG(Log::ERR, "hypr2d deferred drop: {}", error.what());
+                    } catch (...) {
+                        LOG(Log::ERR, "hypr2d deferred drop failed");
+                    }
+                }));
+            } else
                 (*ui)->overview_pointer(m->m_size.x, m->m_size.y, p.x, p.y, false);
             damage();
             return;
@@ -559,6 +596,10 @@ void init(hypr2d::Core *c) {
             info.cancelled = true;
     }));
     listeners.push_back(e.input.keyboard.key.listen([](IKeyboard::SKeyEvent event, Event::SCallbackInfo &info) {
+        if (ui && (event.keycode == 42 || event.keycode == 54)) {
+            (*ui)->overview_modifiers(event.state == WL_KEYBOARD_KEY_STATE_PRESSED);
+            damage();
+        }
         if (event.state == WL_KEYBOARD_KEY_STATE_RELEASED) {
             if (swallowedKeys.erase(event.keycode))
                 info.cancelled = true;
@@ -607,6 +648,37 @@ void shutdown() {
         release();
     core = nullptr;
 }
+std::string doctor() {
+    auto address = [](auto w) { return w ? std::format("0x{:x}", reinterpret_cast<uintptr_t>(w.get())) : std::string{}; };
+    std::vector<hypr2d::DoctorWorkspace> spaces;
+    std::vector<hypr2d::DoctorWindow> windows;
+    for (auto &weak : State::Workspace::state()->workspaces()) {
+        auto ws = weak.lock();
+        hypr2d::DoctorWorkspace row{key(ws), static_cast<uint32_t>(ws->getWindowCount()), {}};
+        if (ws->space())
+            for (auto &target : ws->space()->targets())
+                if (target && target->window())
+                    row.targets.push_back(address(target->window()));
+        spaces.push_back(std::move(row));
+    }
+    for (auto &w : Desktop::windowState()->windows())
+        if (w->mapped()) {
+            hypr2d::DoctorWindow row{address(w),
+                                     w->m_workspace ? key(w->m_workspace) : "",
+                                     w->layoutTarget()->workspace() ? key(w->layoutTarget()->workspace()) : "",
+                                     "",
+                                     {},
+                                     ""};
+            if (auto group = w->grouping().group()) {
+                row.group = std::format("0x{:x}", reinterpret_cast<uintptr_t>(group.get()));
+                row.current = address(group->current());
+                for (auto &member : group->windows())
+                    row.members.push_back(address(member.lock()));
+            }
+            windows.push_back(std::move(row));
+        }
+    return std::string(hypr2d::doctor({spaces.data(), spaces.size()}, {windows.data(), windows.size()}));
+}
 std::string command(const std::string &input) {
     if (input == "overview refresh") {
         textCache.clear();
@@ -641,7 +713,8 @@ std::string command(const std::string &input) {
                 if (!first)
                     result += ",";
                 first = false;
-                result += std::format("{{\"current\":\"{}\",\"members\":[", address(g->current()));
+                result += std::format("{{\"current\":\"{}\",\"locked\":{},\"denied\":{},\"members\":[", address(g->current()), g->locked(),
+                                      g->denied());
                 bool memberFirst = true;
                 for (auto &w : g->windows()) {
                     if (!memberFirst)

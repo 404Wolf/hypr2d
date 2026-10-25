@@ -97,10 +97,16 @@ All monitor grids appear together in their physical arrangement on each output.
 Specials are labelled; empty ones are dim and currently shown ones highlighted.
 
 Drag window content to another cell, another monitor's grid, or a special.
-Drop on another window to swap their native layout slots; drop on empty space
-or a cell's top caption edge to move without swapping. Floating windows retain
+Drop on another window to stack it in a Hyprland group, making the dragged
+window its active member. Hold Shift while dropping to exchange the windows between their cells
+(or swap native layout slots within the same cell).
+Drop on empty space or a cell's top caption edge for a plain move. A dragged
+group member leaves its former group; group locks refuse the drop with a red
+flash. Empty source grid cells update immediately and a special tile disappears
+when its last window leaves. Floating windows retain
 the grabbed point at the pointer's destination, including near output edges.
-A translucent ghost and gold destination/window outline show the pending drop.
+A translucent ghost and gold cell or window outline show the pending drop;
+window outlines are labelled stack or swap.
 Esc cancels a drag first; a second Esc closes the overview. Releasing a cancelled
 drag does nothing. Fullscreen swaps preserve each window's fullscreen mode.
 
@@ -378,3 +384,8 @@ when finished. It performs no screenshot comparisons or repeated leak test;
 those belong in the VM, independently of the host's frame callbacks.
 See DESIGN.md §Findings for API constraints, measurements and the recommended
 capture-on-open / per-cell damage-driven design.
+
+`hyprctl hypr2d doctor` reports read-only window/workspace/layout/group consistency
+as JSON (`ok`, `errors`, `warnings`). A singleton group is reported as a warning
+because Hyprland allows it. The command does not repair compositor state or
+restart clients.

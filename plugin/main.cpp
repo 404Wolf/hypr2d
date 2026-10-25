@@ -187,6 +187,8 @@ static int extensionReady(int, uint32_t, void *) {
 }
 static std::string execute(const std::string &input) {
     try {
+        if (input == "doctor")
+            return OverviewUI::doctor();
         if (input == "overview" || input.starts_with("overview ")) {
             cancelSwipe();
             return OverviewUI::command(input);

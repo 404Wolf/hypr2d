@@ -32,7 +32,7 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Keyboard (hjkl/arrows, tab between monitors, Enter, Esc) and mouse (click a cell to go there)
 
 ## M5 — Drag & drop in the overview
-- [x] Drag a window between cells, between monitors' grids, and into/out of special workspaces; drop on a window to swap; floating windows placed at the drop point
+- [x] Drag a window between cells, between monitors' grids, and into/out of special workspaces; drop on a window to stack (Shift-drop swaps); floating windows placed at the drop point
 - [x] Ghost thumbnail + target highlight; Esc cancels
 
 ## Overview polish (after M5)
@@ -71,6 +71,9 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [ ] Stable persisted monitor slots, parked workspace lifecycle, parked overview cards/expansion, minimap tooltip and hotplug VM regressions
 
 - [x] Text-sized, physically aligned panel/special headers with consistent scaled 8px gaps; Rust and laptop VM screenshot regression
-- [ ] Drop-on-window stacks, Shift-drop swaps, locked-group refusal and immediate empty-special cleanup; VM regressions
+- [x] Drop-on-window stacks, Shift-drop swaps, locked-group refusal and immediate empty-special cleanup; VM regressions
+
+- [x] Deferred public-dispatcher overview drops, cross-special/group accounting regressions and read-only doctor diagnostics
+- [ ] Eight-way tracked swipe: sector hysteresis, 2D tracking/projection/spring, diagonal commands, HM tunables and VM/unit tests
 
 ## Questions

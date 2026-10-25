@@ -1,3 +1,5 @@
+mod doctor;
+mod drop_script;
 mod extension;
 pub mod grid;
 mod overview;
@@ -29,6 +31,19 @@ mod ffi {
         title: String,
         app_id: String,
         urgent: bool,
+    }
+    struct DoctorWorkspace {
+        key: String,
+        reported: u32,
+        targets: Vec<String>,
+    }
+    struct DoctorWindow {
+        id: String,
+        workspace: String,
+        target_workspace: String,
+        group: String,
+        members: Vec<String>,
+        current: String,
     }
     struct Move {
         monitor: u32,
@@ -168,6 +183,7 @@ mod ffi {
     struct UIDrop {
         window: String,
         swap: String,
+        stack: String,
         workspace: String,
         monitor: u32,
         x: f64,
@@ -193,6 +209,8 @@ mod ffi {
         ghost: UIGhost,
         windows: Vec<UIWindowView>,
         target: String,
+        drop_mode: String,
+        refused: String,
         alive: bool,
         animating: bool,
         alpha: f64,
@@ -209,6 +227,8 @@ mod ffi {
         fn ui_header_width(self: &mut Core, text: &str, width: f64);
         fn ui_font_height(self: &mut Core, height: f64);
         fn ui_style(self: &Core) -> UIStyle;
+        fn overview_modifiers(self: &mut Overview, shift: bool);
+        fn overview_refuse(self: &mut Overview, window: &str, now: f64);
         fn overview_press(self: &mut Overview, width: f64, height: f64, x: f64, y: f64);
         fn overview_release(self: &mut Overview, width: f64, height: f64, x: f64, y: f64)
             -> UIDrop;
@@ -265,6 +285,8 @@ mod ffi {
         ) -> String;
         type Core;
         fn new_core() -> Box<Core>;
+        fn drop_script(drop: &UIDrop, source: &str, x: f64, y: f64) -> String;
+        fn doctor(workspaces: &[DoctorWorkspace], windows: &[DoctorWindow]) -> String;
         fn swipe(self: &mut Core, monitors: &[Monitor], input: SwipeInput) -> SwipeFrame;
         fn spike_round_trip(value: u32) -> u32;
         fn command(self: &mut Core, monitors: &[Monitor], windows: &[Window], input: &str)
@@ -311,6 +333,12 @@ fn guarded<T: Default>(operation: impl FnOnce() -> T) -> T {
             T::default()
         }
     }
+}
+fn drop_script(drop: &ffi::UIDrop, source: &str, x: f64, y: f64) -> String {
+    drop_script::script(drop, source, x, y)
+}
+fn doctor(workspaces: &[ffi::DoctorWorkspace], windows: &[ffi::DoctorWindow]) -> String {
+    doctor::report(workspaces, windows)
 }
 fn new_core() -> Box<Core> {
     guarded(|| Box::new(Core::default()))
