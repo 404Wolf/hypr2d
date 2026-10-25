@@ -56,6 +56,8 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Three rows fit the existing automatic 13px-text bar: equal VM heights with/without the real Waybar module, screenshot verified
 - [x] Home Manager start/end placement; start puts the minimap before cpu
 
+- [x] Nullable dedicated minimap colours with validated CLI overrides and Home Manager wiring; defaults unchanged
+
 ## Live-machine overview regressions
 - [x] Capture at displayed physical cell dimensions, resize on fit/full changes, filter minification and bound cache payload
 - [x] Keep the software cursor above the overview; verify composited cursor pixels in the VM

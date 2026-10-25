@@ -71,7 +71,20 @@ pub fn unavailable(message: &str) -> Record {
         class: vec!["unavailable".into()],
     }
 }
-pub fn render(snapshot: &Snapshot, selected: Option<&str>, radius_x: u32, radius_y: u32) -> Record {
+#[derive(Default)]
+pub struct Colors {
+    pub current: Option<String>,
+    pub occupied: Option<String>,
+    pub empty: Option<String>,
+    pub urgent: Option<String>,
+}
+pub fn render(
+    snapshot: &Snapshot,
+    selected: Option<&str>,
+    radius_x: u32,
+    radius_y: u32,
+    colors: &Colors,
+) -> Record {
     if snapshot.version != 1 {
         return unavailable("Unsupported hypr2d state version");
     }
@@ -145,26 +158,32 @@ pub fn render(snapshot: &Snapshot, selected: Option<&str>, radius_x: u32, radius
                 classes.insert("urgent");
             }
             let (glyph, color) = if urgent {
-                ("●", "#F07178")
+                ("●", colors.urgent.as_deref().unwrap_or("#F07178"))
             } else if active {
                 (
                     "●",
-                    snapshot.overview_config["current"]
-                        .as_str()
+                    colors
+                        .current
+                        .as_deref()
+                        .or(snapshot.overview_config["current"].as_str())
                         .unwrap_or("#82AAFF"),
                 )
             } else if occupied {
                 (
                     "●",
-                    snapshot.overview_config["label"]
-                        .as_str()
+                    colors
+                        .occupied
+                        .as_deref()
+                        .or(snapshot.overview_config["label"].as_str())
                         .unwrap_or("#EEFFFF"),
                 )
             } else {
                 (
                     "●",
-                    snapshot.overview_config["hover"]
-                        .as_str()
+                    colors
+                        .empty
+                        .as_deref()
+                        .or(snapshot.overview_config["hover"].as_str())
                         .unwrap_or("#4A4A4A"),
                 )
             };
@@ -305,9 +324,10 @@ fn refresh(
     monitor: Option<&str>,
     radius_x: u32,
     radius_y: u32,
+    colors: &Colors,
 ) -> io::Result<()> {
     let record = match fetch() {
-        Ok(state) => render(&state, monitor, radius_x, radius_y),
+        Ok(state) => render(&state, monitor, radius_x, radius_y, colors),
         Err(_) => unavailable("hypr2d unavailable; waiting for compositor events"),
     };
     emit(out, last, record)
@@ -322,6 +342,7 @@ pub fn stream(
     monitor: Option<&str>,
     radius_x: u32,
     radius_y: u32,
+    colors: &Colors,
 ) -> io::Result<()> {
     let (tx, rx) = mpsc::sync_channel(128);
     std::thread::spawn(move || loop {
@@ -341,12 +362,16 @@ pub fn stream(
     });
     let mut last = String::new();
     let mut loaded = true;
-    refresh(&mut fetch, &mut out, &mut last, monitor, radius_x, radius_y)?;
+    refresh(
+        &mut fetch, &mut out, &mut last, monitor, radius_x, radius_y, colors,
+    )?;
     let mut pending: Option<Instant> = None;
     loop {
         if pending.is_some_and(|deadline| Instant::now() >= deadline) {
             if loaded {
-                refresh(&mut fetch, &mut out, &mut last, monitor, radius_x, radius_y)?;
+                refresh(
+                    &mut fetch, &mut out, &mut last, monitor, radius_x, radius_y, colors,
+                )?;
             }
             pending = None;
             continue;
@@ -356,7 +381,9 @@ pub fn stream(
                 Ok(line) => Some(line),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if loaded {
-                        refresh(&mut fetch, &mut out, &mut last, monitor, radius_x, radius_y)?;
+                        refresh(
+                            &mut fetch, &mut out, &mut last, monitor, radius_x, radius_y, colors,
+                        )?;
                     }
                     pending = None;
                     continue;
@@ -368,7 +395,9 @@ pub fn stream(
         };
         let Some(line) = next else {
             if pending.is_some() && loaded {
-                refresh(&mut fetch, &mut out, &mut last, monitor, radius_x, radius_y)?;
+                refresh(
+                    &mut fetch, &mut out, &mut last, monitor, radius_x, radius_y, colors,
+                )?;
             }
             break;
         };
@@ -402,8 +431,41 @@ mod tests {
         serde_json::from_str(r#"{"version":1,"monitors":[{"id":0,"name":"DP<&","focused":true,"workspace":1,"grid":{"columns":2,"rows":1,"wrap":true},"cell":{"x":0,"y":0},"cells":[{"x":0,"y":0,"workspace":1,"windows":[]},{"x":1,"y":0,"workspace":11,"windows":[{"title":"<b>unsafe & title</b>","app_id":"app<","urgent":true}]}]}]}"#).unwrap()
     }
     #[test]
+    fn dedicated_colors_override_independently_and_preserve_fallbacks() {
+        let mut state = fixture();
+        state.overview_config =
+            serde_json::json!({"current":"#123456","label":"#234567","hover":"#345678"});
+        let defaults = Colors::default();
+        let colors = Colors {
+            current: Some("#9CBEFF".into()),
+            occupied: Some("#A8A8A8".into()),
+            ..Colors::default()
+        };
+        let default = render(&state, None, 1, 0, &defaults);
+        assert!(default.text.contains("#123456"));
+        assert!(default.text.contains("#F07178"));
+        let custom = render(&state, None, 1, 0, &colors);
+        assert!(custom.text.contains("#9CBEFF"));
+        assert!(custom.text.contains("#F07178"));
+        state.monitors[0].cells[1].windows[0].urgent = false;
+        assert!(render(&state, None, 1, 0, &defaults)
+            .text
+            .contains("#234567"));
+        assert!(render(&state, None, 1, 0, &colors).text.contains("#A8A8A8"));
+        state.monitors[0].cells[1].windows.clear();
+        assert!(render(&state, None, 1, 0, &colors).text.contains("#345678"));
+        let colors = Colors {
+            empty: Some("#456789".into()),
+            urgent: Some("#567890".into()),
+            ..colors
+        };
+        assert!(render(&state, None, 1, 0, &colors).text.contains("#456789"));
+        state = fixture();
+        assert!(render(&state, None, 1, 0, &colors).text.contains("#567890"));
+    }
+    #[test]
     fn nine_by_three_uniform_dots_and_all_occupancy_events() {
-        let record = render(&fixture(), None, 4, 1);
+        let record = render(&fixture(), None, 4, 1, &Colors::default());
         assert_eq!(record.text.matches("foreground=").count(), 27);
         assert_eq!(record.text.matches('●').count(), 27);
         assert_eq!(record.text.matches('\n').count(), 2);
@@ -468,6 +530,7 @@ mod tests {
             None,
             4,
             1,
+            &Colors::default(),
         )
         .unwrap();
         sender.join().unwrap();
@@ -479,16 +542,18 @@ mod tests {
     }
     #[test]
     fn markup_states_and_small_grid_are_correct() {
-        let r = render(&fixture(), None, 1, 1);
+        let r = render(&fixture(), None, 1, 1, &Colors::default());
         for class in ["current", "empty", "occupied", "urgent"] {
             assert!(r.class.iter().any(|c| c == class));
         }
         assert!(r.tooltip.contains("&lt;b&gt;unsafe &amp; title&lt;/b&gt;"));
         assert!(!r.tooltip.contains("<b>unsafe"));
         assert_eq!(r.text.matches("foreground=").count(), 9);
-        assert!(render(&fixture(), Some("missing"), 1, 1)
-            .class
-            .contains(&"unavailable".into()));
+        assert!(
+            render(&fixture(), Some("missing"), 1, 1, &Colors::default())
+                .class
+                .contains(&"unavailable".into())
+        );
     }
     #[test]
     fn stream_is_event_driven_and_deduplicated() {
@@ -504,6 +569,7 @@ mod tests {
             None,
             1,
             1,
+            &Colors::default(),
         )
         .unwrap();
         assert_eq!(calls, 2); // initial snapshot + one coalesced event burst
@@ -523,6 +589,7 @@ mod tests {
             None,
             1,
             1,
+            &Colors::default(),
         )
         .unwrap();
         assert_eq!(calls, 2);
@@ -548,6 +615,7 @@ mod tests {
             None,
             1,
             1,
+            &Colors::default(),
         )
         .unwrap();
         assert_eq!(calls, 2);
@@ -557,10 +625,10 @@ mod tests {
     fn non_wrapping_edges_and_outside_grid() {
         let mut s = fixture();
         s.monitors[0].grid.wrap = false;
-        let r = render(&s, None, 1, 1);
+        let r = render(&s, None, 1, 1, &Colors::default());
         assert_eq!(r.text.matches("foreground=").count(), 2);
         s.monitors[0].cell = None;
-        assert!(render(&s, None, 1, 1)
+        assert!(render(&s, None, 1, 1, &Colors::default())
             .class
             .contains(&"outside-grid".into()));
     }

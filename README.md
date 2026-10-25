@@ -354,3 +354,11 @@ when finished. It performs no screenshot comparisons or repeated leak test;
 those belong in the VM, independently of the host's frame callbacks.
 See DESIGN.md §Findings for API constraints, measurements and the recommended
 capture-on-open / per-cell damage-driven design.
+
+Minimap colours can be overridden independently of the overview theme:
+`programs.hypr2d.waybar.colors = { current = "#9CBEFF"; occupied = "#A8A8A8"; };`
+Each of `current`, `occupied`, `empty` and `urgent` defaults to `null`,
+preserving the existing theme-derived colours (and fixed urgent red).
+The CLI equivalents are `--current-color '#9CBEFF'`,
+`--occupied-color '#A8A8A8'`, `--empty-color '#4A4A4A'` and
+`--urgent-color '#F07178'`; quote hex values in shell commands.

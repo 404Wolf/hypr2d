@@ -29,8 +29,11 @@ let
   '';
   cli = "${cfg.package}/bin/hypr2d";
   monitorArg = lib.optionalString (cfg.waybar.monitor != null) " --monitor ${lib.escapeShellArg cfg.waybar.monitor}";
+  colorArgs = lib.concatStrings (lib.mapAttrsToList (name: value:
+    lib.optionalString (value != null) " --${name}-color ${lib.escapeShellArg value}"
+  ) cfg.waybar.colors);
   module = {
-    exec = "${cli} waybar --radius-x ${toString cfg.waybar.radiusX} --radius-y ${toString cfg.waybar.radiusY}${monitorArg}";
+    exec = "${cli} waybar --radius-x ${toString cfg.waybar.radiusX} --radius-y ${toString cfg.waybar.radiusY}${monitorArg}${colorArgs}";
     return-type = "json";
     format = "{text}";
     escape = false;
@@ -88,6 +91,11 @@ in {
       radiusX = mkOption { type = types.ints.between 0 4; default = 4; description = "Horizontal minimap radius."; };
       radiusY = mkOption { type = types.ints.between 0 4; default = 1; description = "Vertical minimap radius."; };
       placement = mkOption { type = types.enum [ "start" "end" ]; default = "end"; description = "Insert before or after existing modules in the selected bar section."; };
+      colors = lib.genAttrs [ "current" "occupied" "empty" "urgent" ] (name: mkOption {
+        type = types.nullOr (types.strMatching "#[0-9a-fA-F]{6}");
+        default = null;
+        description = "Minimap ${name} RGB colour; null preserves the theme-derived default (fixed red for urgent).";
+      });
       style = mkOption { type = types.bool; default = true; description = "Append the black OneDark example CSS."; };
     };
   };

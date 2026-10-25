@@ -6,7 +6,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const USAGE:&str="hypr2d [--instance SIGNATURE] state\nhypr2d [--instance SIGNATURE] move DIR [all] [--monitor NAME]\nhypr2d [--instance SIGNATURE] carry DIR\nhypr2d [--instance SIGNATURE] goto X Y [MONITOR]\nhypr2d [--instance SIGNATURE] waybar [--monitor NAME] [--radius-x 0..4] [--radius-y 0..4]";
+const USAGE:&str="hypr2d [--instance SIGNATURE] state\nhypr2d [--instance SIGNATURE] move DIR [all] [--monitor NAME]\nhypr2d [--instance SIGNATURE] carry DIR\nhypr2d [--instance SIGNATURE] goto X Y [MONITOR]\nhypr2d [--instance SIGNATURE] waybar [--monitor NAME] [--radius-x 0..4] [--radius-y 0..4] [--current-color #RRGGBB] [--occupied-color #RRGGBB] [--empty-color #RRGGBB] [--urgent-color #RRGGBB]";
 #[derive(Default)]
 struct Args {
     instance: Option<String>,
@@ -14,6 +14,7 @@ struct Args {
     radius: Option<u32>,
     radius_x: Option<u32>,
     radius_y: Option<u32>,
+    colors: waybar::Colors,
     words: Vec<String>,
 }
 impl Args {
@@ -24,6 +25,21 @@ impl Args {
             match arg.as_str() {
                 "--instance" => args.instance = Some(it.next().ok_or("missing instance")?),
                 "--monitor" => args.monitor = Some(it.next().ok_or("missing monitor")?),
+                "--current-color" | "--occupied-color" | "--empty-color" | "--urgent-color" => {
+                    let value = it.next().ok_or("missing color")?;
+                    if value.len() != 7
+                        || !value.starts_with('#')
+                        || !value[1..].bytes().all(|b| b.is_ascii_hexdigit())
+                    {
+                        return Err("color must be #RRGGBB".into());
+                    }
+                    match arg.as_str() {
+                        "--current-color" => args.colors.current = Some(value),
+                        "--occupied-color" => args.colors.occupied = Some(value),
+                        "--empty-color" => args.colors.empty = Some(value),
+                        _ => args.colors.urgent = Some(value),
+                    }
+                }
                 "--radius" | "--radius-x" | "--radius-y" => {
                     let n = it
                         .next()
@@ -48,6 +64,13 @@ impl Args {
     fn command(&self) -> Result<String, String> {
         if self.radius.is_some() || self.radius_x.is_some() || self.radius_y.is_some() {
             return Err("--radius is only valid for waybar".into());
+        }
+        if self.colors.current.is_some()
+            || self.colors.occupied.is_some()
+            || self.colors.empty.is_some()
+            || self.colors.urgent.is_some()
+        {
+            return Err("color options are only valid for waybar".into());
         }
         let words: Vec<_> = self.words.iter().map(String::as_str).collect();
         let result = match words.as_slice() {
@@ -134,6 +157,7 @@ fn run() -> Result<(), String> {
             args.monitor.as_deref(),
             args.radius_x.or(args.radius).unwrap_or(4),
             args.radius_y.or(args.radius).unwrap_or(1),
+            &args.colors,
         )
         .map_err(|e| e.to_string())?;
     } else {
@@ -154,6 +178,25 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn minimap_color_arguments_are_validated_and_scoped() {
+        for flag in [
+            "--current-color",
+            "--occupied-color",
+            "--empty-color",
+            "--urgent-color",
+        ] {
+            assert!(Args::parse(["waybar", flag, "#9CbEFF"].map(str::to_owned)).is_ok());
+            for bad in ["red", "#abcd", "#GG0000", "#000000\""] {
+                assert!(Args::parse(["waybar", flag, bad].map(str::to_owned)).is_err());
+            }
+            assert!(Args::parse(["waybar", flag].map(str::to_owned)).is_err());
+            assert!(Args::parse(["state", flag, "#A8A8A8"].map(str::to_owned))
+                .unwrap()
+                .command()
+                .is_err());
+        }
+    }
     #[test]
     fn explicit_monitor_moves_are_atomic_commands() {
         let args = Args::parse(["move", "right", "--monitor", "DP-2"].map(str::to_owned)).unwrap();

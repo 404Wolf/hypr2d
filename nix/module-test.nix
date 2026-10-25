@@ -22,6 +22,10 @@ let
   };
   disabled = evaluate {};
   invalid = evaluate { enable = true; gestures.axisLock = 1000; };
+  colored = (evaluate { enable = true; waybar = { enable = true; colors = {
+    current = "#9CBEFF"; occupied = "#A8A8A8"; empty = "#123456"; urgent = "#654321";
+  }; }; }).config;
+  invalidColor = evaluate { enable = true; waybar.colors.current = "#xyz123"; };
   c = enabled.config;
   lua = pkgs.writeText "hypr2d-hm-generated.lua" c.wayland.windowManager.hyprland.extraConfig;
   valid = assert c.programs.hypr2d.enable;
@@ -34,6 +38,12 @@ let
     assert !(c.programs.waybar.settings.mainBar."custom/hypr2d" ? interval);
     assert c.programs.waybar.settings.mainBar.modules-left == [ "custom/hypr2d" "cpu" ];
     assert lib.hasInfix ("--monitor " + lib.escapeShellArg "WAYLAND-1") c.programs.waybar.settings.mainBar."custom/hypr2d".exec;
+    assert lib.all (name: c.programs.hypr2d.waybar.colors.${name} == null
+      && !(lib.hasInfix "--${name}-color" c.programs.waybar.settings.mainBar."custom/hypr2d".exec)
+      && lib.hasInfix ("--${name}-color " + lib.escapeShellArg colored.programs.hypr2d.waybar.colors.${name}) colored.programs.waybar.settings.mainBar."custom/hypr2d".exec
+    ) [ "current" "occupied" "empty" "urgent" ];
+    assert colored.programs.hypr2d.theme.current == "#82AAFF";
+    assert !(builtins.tryEval invalidColor.config.programs.hypr2d.waybar.colors.current).success;
     assert !(disabled.config.xdg.configFile ? "hypr/hypr2d.json");
     assert !(builtins.tryEval invalid.activationPackage.drvPath).success;
     true;
