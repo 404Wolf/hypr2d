@@ -1,8 +1,8 @@
 //! Overview geometry and interaction policy, independent of compositor objects.
 use crate::{ffi, grid::Cell, guarded, Core};
 use std::collections::BTreeSet;
+mod drag;
 const WIDTH: f64 = 1000.0;
-const HEIGHT: f64 = 700.0;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Rect {
     x: f64,
@@ -56,6 +56,12 @@ struct CellView {
 #[derive(Default)]
 pub struct Overview {
     windows: Vec<Window>,
+    outputs: Vec<(u32, f64, f64)>,
+    canvas_height: f64,
+    drag: Option<drag::Drag>,
+    pointer: (f64, f64),
+    pressed: Option<usize>,
+    cancelled_release: bool,
     cells: Vec<CellView>,
     headers: Vec<(Rect, String)>,
     selected: usize,
@@ -75,8 +81,14 @@ impl Core {
             let mut ui = Overview {
                 started: now,
                 windows: window_snapshot(windows),
+                outputs: outputs.iter().map(|m| (m.id, m.width, m.height)).collect(),
                 ..Default::default()
             };
+            if outputs.is_empty() {
+                ui.canvas_height = 700.0;
+                ui.closing = Some(now - 100.0);
+                return Box::new(ui);
+            }
             let min_x = outputs.iter().map(|m| m.x).fold(f64::INFINITY, f64::min);
             let min_y = outputs.iter().map(|m| m.y).fold(f64::INFINITY, f64::min);
             let max_x = outputs
@@ -146,10 +158,12 @@ impl Core {
                     }
                 }
             }
+            let strip_y = 24.0 + (max_y - min_y) * scale + 24.0;
+            ui.canvas_height = strip_y + 22.0 + 72.0 + 28.0;
             ui.headers.push((
                 Rect {
                     x: 24.0,
-                    y: 575.0,
+                    y: strip_y,
                     w: 950.0,
                     h: 22.0,
                 },
@@ -162,7 +176,7 @@ impl Core {
                     monitor: s.monitor,
                     rect: Rect {
                         x: 24.0 + i as f64 * w,
-                        y: 603.0,
+                        y: strip_y + 28.0,
                         w: w - 5.0,
                         h: 72.0,
                     },
@@ -192,6 +206,7 @@ impl Overview {
                 dirty.insert(w.workspace.clone());
             }
             self.windows = replacement;
+            self.validate_drag();
             for c in &mut self.cells {
                 c.occupied = self.windows.iter().any(|w| w.workspace == c.key);
             }
@@ -214,13 +229,13 @@ impl Overview {
             {
                 dirty.insert(w.workspace.clone());
             }
-            if self.cells.len() != replacement.cells.len()
+            let layout_changed = self.cells.len() != replacement.cells.len()
                 || self
                     .cells
                     .iter()
                     .zip(&replacement.cells)
-                    .any(|(a, b)| a.key != b.key || a.rect != b.rect || a.monitor != b.monitor)
-            {
+                    .any(|(a, b)| a.key != b.key || a.rect != b.rect || a.monitor != b.monitor);
+            if layout_changed {
                 for c in &replacement.cells {
                     dirty.insert(c.key.clone());
                 }
@@ -235,6 +250,16 @@ impl Overview {
             {
                 replacement.selected = i;
             }
+            if !layout_changed {
+                replacement.drag = self.drag.take();
+                replacement.pressed = self.pressed;
+                replacement.pointer = self.pointer;
+                replacement.hover = self.hover;
+                replacement.cancelled_release = self.cancelled_release;
+                replacement.validate_drag();
+            } else if self.drag.is_some() {
+                replacement.cancelled_release = true;
+            }
             *self = *replacement;
             dirty.into_iter().collect()
         })
@@ -242,24 +267,29 @@ impl Overview {
     pub fn overview_state(&self, width: f64, height: f64, now: f64) -> String {
         guarded(|| {
             let f = self.overview_frame(width, height, now);
-            serde_json::json!({"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":self.headers.iter().map(|(r,t)|serde_json::json!({"label":t,"rect":[r.x,r.y,r.w,r.h]})).collect::<Vec<_>>()}).to_string()
+            let (s, ox, oy) = self.transform(width, height);
+            serde_json::json!({"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":self.headers.iter().map(|(r,t)|serde_json::json!({"label":t,"rect":[r.x,r.y,r.w,r.h]})).collect::<Vec<_>>()}).to_string()
         })
     }
     pub fn overview_frame(&self, width: f64, height: f64, now: f64) -> ffi::UIFrame {
         guarded(|| {
-            let (scale, ox, oy) = Self::transform(width, height);
+            let (scale, ox, oy) = self.transform(width, height);
             let convert = |r: Rect| ffi::UIRect {
                 x: ox + r.x * scale,
                 y: oy + r.y * scale,
                 width: r.w * scale,
                 height: r.h * scale,
             };
+            let (ghost, windows, target) = self.drag_frame(convert);
             let progress = if let Some(t) = self.closing {
                 1.0 - ((now - t) / 100.0).clamp(0.0, 1.0)
             } else {
                 ((now - self.started) / 100.0).clamp(0.0, 1.0)
             };
             ffi::UIFrame {
+                ghost,
+                windows,
+                target,
                 alive: self.closing.is_none() || progress > 0.0,
                 animating: progress > 0.0 && progress < 1.0,
                 alpha: progress * progress * (3.0 - 2.0 * progress),
@@ -289,9 +319,13 @@ impl Overview {
             }
         })
     }
-    fn transform(width: f64, height: f64) -> (f64, f64, f64) {
-        let s = (width / WIDTH).min(height / HEIGHT);
-        (s, (width - WIDTH * s) / 2.0, (height - HEIGHT * s) / 2.0)
+    fn transform(&self, width: f64, height: f64) -> (f64, f64, f64) {
+        let s = (width / WIDTH).min(height / self.canvas_height.max(1.0));
+        (
+            s,
+            (width - WIDTH * s) / 2.0,
+            (height - self.canvas_height * s) / 2.0,
+        )
     }
     pub fn overview_pointer(
         &mut self,
@@ -305,7 +339,9 @@ impl Overview {
             if self.closing.is_some() {
                 return String::new();
             }
-            let (s, ox, oy) = Self::transform(width, height);
+            let (s, ox, oy) = self.transform(width, height);
+            self.pointer = ((x - ox) / s, (y - oy) / s);
+            self.drag_motion(s);
             self.hover = self
                 .cells
                 .iter()
@@ -321,12 +357,26 @@ impl Overview {
     }
     pub fn overview_key(&mut self, key: u32, shift: bool, now: f64) -> String {
         guarded(|| {
-            if self.cells.is_empty() || self.closing.is_some() {
+            if self.closing.is_some() {
+                return String::new();
+            }
+            if self.cells.is_empty() {
+                if key == 0xff1b {
+                    self.closing = Some(now);
+                }
+                return String::new();
+            }
+            if self.drag.is_some() && key != 0xff1b {
                 return String::new();
             }
             match key {
                 0xff1b => {
-                    self.closing = Some(now);
+                    if self.drag.take().is_some() {
+                        self.pressed = None;
+                        self.cancelled_release = true;
+                    } else {
+                        self.closing = Some(now);
+                    }
                 }
                 0xff0d => return self.cells[self.selected].key.clone(),
                 0xff09 | 0xfe20 => {
@@ -390,6 +440,9 @@ impl Overview {
 impl Default for ffi::UIFrame {
     fn default() -> Self {
         Self {
+            ghost: ffi::UIGhost::default(),
+            windows: vec![],
+            target: String::new(),
             alive: false,
             animating: false,
             alpha: 0.0,

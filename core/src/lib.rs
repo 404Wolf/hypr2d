@@ -135,7 +135,34 @@ mod ffi {
         rect: UIRect,
         text: String,
     }
+    struct UIDrop {
+        window: String,
+        swap: String,
+        workspace: String,
+        monitor: u32,
+        x: f64,
+        y: f64,
+        floating: bool,
+        activate: String,
+    }
+    #[derive(Default)]
+    struct UIGhost {
+        visible: bool,
+        key: String,
+        rect: UIRect,
+        uv: UIRect,
+    }
+    struct UIWindowView {
+        id: String,
+        workspace: String,
+        rect: UIRect,
+        floating: bool,
+        target: bool,
+    }
     struct UIFrame {
+        ghost: UIGhost,
+        windows: Vec<UIWindowView>,
+        target: String,
         alive: bool,
         animating: bool,
         alpha: f64,
@@ -144,6 +171,9 @@ mod ffi {
     }
     extern "Rust" {
         type Overview;
+        fn overview_press(self: &mut Overview, width: f64, height: f64, x: f64, y: f64);
+        fn overview_release(self: &mut Overview, width: f64, height: f64, x: f64, y: f64)
+            -> UIDrop;
         fn overview_reconcile(self: &mut Overview, replacement: Box<Overview>) -> Vec<String>;
         fn overview_windows(self: &mut Overview, windows: &[UIWindow]) -> Vec<String>;
         fn overview_state(self: &Overview, width: f64, height: f64, now: f64) -> String;

@@ -77,7 +77,7 @@ hl.bind("SUPER + ALT + K", function()
     hl.dispatch(hl.plugin.hypr2d.move("up", { all = true }))
     hl.dispatch(hl.dsp.workspace.toggle_special(""))
 end)
--- SUPER + TAB / overview is reserved for M4; do not bind it yet.
+hl.bind("SUPER + TAB", hl.plugin.hypr2d.overview())
 end
 ```
 
@@ -93,6 +93,14 @@ Click a cell to activate it. `hyprctl hypr2d overview` is the equivalent IPC
 command; `overview open`, `overview close` and `overview state` are also available.
 All monitor grids appear together in their physical arrangement on each output.
 Specials are labelled; empty ones are dim and currently shown ones highlighted.
+
+Drag window content to another cell, another monitor's grid, or a special.
+Drop on another window to swap their native layout slots; drop on empty space
+or a cell's top caption edge to move without swapping. Floating windows retain
+the grabbed point at the pointer's destination, including near output edges.
+A translucent ghost and gold destination/window outline show the pending drop.
+Esc cancels a drag first; a second Esc closes the overview. Releasing a cancelled
+drag does nothing. Fullscreen swaps preserve each window's fullscreen mode.
 
 ## Validation
 

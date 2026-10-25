@@ -342,6 +342,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     });
     swipeBeginListener = Event::bus()->m_events.gesture.swipe.begin.listen([](IPointer::SSwipeBeginEvent e, Event::SCallbackInfo &info) {
         if (OverviewUI::active()) {
+            swipeClaimed = true; // Consume the entire sequence, including after close.
             info.cancelled = true;
             return;
         }
@@ -360,13 +361,15 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         if (!swipeClaimed)
             return;
         info.cancelled = true;
-        feedSwipe(hypr2d::SwipePhase::Update, 0, e.delta.x, e.delta.y);
+        if (!OverviewUI::active())
+            feedSwipe(hypr2d::SwipePhase::Update, 0, e.delta.x, e.delta.y);
     });
     swipeEndListener = Event::bus()->m_events.gesture.swipe.end.listen([](IPointer::SSwipeEndEvent e, Event::SCallbackInfo &info) {
         if (!swipeClaimed)
             return;
         info.cancelled = true;
-        feedSwipe(hypr2d::SwipePhase::End, 0, 0, 0, e.cancelled);
+        if (!OverviewUI::active())
+            feedSwipe(hypr2d::SwipePhase::End, 0, 0, 0, e.cancelled);
         swipeClaimed = false;
     });
     renderListener = Event::bus()->m_events.render.pre.listen([](PHLMONITOR m) {
