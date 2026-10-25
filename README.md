@@ -233,7 +233,7 @@ Optional Lua configuration (inside the same namespace guard as the binds):
 if hl.plugin.hypr2d then
     local ok, message = hl.plugin.hypr2d.swipe_config({
         fingers = 3, distance = 120, velocity = 0.8,
-        axis_lock = 5, natural = true,
+        axis_lock = 5, natural = true, sensitivity = 1.0,
         diagonal_width = 15, hysteresis = 8, hysteresis_distance = 12,
         projection_decel = 0.0006, spring_stiffness = 576,
     })
@@ -245,6 +245,12 @@ Home Manager exposes the same settings under `programs.hypr2d.gestures`, with
 `diagonalWidth`, `hysteresis`, `hysteresisDistance`, `projectionDecel` and
 `springStiffness` for the new tunables. Deceleration uses px/ms²; stiffness uses
 s⁻². No diagonal keybinds are installed.
+Set `programs.hypr2d.gestures.sensitivity = 1.3` (Lua `sensitivity = 1.3`)
+for 30% faster tracking. The default is `1.0`; any finite positive gain is
+accepted. Displacement and velocity are multiplied before classification and
+commit decisions, so distance/velocity thresholds keep their screen-space
+meaning. Edge resistance and springs then apply to the gained travel.
+
 
 Other finger counts and swipes while a special workspace is open remain with
 native handlers. A keyboard grid move interrupts a swipe. Spring motion advances on render callbacks, with a one-shot Rust-defined
@@ -260,7 +266,8 @@ listeners. `_test_swipe` exists only with `HYPR2D_TESTING=1`, set by
 No live plugin loading was performed. After arranging a controlled real-input
 test, check each of these:
 
-1. Three fingers: slow travel follows fingers at 1:1 in all eight directions.
+1. Three fingers: slow travel follows fingers at 1:1 by default in all eight directions;
+   set sensitivity=1.3 and check 30% faster travel and screen-space commit thresholds.
    Natural swipe up selects grid down. Diagonal pans cover every corner without
    seams; slightly crooked horizontal swipes stay horizontal.
 2. Hover around a sector boundary: no flicker. Clearly curve into another sector:

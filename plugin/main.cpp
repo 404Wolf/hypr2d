@@ -344,9 +344,9 @@ static int swipeConfigLua(lua_State *L) {
     const bool natural = lua_isnil(L, -1) || lua_toboolean(L, -1);
     lua_pop(L, 1);
     const auto result =
-        execute(std::format("swipe-config {} {} {} {} {} {} {} {} {} {}", fingers, distance, velocity, natural ? "true" : "false", lock,
+        execute(std::format("swipe-config {} {} {} {} {} {} {} {} {} {} {}", fingers, distance, velocity, natural ? "true" : "false", lock,
                             number("diagonal_width", 15), number("hysteresis", 8), number("hysteresis_distance", 12),
-                            number("projection_decel", 0.0006), number("spring_stiffness", 576)));
+                            number("projection_decel", 0.0006), number("spring_stiffness", 576), number("sensitivity", 1.0)));
     lua_pushboolean(L, !result.starts_with("error:"));
     lua_pushlstring(L, result.data(), result.size());
     return 2;

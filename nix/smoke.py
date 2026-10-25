@@ -249,6 +249,14 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         command("carry", "up-left")
         command("goto", "0", "0", str(mid))
         print("PASS eight-way: all 8 native synthetic directions, 2/4 views, sloppy horizontal, bounce, retarget, diagonal all/carry")
+        # The public Lua sensitivity setter must reach production swipe offsets.
+        command("goto","3","3",str(mid))
+        assert ctl("eval",'assert(hl.plugin.hypr2d.swipe_config({sensitivity=1.3}))')=="ok"
+        synthetic("begin",3);synthetic("update",-100,0)
+        assert cell(mid)["offset"]==[-130,0],gesture()
+        synthetic("end",True);settle()
+        assert ctl("eval",'assert(hl.plugin.hypr2d.swipe_config({sensitivity=1.0}))')=="ok"
+        print("PASS sensitivity: Lua gain 1.3 produces 130px from 100px synthetic travel")
         # Four real workspace clients prove native diagonal rendering has no blank corner.
         quad_clients=[]
         quad_colors=["701010","107010","101070","707010"]

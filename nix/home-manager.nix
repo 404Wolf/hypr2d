@@ -20,7 +20,7 @@ let
       '') cfg.grids)}
       hl.plugin.hypr2d._execute(${luaString ("overview-config " + builtins.toJSON theme)})
       hl.plugin.hypr2d._execute("swipe-enabled ${bool cfg.gestures.enable}")
-      assert(hl.plugin.hypr2d.swipe_config({fingers=${toString cfg.gestures.fingers},distance=${toString cfg.gestures.distance},velocity=${toString cfg.gestures.velocity},natural=${bool cfg.gestures.natural},axis_lock=${toString cfg.gestures.axisLock},diagonal_width=${toString cfg.gestures.diagonalWidth},hysteresis=${toString cfg.gestures.hysteresis},hysteresis_distance=${toString cfg.gestures.hysteresisDistance},projection_decel=${toString cfg.gestures.projectionDecel},spring_stiffness=${toString cfg.gestures.springStiffness}}))
+      assert(hl.plugin.hypr2d.swipe_config({fingers=${toString cfg.gestures.fingers},distance=${toString cfg.gestures.distance},velocity=${toString cfg.gestures.velocity},natural=${bool cfg.gestures.natural},axis_lock=${toString cfg.gestures.axisLock},diagonal_width=${toString cfg.gestures.diagonalWidth},hysteresis=${toString cfg.gestures.hysteresis},hysteresis_distance=${toString cfg.gestures.hysteresisDistance},projection_decel=${toString cfg.gestures.projectionDecel},spring_stiffness=${toString cfg.gestures.springStiffness},sensitivity=${toString cfg.gestures.sensitivity}}))
       ${lib.optionalString cfg.overview.bind ''
         -- Replace an existing group-next chord instead of dispatching both.
         hl.unbind("SUPER + TAB")
@@ -87,6 +87,7 @@ in {
     };
     gestures = {
       enable = mkOption { type = types.bool; default = true; description = "Claim tracked workspace swipes. Remove conflicting native/execGesture bindings when wiring this module."; };
+      sensitivity = mkOption { type = types.number; default = 1.0; description = "Positive swipe travel/velocity gain. All gesture thresholds remain in screen-space logical pixels after gain."; };
       fingers = mkOption { type = types.ints.between 2 5; default = 3; description = "Finger count claimed by hypr2d."; };
       distance = mkOption { type = types.ints.positive; default = 120; description = "Minimum projected per-axis commit distance in logical pixels; snapping also uses half the viewport size."; };
       velocity = mkOption { type = types.number; default = 0.8; description = "Minimum release speed used for inertia projection, in logical pixels per millisecond."; };
@@ -118,7 +119,7 @@ in {
   };
   config = mkIf cfg.enable {
     assertions = [
-      { assertion = cfg.gestures.diagonalWidth > 0 && cfg.gestures.diagonalWidth < 22.5 && cfg.gestures.hysteresis >= 0 && cfg.gestures.hysteresis < cfg.gestures.diagonalWidth && cfg.gestures.hysteresisDistance > 0 && cfg.gestures.projectionDecel > 0 && cfg.gestures.springStiffness >= 1 && cfg.gestures.springStiffness <= 10000; message = "hypr2d requires diagonalWidth 0..22.5, hysteresis below diagonalWidth, positive hysteresisDistance/projectionDecel and springStiffness 1..10000."; }
+      { assertion = cfg.gestures.sensitivity > 0 && cfg.gestures.diagonalWidth > 0 && cfg.gestures.diagonalWidth < 22.5 && cfg.gestures.hysteresis >= 0 && cfg.gestures.hysteresis < cfg.gestures.diagonalWidth && cfg.gestures.hysteresisDistance > 0 && cfg.gestures.projectionDecel > 0 && cfg.gestures.springStiffness >= 1 && cfg.gestures.springStiffness <= 10000; message = "hypr2d requires positive sensitivity, diagonalWidth 0..22.5, hysteresis below diagonalWidth, positive hysteresisDistance/projectionDecel and springStiffness 1..10000."; }
       { assertion = lib.all (slot: slot < cfg.grid.stride) (builtins.attrValues cfg.monitorSlots); message = "hypr2d monitor slots must be less than the shared stride."; }
       { assertion = builtins.length (lib.unique (builtins.attrValues cfg.monitorSlots)) == builtins.length (builtins.attrValues cfg.monitorSlots); message = "hypr2d pinned monitor slots must be unique."; }
       { assertion = lib.all (name: if name == "eDP-1" then cfg.monitorSlots.${name} == 0 else cfg.monitorSlots.${name} != 0) (builtins.attrNames cfg.monitorSlots); message = "hypr2d slot 0 is reserved for eDP-1."; }

@@ -18,7 +18,7 @@ let
     overview.bind = true;
     theme.fontSize = 18;
     theme.rounding = 2;
-    gestures = { fingers = 4; distance = 140; axisLock = 6; natural = false; diagonalWidth = 14; hysteresis=7; hysteresisDistance = 16; projectionDecel = 0.0008; springStiffness = 625; };
+    gestures = { fingers = 4; distance = 140; axisLock = 6; natural = false; diagonalWidth = 14; hysteresis=7; hysteresisDistance = 16; projectionDecel = 0.0008; springStiffness = 625; sensitivity = 1.3; };
     waybar = { enable = true; monitor = "WAYLAND-1"; radiusX = 2; radiusY = 1; columns = "full"; placement = "start"; };
   };
   disabled = evaluate {};
@@ -27,6 +27,7 @@ let
   invalidDiagonal = evaluate { enable = true; gestures.diagonalWidth = 23; };
   invalidHysteresis = evaluate { enable = true; gestures.hysteresis = 16; };
   invalidProjection = evaluate { enable = true; gestures.projectionDecel = 0; };
+  invalidSensitivity = evaluate { enable = true; gestures.sensitivity = 0; };
   invalidSpring = evaluate { enable = true; gestures.springStiffness = 0; };
   invalid = evaluate { enable = true; gestures.axisLock = 1000; };
   colored = (evaluate { enable = true; overview.gap = 4; waybar = { enable = true; colors = {
@@ -58,8 +59,8 @@ let
     assert lib.hasInfix "--columns full --rows centered" c.programs.waybar.settings.mainBar."custom/hypr2d".exec;
     assert !(builtins.tryEval invalidColor.config.programs.hypr2d.waybar.colors.current).success;
     assert !(disabled.config.xdg.configFile ? "hypr/hypr2d.json");
-    assert lib.all (v: !(builtins.tryEval v.activationPackage.drvPath).success) [ invalid invalidDiagonal invalidHysteresis invalidProjection invalidSpring ];
-    assert lib.all (v: lib.hasInfix v c.wayland.windowManager.hyprland.extraConfig) [ "diagonal_width=14" "hysteresis=7" "hysteresis_distance=16" "projection_decel=0.0008" "spring_stiffness=625" ];
+    assert lib.all (v: !(builtins.tryEval v.activationPackage.drvPath).success) [ invalid invalidDiagonal invalidHysteresis invalidProjection invalidSpring invalidSensitivity ];
+    assert lib.all (v: lib.hasInfix v c.wayland.windowManager.hyprland.extraConfig) [ "diagonal_width=14" "hysteresis=7" "hysteresis_distance=16" "projection_decel=0.0008" "spring_stiffness=625" "sensitivity=1.3" ];
     assert !(builtins.tryEval invalidSlots.activationPackage.drvPath).success;
     assert !(builtins.tryEval duplicateSlots.activationPackage.drvPath).success;
     assert (builtins.fromJSON c.xdg.configFile."hypr/hypr2d.json".text).monitorSlots."HEADLESS-1" == 2;

@@ -548,8 +548,8 @@ impl Core {
             return Ok(reply);
         }
         if args.first() == Some(&"swipe-config") {
-            if args.len() != 6 && args.len() != 11 {
-                return Err("swipe-config requires FINGERS DISTANCE VELOCITY NATURAL LOCK [DIAGONAL_WIDTH HYSTERESIS HYSTERESIS_DISTANCE PROJECTION_DECEL SPRING_STIFFNESS]".into());
+            if args.len() != 6 && args.len() != 11 && args.len() != 12 {
+                return Err("swipe-config requires FINGERS DISTANCE VELOCITY NATURAL LOCK [DIAGONAL_WIDTH HYSTERESIS HYSTERESIS_DISTANCE PROJECTION_DECEL SPRING_STIFFNESS [SENSITIVITY]]".into());
             }
             let mut config = swipe::Config {
                 fingers: number(args[1])?,
@@ -559,7 +559,7 @@ impl Core {
                 axis_lock: args[5].parse().map_err(|_| "invalid axis lock")?,
                 ..Default::default()
             };
-            if args.len() == 11 {
+            if args.len() >= 11 {
                 config.diagonal_width = args[6].parse().map_err(|_| "invalid diagonal width")?;
                 config.hysteresis = args[7].parse().map_err(|_| "invalid hysteresis")?;
                 config.hysteresis_distance =
@@ -568,6 +568,9 @@ impl Core {
                     args[9].parse().map_err(|_| "invalid projection decel")?;
                 config.spring_stiffness =
                     args[10].parse().map_err(|_| "invalid spring stiffness")?;
+            }
+            if args.len() == 12 {
+                config.sensitivity = args[11].parse().map_err(|_| "invalid sensitivity")?;
             }
             self.swipe_config = config.validate()?;
             return Ok(reply);
@@ -817,6 +820,28 @@ impl Default for ffi::UIStyle {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn swipe_gain_config_preserves_legacy_forms_and_rejects_invalid_atomically() {
+        let mut core = Core::default();
+        let extended = "swipe-config 3 120 0.8 true 5 15 8 12 0.0006 576";
+        assert!(core
+            .command(&[], &[], &format!("{extended} 1.3"))
+            .error
+            .is_empty());
+        assert_eq!(core.swipe_config.sensitivity, 1.3);
+        assert!(!core
+            .command(&[], &[], &format!("{extended} 0"))
+            .error
+            .is_empty());
+        assert_eq!(core.swipe_config.sensitivity, 1.3);
+        assert!(core.command(&[], &[], extended).error.is_empty());
+        assert_eq!(core.swipe_config.sensitivity, 1.);
+        assert!(core
+            .command(&[], &[], "swipe-config 3 120 0.8 true 5")
+            .error
+            .is_empty());
+        assert_eq!(core.swipe_config.sensitivity, 1.);
+    }
     use super::*;
     fn monitor(id: u32, ws: u32) -> ffi::Monitor {
         ffi::Monitor {

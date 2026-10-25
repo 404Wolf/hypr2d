@@ -28,6 +28,7 @@ pub struct Config {
     pub hysteresis_distance: f64,
     pub projection_decel: f64,
     pub spring_stiffness: f64,
+    pub sensitivity: f64,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -42,6 +43,7 @@ impl Default for Config {
             hysteresis_distance: 12.,
             projection_decel: 0.0006,
             spring_stiffness: 576.,
+            sensitivity: 1.,
         }
     }
 }
@@ -56,11 +58,13 @@ impl Config {
             self.hysteresis_distance,
             self.projection_decel,
             self.spring_stiffness,
+            self.sensitivity,
         ]
         .iter()
         .all(|v| v.is_finite());
         if !finite
             || !(2..=5).contains(&self.fingers)
+            || self.sensitivity <= 0.
             || self.distance <= 0.
             || self.velocity < 0.
             || self.axis_lock <= 0.
@@ -73,7 +77,7 @@ impl Config {
             || self.projection_decel <= 0.
             || !(1.0..=10000.0).contains(&self.spring_stiffness)
         {
-            return Err("invalid swipe settings: finite thresholds, diagonal_width 0..22.5, hysteresis below diagonal width, positive projection_decel and spring_stiffness 1..10000 required".into());
+            return Err("invalid swipe settings: finite positive sensitivity and thresholds, diagonal_width 0..22.5, hysteresis below diagonal width, positive projection_decel and spring_stiffness 1..10000 required".into());
         }
         Ok(self)
     }
@@ -221,7 +225,11 @@ impl Swipe {
         let dt = (now - self.last_time).max(1.);
         let alpha = 1. - (-dt / WINDOW_MS).exp();
         let sign = if self.config.natural { 1. } else { -1. };
-        let delta = delta.map(|v| v.clamp(-100000., 100000.) * sign);
+        // Gain precedes displacement/velocity estimation and every screen-space
+        // threshold. Bound the gained sample as well as its physical input.
+        let delta = delta.map(|v| {
+            (v.clamp(-100000., 100000.) * sign * self.config.sensitivity).clamp(-100000., 100000.)
+        });
         for (i, d) in delta.into_iter().enumerate() {
             self.total[i] = (self.total[i] + d).clamp(-100000., 100000.);
             self.smoothed[i] += (self.total[i] - self.smoothed[i]) * alpha;
@@ -452,6 +460,57 @@ mod tests {
             0.,
         )
         .unwrap()
+    }
+    #[test]
+    fn sensitivity_scales_axes_lock_velocity_and_screen_space_commit_thresholds() {
+        let make = |sensitivity, size| {
+            Swipe::new(
+                0,
+                271,
+                Grid::default(),
+                size,
+                Config {
+                    sensitivity,
+                    ..Default::default()
+                },
+                0.,
+            )
+            .unwrap()
+        };
+        let mut base = make(1., [200., 200.]);
+        base.update([-100., 0.], 200.);
+        assert!(base.end(1000., false).is_none());
+        let mut gain = make(1.3, [200., 200.]);
+        gain.update([-100., 0.], 200.);
+        assert_eq!(gain.offsets().0, [-130., 0.]);
+        assert_eq!(gain.end(1000., false).unwrap().1, Cell { x: 4, y: 3 });
+        let mut diagonal = make(1.3, [2256., 1504.]);
+        diagonal.update([-1000., -1000.], 200.);
+        assert_eq!(diagonal.offsets().0, [-1300., -1300.]);
+        assert_eq!(diagonal.end(1000., false).unwrap().1, Cell { x: 4, y: 4 });
+        let mut locked = make(1.3, [1000., 800.]);
+        locked.update([-4., 0.], 20.);
+        assert_eq!(locked.axis, Some(Axis::Horizontal));
+        let mut unlocked = make(1., [1000., 800.]);
+        unlocked.update([-4., 0.], 20.);
+        assert_eq!(unlocked.axis, None);
+        let mut flick = make(1.3, [1000., 800.]);
+        flick.update([-40., 0.], 10.);
+        assert!(
+            flick.end(10., false).is_some(),
+            "gained speed crosses the screen-space velocity threshold"
+        );
+        let mut slow = make(1., [1000., 800.]);
+        slow.update([-40., 0.], 10.);
+        assert!(slow.end(10., false).is_none());
+        for sensitivity in [0., -1., f64::NAN, f64::INFINITY] {
+            assert!(Config {
+                sensitivity,
+                ..Default::default()
+            }
+            .validate()
+            .is_err());
+        }
     }
     #[test]
     fn all_eight_sectors_track_and_snap_with_two_or_four_views() {

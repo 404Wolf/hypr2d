@@ -1073,3 +1073,22 @@ All four x86_64 flake checks pass for the anchored-axis batch. The VM measured
 start/end-column crops were inspected: current blue moves from the first to the
 last fixed column before CPU. The full-row screenshot stays inside the same bar.
 The existing crash/recovery, overview, hotplug, swipe and latency checks pass.
+
+### Swipe sensitivity
+
+The finite positive sensitivity gain defaults to 1.0 and is applied in Rust
+before accumulated travel, angle/axis-lock/hysteresis distances, velocity
+smoothing and projection/commit decisions. Thresholds remain logical screen
+pixels (and px/ms) after gain, with existing edge resistance and springs. The
+Lua swipe_config field and HM gestures.sensitivity are wired together; old
+short/extended swipe-config commands retain gain 1.0, while a new trailing gain
+is optional. Invalid gain changes are rejected atomically.
+
+Unit cases verify 100→130 px at 1.3, both axes on the 2256×1504 viewport,
+post-gain axis-lock, distance and velocity commit thresholds, invalid gains and
+legacy commands. The VM verifies the public Lua setter produces a 130 px native
+render offset from 100 px synthetic travel, and generated HM Lua sets gain 1.3.
+All 58 Rust tests, formatting/Clippy and all four x86_64 flake checks pass. The
+complete final VM suite includes legacy crash/recovery, anchored/full minimap
+heights at 17 px, hotplug, overview interaction/state and event-latency checks.
+Physical trackpad tuning and deployment remain user-owned.

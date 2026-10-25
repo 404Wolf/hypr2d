@@ -81,6 +81,6 @@ changed; flag anything that blocks you at the bottom under "Questions".
 
 - [x] Waybar startup/plugin/socket/instance recovery with neutral placeholder and bounded backoff; default HM restart interval
 - [x] Anchored full/centered minimap axes, HM options, geometry tests and unchanged 9-column bar height
-- [ ] Configurable swipe sensitivity with gained screen-space thresholds, HM/Lua wiring and tests
+- [x] Configurable swipe sensitivity with gained screen-space thresholds, HM/Lua wiring and tests
 
 ## Questions
