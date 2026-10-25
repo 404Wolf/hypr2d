@@ -42,6 +42,7 @@ let
     assert c.wayland.windowManager.hyprland.package.outPath == self.inputs.hyprland.packages.${pkgs.stdenv.hostPlatform.system}.hyprland.outPath;
     assert lib.elem c.programs.hypr2d.package c.wayland.windowManager.hyprland.plugins;
     assert c.programs.waybar.settings.mainBar."custom/hypr2d".exec-on-event == false;
+    assert c.programs.waybar.settings.mainBar."custom/hypr2d".restart-interval == 2;
     assert !(c.programs.waybar.settings.mainBar."custom/hypr2d" ? interval);
     assert c.programs.waybar.settings.mainBar.modules-left == [ "custom/hypr2d" "cpu" ];
     assert lib.hasInfix ("--monitor " + lib.escapeShellArg "WAYLAND-1") c.programs.waybar.settings.mainBar."custom/hypr2d".exec;

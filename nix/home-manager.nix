@@ -38,6 +38,7 @@ let
   module = {
     exec = "${cli} waybar --radius-x ${toString cfg.waybar.radiusX} --radius-y ${toString cfg.waybar.radiusY}${monitorArg}${colorArgs}";
     return-type = "json";
+    restart-interval = lib.mkDefault 2;
     format = "{text}";
     escape = false;
     exec-on-event = false;

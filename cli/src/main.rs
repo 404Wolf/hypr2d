@@ -1,6 +1,7 @@
+mod reconnect;
 mod waybar;
 use std::env;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -144,23 +145,10 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let args = Args::parse(raw)?;
-    let path = instance_path(args.instance.clone())?;
     if args.words.as_slice() == ["waybar"] {
-        // Connect before taking the first snapshot: changes during startup queue
-        // on socket2 instead of being lost between snapshot and subscription.
-        let events = UnixStream::connect(path.join(".socket2.sock"))
-            .map_err(|e| format!("subscribe to selected Hyprland: {e}"))?;
-        waybar::stream(
-            BufReader::new(events),
-            || serde_json::from_str(&request(&path, "state -j")?).map_err(|e| e.to_string()),
-            io::stdout().lock(),
-            args.monitor.as_deref(),
-            args.radius_x.or(args.radius).unwrap_or(4),
-            args.radius_y.or(args.radius).unwrap_or(1),
-            &args.colors,
-        )
-        .map_err(|e| e.to_string())?;
+        reconnect::run(&args, io::stdout().lock()).map_err(|e| e.to_string())?;
     } else {
+        let path = instance_path(args.instance.clone())?;
         let response = request(&path, &args.command()?)?;
         if response.trim() != "ok" && !response.trim_start().starts_with('{') {
             return Err(response);

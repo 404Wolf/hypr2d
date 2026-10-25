@@ -291,6 +291,14 @@ The built package includes `bin/hypr2d` (also `nix build .#cli`). Run
 Moves/carries accept `up-left`, `up-right`, `down-left`, `down-right`;
 `hypr2d move up-left all` steps every connected grid independently.
 The CLI talks directly to Hyprland's Unix socket; it starts no subprocesses.
+`waybar` stays alive when sockets or the plugin are missing, emits a small neutral
+placeholder, and retries with bounded 100 ms–2 s backoff. Once ready it requests
+snapshots only for socket2 events (16 ms burst debounce), never on a healthy idle
+timer. It re-subscribes after socket2 disconnect/replacement and discovers a new
+instance when the inherited signature becomes stale. `--instance` deliberately
+pins a single instance, useful for nested testing. The HM entry defaults to
+`restart-interval = 2` as an additional Waybar-side fallback.
+
 It uses `HYPRLAND_INSTANCE_SIGNATURE` and `XDG_RUNTIME_DIR`, or accepts an exact
 `--instance SIGNATURE`. Tests always supply their own nested signature.
 

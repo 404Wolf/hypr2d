@@ -67,7 +67,7 @@ fn escape(s: &str) -> String {
 }
 pub fn unavailable(message: &str) -> Record {
     Record {
-        text: "×".into(),
+        text: "<span size=\"4096\" foreground=\"#4A4A4A\">●</span>".into(),
         tooltip: escape(message),
         alt: "unavailable".into(),
         class: vec!["unavailable".into()],
@@ -319,7 +319,7 @@ fn relevant(event: &str) -> bool {
     ]
     .contains(&event)
 }
-fn emit(out: &mut impl Write, last: &mut String, record: Record) -> io::Result<()> {
+pub(crate) fn emit(out: &mut impl Write, last: &mut String, record: Record) -> io::Result<()> {
     let line = serde_json::to_string(&record)?;
     if line != *last {
         writeln!(out, "{line}")?;
@@ -336,12 +336,20 @@ fn refresh(
     radius_x: u32,
     radius_y: u32,
     colors: &Colors,
-) -> io::Result<()> {
-    let record = match fetch() {
-        Ok(state) => render(&state, monitor, radius_x, radius_y, colors),
-        Err(_) => unavailable("hypr2d unavailable; waiting for compositor events"),
+) -> io::Result<bool> {
+    let (record, ready) = match fetch() {
+        Ok(state) => {
+            let record = render(&state, monitor, radius_x, radius_y, colors);
+            let ready = record.alt != "unavailable";
+            (record, ready)
+        }
+        Err(_) => (
+            unavailable("Waiting for Hyprland / hypr2d; retrying"),
+            false,
+        ),
     };
-    emit(out, last, record)
+    emit(out, last, record)?;
+    Ok(ready)
 }
 // A blocking socket reader feeds readiness events. Idle means recv(), never a
 // timeout or snapshot request. A fixed 16ms deadline coalesces each burst without
@@ -372,33 +380,39 @@ pub fn stream(
         }
     });
     let mut last = String::new();
-    let mut loaded = true;
-    refresh(
+    let mut backoff = crate::reconnect::Backoff::default();
+    let ready = refresh(
         &mut fetch, &mut out, &mut last, monitor, radius_x, radius_y, colors,
     )?;
+    let mut loaded = ready;
+    let mut retry = if ready {
+        None
+    } else {
+        Some(Instant::now() + backoff.next())
+    };
     let mut pending: Option<Instant> = None;
     loop {
-        if pending.is_some_and(|deadline| Instant::now() >= deadline) {
-            if loaded {
-                refresh(
-                    &mut fetch, &mut out, &mut last, monitor, radius_x, radius_y, colors,
-                )?;
-            }
+        let now = Instant::now();
+        if pending.is_some_and(|t| now >= t) || retry.is_some_and(|t| now >= t) {
+            let ready = refresh(
+                &mut fetch, &mut out, &mut last, monitor, radius_x, radius_y, colors,
+            )?;
             pending = None;
+            if ready {
+                loaded = true;
+                retry = None;
+                backoff.reset();
+            } else {
+                loaded = false;
+                retry = Some(Instant::now() + backoff.next());
+            }
             continue;
         }
-        let next = if let Some(deadline) = pending {
+        let deadline = pending.into_iter().chain(retry).min();
+        let next = if let Some(deadline) = deadline {
             match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
                 Ok(line) => Some(line),
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if loaded {
-                        refresh(
-                            &mut fetch, &mut out, &mut last, monitor, radius_x, radius_y, colors,
-                        )?;
-                    }
-                    pending = None;
-                    continue;
-                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => None,
             }
         } else {
@@ -419,10 +433,12 @@ pub fn stream(
         if event == "hypr2d" && data == "unloaded" {
             loaded = false;
             pending = None;
+            backoff.reset();
+            retry = Some(Instant::now() + backoff.next());
             emit(
                 &mut out,
                 &mut last,
-                unavailable("hypr2d plugin unavailable; waiting for load"),
+                unavailable("Waiting for Hyprland / hypr2d; retrying"),
             )?;
         } else {
             if event == "hypr2d" && data == "ready" {
@@ -609,11 +625,11 @@ mod tests {
         assert!(output.contains("unavailable"));
     }
     #[test]
-    fn transient_fetch_failure_recovers_on_an_event() {
+    fn transient_fetch_failure_recovers_on_a_ready_event() {
         let mut calls = 0;
         let mut out = Vec::new();
         stream(
-            io::Cursor::new("workspace>>11\n"),
+            io::Cursor::new("hypr2d>>ready\n"),
             || {
                 calls += 1;
                 if calls == 1 {

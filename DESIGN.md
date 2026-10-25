@@ -1032,3 +1032,21 @@ reproduces the legacy unsafe crash deliberately with core dumps disabled, then
 requires the repaired compositor to unmap all clients normally and exit zero.
 Rust tests, formatting and Clippy pass; the complete existing overview, hotplug,
 swipe, minimap latency, software-cursor and laptop-geometry regressions pass.
+
+### Waybar connection lifecycle
+
+The Waybar CLI emits a small neutral placeholder before its first connection and
+remains alive through missing sockets or unready plugin snapshots. Unavailable
+connections/snapshots retry with bounded 100 ms–2 s backoff, reset on success.
+Healthy sessions retain blocking socket2 subscription and the existing 16 ms
+event debounce; no healthy idle snapshot timer is introduced. Socket EOF/error
+retires the reader, closes its connection, and re-subscribes before a fresh
+snapshot. A stale inherited instance signature falls back to instance discovery
+in the same runtime directory; explicit --instance stays pinned. The HM custom
+module defaults restart-interval to 2 as a separate Waybar-side fallback.
+
+A real CLI subprocess against isolated Unix socket servers tests socket absence,
+plugin absence, load/reload without a ready event, instance replacement and
+socket2 replacement while retaining the process. It counts snapshot requests
+to prove no healthy polling. Backoff bounds, existing event/markup tests,
+formatting/Clippy and the generated Home Manager module check pass.
