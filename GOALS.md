@@ -32,8 +32,8 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Keyboard (hjkl/arrows, tab between monitors, Enter, Esc) and mouse (click a cell to go there)
 
 ## M5 — Drag & drop in the overview
-- [ ] Drag a window between cells, between monitors' grids, and into/out of special workspaces; drop on a window to swap; floating windows placed at the drop point
-- [ ] Ghost thumbnail + target highlight; Esc cancels
+- [x] Drag a window between cells, between monitors' grids, and into/out of special workspaces; drop on a window to swap; floating windows placed at the drop point
+- [x] Ghost thumbnail + target highlight; Esc cancels
 
 ## M6 — Extension socket (no agent-specific code in this repo)
 - [ ] Versioned JSON-lines socket: annotations (label/badge/dot/colour/tooltip on cells, specials, windows), reserved regions (rows with titles), placement, activate/drop callbacks, session-scoped cleanup on disconnect

@@ -505,3 +505,47 @@ capture counts, and change a hidden terminal's pixels through its own PTY
 without changing its title. Only the changed thumbnail refreshes, and its new
 pixels are checked in a screenshot. All test instances exit; no live-session
 plugin load or Home Manager write is used.
+
+
+### M5 overview drag and drop
+
+The Rust interaction model (`core/src/ui/drag.rs`) owns hit testing, the drag
+threshold, cancellation, destination/swap selection and floating grab offsets.
+Window projections are clipped to their thumbnail cell. A ghost crops the
+existing workspace texture through scoped native UV coordinates; it allocates
+no extra capture framebuffer. Hover, cell targets and target windows have
+separate highlights. A cell's caption edge is always a move destination,
+including when a fullscreen window fills the thumbnail. Esc first cancels the
+drag and consumes its eventual release, then closes the overview on the next
+press. A disappearing source or changed monitor layout cancels safely.
+
+The shim validates native window identities again at release, applies native
+silent workspace moves or slot swaps, and preserves fullscreen modes when
+swapping. Floating placement translates the pointer through the destination
+monitor and retains the actual grabbed offset without clamping at output edges.
+This permits partially offscreen windows, matching native positioning. Focus
+and pointer position are restored around native actions. Swipe ownership is
+retained for a whole intercepted sequence even if the overview closes midway.
+Surface listeners include subsurfaces; captured clients receive frame callbacks
+for their surface tree. The same deduplicated, 2 ms submission-budgeted refresh
+queue remains in use.
+
+The disposable VM uses a persistent Wayland virtual pointer client, exercising
+the production input listeners with actual down/motion/up sequences. Tests
+cover same-monitor and cross-monitor moves, a drag across actual output bounds,
+moves into/out of specials, normal and fullscreen swaps, cross-monitor swaps,
+floating placement (within 2 physical pixels, including edge drops), ghost and
+target screenshot pixels, two-stage Esc, and a source closed during a drag.
+The UI is then opened and closed 20 times. All captured GL texture/FBO names
+are checked deleted, descriptors stay at 94, and warmed closed RSS stays between
+263,532 and 264,744 KiB. Full unmasked screenshots on both outputs match exactly
+before and after these cycles. This is bounded retained-resource evidence,
+not a claim that driver allocator residency immediately returns to baseline.
+
+`nix flake check --builders '' -L` passes the x86_64 plugin build, 22 Rust tests,
+rustfmt/Clippy, C++ formatting and the complete M1–M5 VM suite, including the
+25-cycle rendering prototype regression. Tests use no live-session plugin load
+or Home Manager edits, and the VM and its clients exit. Aarch64, real trackpad
+input, HDR/rotated outputs, concurrent screensharing and arbitrary transformer
+or popup effects have not been validated by this suite; the earlier capture
+caveats still apply. Vulkan remains unsupported by this GL capture path.

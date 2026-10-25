@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import select
 import subprocess
 import sys
 import time
@@ -252,8 +253,12 @@ with (artifacts / "compositor.log").open("w+") as log:
             if any(c["selected"] and c["key"].startswith("special:") for c in ui_state()["ui"]["cells"]):
                 break
         assert any(c["selected"] and c["key"].startswith("special:") for c in ui_state()["ui"]["cells"]),"special keyboard strip"
+        ok("eval",'return hl.plugin.hypr2d._test_swipe("begin",3,0,true)')
+        ok("eval",'return hl.plugin.hypr2d._test_swipe("update",20,0,true)')
         keypress("Escape")
         wait(lambda: ui_state().get("open") is False, "Esc closes")
+        ok("eval",'return hl.plugin.hypr2d._test_swipe("update",20,0,true)')
+        ok("eval",'return hl.plugin.hypr2d._test_swipe("end",true,0,true)')
         open_ui()
         target = next(c for c in ui_state()["ui"]["cells"] if c["key"] == str(mons[-1]["id"]+81))
         x,y,w,h = target["rect"]
@@ -266,6 +271,124 @@ with (artifacts / "compositor.log").open("w+") as log:
         ok("hypr2d", "overview", "close")
         wait(lambda: ui_state().get("open") is False, "close animation completes")
         print("PASS M4 UI: physical panels, special labels, idle cache, keyboard groups, Esc and pointer activation")
+        # M5 uses a persistent, real virtual-pointer client so button-down spans
+        # multiple motion frames. No direct calls to the Rust drag API are used.
+        ptr = subprocess.Popen(["hypr2d-test-pointer"],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,start_new_session=True)
+        clients.append(ptr)
+        def pointer_ack(expected):
+            assert select.select([ptr.stdout],[],[],10)[0],"virtual pointer acknowledgement"
+            assert ptr.stdout.readline().strip()==expected
+        pointer_ack(b"ready")
+        def pointer_command(command):
+            ptr.stdin.write((command+"\n").encode());ptr.stdin.flush();pointer_ack(b"ok")
+        def real_window(address):
+            return next(w for w in mapped() if w["address"]==address)
+        def drawn_window(address):
+            return next(w for w in ui_state()["ui"]["windows"] if w["id"]==address)
+        def cell_point(key,fx=0.5,fy=0.5):
+            c=next(c for c in ui_state()["ui"]["cells"] if c["key"]==key)
+            x,y,w,h=c["rect"];return (x+w*fx,y+h*fy)
+        def begin_drag(address):
+            r=drawn_window(address)["rect"]
+            x,y=r[0]+r[2]/2,r[1]+r[3]/2
+            lua(f'hl.dsp.cursor.move({{x={mons[0]["x"]+x},y={mons[0]["y"]+y}}})')
+            pointer_command("down")
+            real=real_window(address)
+            mon=next(m for m in mons if m["id"]==real["monitor"])
+            workspace=real["workspace"]["name"] if real["workspace"]["name"].startswith("special:") else str(real["workspace"]["id"])
+            cell=next(c for c in ui_state()["ui"]["cells"] if c["key"]==workspace)
+            px,py=ui_state()["ui"]["pointer"]
+            cx,cy,cw,ch=cell["rect"]
+            return ((px-cx)/cw*mon["width"]-(real["at"][0]-mon["x"]),(py-cy)/ch*mon["height"]-(real["at"][1]-mon["y"]))
+        def move_drag(point,display=0):
+            current=json.loads(ctl("-j","cursorpos"))
+            x,y=point
+            pointer_command(f'move {mons[display]["x"]+x-current["x"]} {mons[display]["y"]+y-current["y"]}')
+            wait(lambda:ui_state()["ui"]["dragging"],"drag threshold")
+        def finish_drag():
+            pointer_command("up")
+            wait(lambda:not ui_state()["ui"]["dragging"] and ui_state()["pending"]==0,"drop settles")
+        a=next(w["address"] for w in mapped() if w["class"]=="hypr2d-probe-0-0")
+        b=next(w["address"] for w in mapped() if w["class"]=="hypr2d-probe-0-1")
+        c=next(w["address"] for w in mapped() if w["class"]=="hypr2d-probe-1-1")
+        open_ui()
+        begin_drag(a);move_drag(cell_point(str(81+mons[0]["id"])))
+        screenshot("ui-drag-ghost")
+        ghost_image=Image.open(artifacts / "ui-drag-ghost-0.png").convert("RGB")
+        gx,gy=cell_point(str(81+mons[0]["id"]))
+        gp=ghost_image.getpixel((round(gx),round(gy)))
+        assert gp[0]>gp[1]+20 and gp[0]>40,("ghost must render source pixels",gp)
+        assert ui_state()["ui"]["target"]==str(81+mons[0]["id"])
+        finish_drag()
+        wait(lambda:real_window(a)["workspace"]["id"]==81+mons[0]["id"],"same-monitor drop")
+        begin_drag(a);move_drag(cell_point(str(81+mons[1]["id"])),display=1);finish_drag()
+        wait(lambda:real_window(a)["workspace"]["id"]==81+mons[1]["id"] and real_window(a)["monitor"]==mons[1]["id"],"cross-monitor drop")
+        begin_drag(a);move_drag(cell_point("special:probe-0",0.02,0.02));finish_drag()
+        wait(lambda:real_window(a)["workspace"]["name"]=="special:probe-0","drop into special")
+        begin_drag(a);move_drag(cell_point(str(171+mons[0]["id"])));finish_drag()
+        wait(lambda:real_window(a)["workspace"]["id"]==171+mons[0]["id"],"drop out of special")
+        begin_drag(a)
+        r=drawn_window(b)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2))
+        assert any(w["id"]==b and w["target"] for w in ui_state()["ui"]["windows"])
+        screenshot("ui-swap-target")
+        finish_drag()
+        wait(lambda:real_window(a)["workspace"]["id"]==11+mons[0]["id"] and real_window(b)["workspace"]["id"]==171+mons[0]["id"],"window swap")
+        begin_drag(a);r=drawn_window(c)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2));finish_drag()
+        wait(lambda:real_window(a)["monitor"]==mons[1]["id"] and real_window(c)["monitor"]==mons[0]["id"],"cross-monitor swap")
+        # Swap a fullscreen target through native state transitions, retaining its mode.
+        lua(f'hl.dsp.window.fullscreen({{window="address:{b}",mode="fullscreen",action="set"}})')
+        wait(lambda:real_window(b)["fullscreen"]>0 and ui_state()["pending"]==0,"fullscreen target")
+        begin_drag(a);r=drawn_window(b)["rect"];move_drag((r[0]+r[2]/2,r[1]+r[3]/2));finish_drag()
+        wait(lambda:real_window(a)["workspace"]["id"]==171+mons[0]["id"],"fullscreen swap")
+        assert real_window(b)["fullscreen"]>0
+        # Floating placement retains the press point within the window.
+        lua(f'hl.dsp.window.float({{window="address:{c}",action="set"}})')
+        wait(lambda:real_window(c)["floating"] and ui_state()["pending"]==0,"floating source")
+        floating=real_window(c);fw,fh=floating["size"]
+        def floating_drop(fx,fy):
+            grab_x,grab_y=begin_drag(c)
+            target=next(cell for cell in ui_state()["ui"]["cells"] if cell["key"]==str(91+mons[1]["id"]))
+            cx,cy,cw,ch=target["rect"]
+            move_drag(cell_point(str(91+mons[1]["id"]),fx,fy))
+            px,py=ui_state()["ui"]["pointer"]
+            expected_x=mons[1]["x"]+(px-cx)/cw*mons[1]["width"]-grab_x
+            expected_y=mons[1]["y"]+(py-cy)/ch*mons[1]["height"]-grab_y
+            finish_drag()
+            wait(lambda:real_window(c)["workspace"]["id"]==91+mons[1]["id"],"floating cross-monitor drop")
+            actual=real_window(c)
+            assert abs(actual["at"][0]-expected_x)<=2 and abs(actual["at"][1]-expected_y)<=2,(actual["at"],expected_x,expected_y,grab_x,grab_y)
+            assert actual["floating"] and actual["monitor"]==mons[1]["id"]
+        floating_drop(0.7,0.6)
+        # The source can now be partly outside the viewport: retain the actual
+        # grab point within its clipped thumbnail on the next edge drop.
+        floating_drop(0.02,0.02)
+        before_cancel=real_window(c)["workspace"]
+        begin_drag(c);move_drag(cell_point(str(251+mons[0]["id"])))
+        screenshot("ui-cancel-before")
+        keypress("Escape")
+        assert ui_state()["ui"]["open"] and not ui_state()["ui"]["dragging"]
+        pointer_command("up")
+        assert real_window(c)["workspace"]==before_cancel
+        screenshot("ui-cancel-after")
+        keypress("Escape");wait(lambda:ui_state().get("open") is False,"second Esc closes")
+        # Closing the source during a held drag cannot leave a stale window pointer.
+        open_ui();begin_drag(a);move_drag(cell_point(str(251+mons[1]["id"])))
+        lua(f'hl.dsp.window.close({{window="address:{a}"}})')
+        wait(lambda:all(w["address"]!=a for w in mapped()) and not ui_state()["ui"]["dragging"],"closed drag source")
+        pointer_command("up")
+        keypress("Escape");wait(lambda:ui_state().get("open") is False,"close after cancelled source")
+        screenshot("ui-clean-before")
+        ui_runs=[]
+        for cycle in range(20):
+            open_ui();keypress("Escape");wait(lambda:ui_state().get("open") is False,"UI repeat close")
+            assert ui_state()["deleted_gl_objects"],"production capture/label GL objects released"
+            ui_runs.append(process_memory())
+        screenshot("ui-clean-after");compare("ui-clean-after","ui-clean-before")
+        rss=[int(r["rss"].split()[1]) for r in ui_runs[5:]]
+        assert max(rss)-min(rss)<16*1024,rss
+        assert len({r["fds"] for r in ui_runs[5:]})==1
+        ptr.stdin.write(b"quit\n");ptr.stdin.flush();ptr.wait(timeout=10)
+        print("PASS M5: real pointer drags, cross-monitor moves/swaps, specials, fullscreen swap, floating placement, ghost/target, two-stage Esc, disappearing source, 20 clean UI cycles")
         # One IPC eval performs a real animated transition followed immediately
         # by the capture, without allowing the animation to settle first.
         ok("eval", 'hl.config({animations={enabled=true}}); hl.dispatch(hl.plugin.hypr2d.move("right")); hl.plugin.hypr2d._execute("probe open")')
@@ -277,7 +400,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         ok("plugin", "unload", plugin)
         time.sleep(0.5)
         ok("plugin", "load", plugin)
-        results = {"instance":instance.name,"small":small,"runs":runs,"screenshot_changed_pixels":diffs,"final_memory":process_memory()}
+        results = {"instance":instance.name,"small":small,"runs":runs,"screenshot_changed_pixels":diffs,"ui_cycles":ui_runs,"final_memory":process_memory()}
         (artifacts / "results.json").write_text(json.dumps(results, indent=2))
         print(f"PASS M4 rendering prototype: 2 outputs, normal/special capture, 25 full cycles, deleted GL objects, exact screenshots; {artifacts}")
     finally:

@@ -50,9 +50,22 @@
           cp -r ${./examples} $out/share/hypr2d
         '';
       };
+      testPointer = pkgs.stdenv.mkDerivation {
+        pname = "hypr2d-test-pointer";
+        version = "0.1.0";
+        dontUnpack = true;
+        nativeBuildInputs = [ pkgs.pkg-config pkgs.wayland-scanner ];
+        buildInputs = [ pkgs.wayland ];
+        buildPhase = ''
+          wayland-scanner client-header ${compositor.src}/protocols/wlr-virtual-pointer-unstable-v1.xml pointer-protocol.h
+          wayland-scanner private-code ${compositor.src}/protocols/wlr-virtual-pointer-unstable-v1.xml pointer-protocol.c
+          $CC -Wall -Wextra -Werror -I. ${./nix/pointer.c} pointer-protocol.c $(pkg-config --cflags --libs wayland-client) -o hypr2d-test-pointer
+        '';
+        installPhase = "mkdir -p $out/bin; cp hypr2d-test-pointer $out/bin/";
+      };
       nested = pkgs.writeShellApplication {
         name = "hypr2d-nested";
-        runtimeInputs = [ compositor (pkgs.python3.withPackages (p: [ p.pillow ])) pkgs.foot pkgs.waybar pkgs.grim pkgs.wtype pkgs.wlrctl ];
+        runtimeInputs = [ compositor (pkgs.python3.withPackages (p: [ p.pillow ])) pkgs.foot pkgs.waybar pkgs.grim pkgs.wtype pkgs.wlrctl testPointer ];
         text = builtins.replaceStrings [ "@PLUGIN@" "@SMOKE@" "@CLI@" "@EXAMPLES@" "@OVERVIEW@" ] [ "${plugin}/lib/libhypr2d.so" "${./nix/smoke.py}" "${rust}/bin/hypr2d" "${./examples}" "${./nix/overview.py}" ] (builtins.readFile ./nix/nested.sh);
       };
       parentConfig = pkgs.writeText "hypr2d-ci-parent.lua" ''
