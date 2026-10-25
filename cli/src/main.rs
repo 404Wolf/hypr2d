@@ -177,6 +177,14 @@ fn main() {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diagonal_commands_are_forwarded_without_rewriting() {
+        for words in [vec!["move", "up-left", "all"], vec!["carry", "down-right"]] {
+            let args = super::Args::parse(words.iter().map(|s| s.to_string())).unwrap();
+            assert_eq!(args.command().unwrap(), words.join(" "));
+        }
+    }
+
     use super::*;
     #[test]
     fn minimap_color_arguments_are_validated_and_scoped() {

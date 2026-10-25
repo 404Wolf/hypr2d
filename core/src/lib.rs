@@ -808,6 +808,31 @@ mod tests {
         );
     }
     #[test]
+    fn diagonal_commands_carry_and_all_use_stable_slots() {
+        let mut core = Core::default();
+        let mut a = monitor(3, 1);
+        a.slot = 0;
+        a.focused = true;
+        let mut b = monitor(9, 3);
+        b.slot = 2;
+        let all = core.command(&[a, b], &[], "move up-left all");
+        assert!(all.error.is_empty(), "{}", all.error);
+        assert_eq!(
+            all.moves
+                .iter()
+                .map(|m| (m.monitor, m.workspace, m.x, m.y, m.all))
+                .collect::<Vec<_>>(),
+            vec![(3, 631, 7, 7, true), (9, 633, 7, 7, true)]
+        );
+        let mut a = monitor(3, 1);
+        a.slot = 0;
+        a.focused = true;
+        let carry = core.command(&[a], &[], "carry down-right");
+        assert!(carry.error.is_empty());
+        assert!(carry.moves[0].carry);
+        assert_eq!(carry.moves[0].workspace, 91);
+    }
+    #[test]
     fn numbering_slot_is_independent_of_native_monitor_id() {
         let mut core = Core::default();
         let mut m = monitor(2, 8);
