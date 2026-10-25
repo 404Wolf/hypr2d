@@ -26,6 +26,7 @@ let
   lua = pkgs.writeText "hypr2d-hm-generated.lua" c.wayland.windowManager.hyprland.extraConfig;
   valid = assert c.programs.hypr2d.enable;
     assert lib.all (a: a.assertion) c.assertions;
+    assert lib.hasInfix ''hl.unbind("SUPER + TAB")'' c.wayland.windowManager.hyprland.extraConfig;
     assert c.wayland.windowManager.hyprland.configType == "lua";
     assert c.wayland.windowManager.hyprland.package.outPath == self.inputs.hyprland.packages.${pkgs.stdenv.hostPlatform.system}.hyprland.outPath;
     assert lib.elem c.programs.hypr2d.package c.wayland.windowManager.hyprland.plugins;

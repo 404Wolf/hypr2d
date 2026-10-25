@@ -77,6 +77,7 @@ hl.bind("SUPER + ALT + K", function()
     hl.dispatch(hl.plugin.hypr2d.move("up", { all = true }))
     hl.dispatch(hl.dsp.workspace.toggle_special(""))
 end)
+hl.unbind("SUPER + TAB") -- replace an existing group-next bind
 hl.bind("SUPER + TAB", hl.plugin.hypr2d.overview())
 end
 ```
@@ -84,6 +85,7 @@ end
 Suggested overview bind (Lua, Hyprland 0.56):
 
 ```lua
+hl.unbind("SUPER + TAB") -- replace an existing group-next bind
 hl.bind("SUPER + TAB", hl.plugin.hypr2d.overview())
 ```
 
@@ -168,7 +170,9 @@ No interval or refresh signal is installed.
 
 `gestures.enable = false` stops claiming swipes. When wiring this into your
 configuration, remove conflicting native/execGesture swipes and switch the
-existing movement binds using §Binds. `overview.bind = true` installs SUPER+TAB.
+existing movement binds using §Binds. `overview.bind = true` replaces existing SUPER+TAB bindings with the overview.
+Register manual replacement binds after your existing bindings; duplicate chords
+can dispatch both the overview and `group.next`.
 Other existing binds, your old workspace script and your Home Manager files
 are left for you to migrate.
 

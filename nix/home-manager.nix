@@ -20,7 +20,11 @@ let
       hl.plugin.hypr2d._execute(${luaString ("overview-config " + builtins.toJSON theme)})
       hl.plugin.hypr2d._execute("swipe-enabled ${bool cfg.gestures.enable}")
       assert(hl.plugin.hypr2d.swipe_config({fingers=${toString cfg.gestures.fingers},distance=${toString cfg.gestures.distance},velocity=${toString cfg.gestures.velocity},natural=${bool cfg.gestures.natural},axis_lock=${toString cfg.gestures.axisLock}}))
-      ${lib.optionalString cfg.overview.bind ''hl.bind("SUPER + TAB", hl.plugin.hypr2d.overview())''}
+      ${lib.optionalString cfg.overview.bind ''
+        -- Replace an existing group-next chord instead of dispatching both.
+        hl.unbind("SUPER + TAB")
+        hl.bind("SUPER + TAB", hl.plugin.hypr2d.overview())
+      ''}
     end
   '';
   cli = "${cfg.package}/bin/hypr2d";
@@ -54,7 +58,7 @@ in {
     };
     overview = {
       fit = mkOption { type = types.bool; default = true; description = "Show used bounds plus a one-cell margin; a toggles the full grid."; };
-      bind = mkOption { type = types.bool; default = false; description = "Install the suggested SUPER+TAB overview bind."; };
+      bind = mkOption { type = types.bool; default = false; description = "Replace SUPER+TAB with the overview bind."; };
     };
     theme = {
       background = colour "#000000";

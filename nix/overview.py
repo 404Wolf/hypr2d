@@ -28,7 +28,10 @@ with (artifacts / "compositor.log").open("w+") as log:
             deadline = time.monotonic() + 30
             while not test():
                 assert child.poll() is None, f"child exited ({child.returncode}): {artifacts}"
-                assert time.monotonic() < deadline, label
+                if time.monotonic() >= deadline:
+                    print("TIMEOUT",label,ctl("hypr2d","overview","state"),ctl("-j","monitors"),ctl("-j","binds"),ctl("-j","activewindow"),flush=True)
+                    print("\n".join(line for line in (artifacts/"compositor.log").read_text().splitlines() if "accepted fd" not in line)[-20000:],flush=True)
+                    raise AssertionError(label)
                 time.sleep(0.05)
         def find_instance():
             global instance
@@ -42,7 +45,9 @@ with (artifacts / "compositor.log").open("w+") as log:
             return False
         wait(find_instance, "own IPC socket")
         def ctl(*args):
-            return subprocess.run(["hyprctl", "-i", instance.name, *args], check=True, capture_output=True, text=True, timeout=60).stdout.strip()
+            result=subprocess.run(["hyprctl", "-i", instance.name, *args], capture_output=True, text=True, timeout=60)
+            assert result.returncode==0,f"child IPC {args}: {result.stdout} {result.stderr}"
+            return result.stdout.strip()
         def ok(*args):
             result = ctl(*args)
             assert result == "ok", result
@@ -151,6 +156,13 @@ with (artifacts / "compositor.log").open("w+") as log:
         # Warm up allocation/shader caches, then look for a plateau, not RSS=0.
         runs = []
         def process_memory():
+            # IPC and explicit-sync descriptors can retire just after their
+            # completion barrier. Count retained FDs over a bounded quiet window;
+            # permanent leaks remain in EVERY sample and still fail equality.
+            fd_samples=[]
+            for _ in range(5):
+                fd_samples.append(len(list(Path(f"/proc/{child.pid}/fd").iterdir())))
+                time.sleep(.02)
             status = Path(f"/proc/{child.pid}/status").read_text()
             rss = next(line for line in status.splitlines() if line.startswith("VmRSS:"))
             fdinfo = {}
@@ -161,7 +173,7 @@ with (artifacts / "compositor.log").open("w+") as log:
                         fdinfo[path.name] = lines
                 except OSError:
                     pass
-            return {"rss":rss, "drm_fdinfo": fdinfo, "fds":len(list(Path(f"/proc/{child.pid}/fd").iterdir()))}
+            return {"rss":rss, "drm_fdinfo": fdinfo, "fds":min(fd_samples),"fd_samples":fd_samples}
         before_full_memory = process_memory()
         for cycle in range(1 if benchmark else 25):
             opened = probe("full")
@@ -183,7 +195,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         warm = runs[5:]
         rss_kib = [int(r["closed_memory"]["rss"].split()[1]) for r in warm]
         assert max(rss_kib) - min(rss_kib) < 16*1024, rss_kib
-        assert len({r["closed_memory"]["fds"] for r in warm}) == 1
+        assert len({r["closed_memory"]["fds"] for r in warm}) == 1, [r["closed_memory"] for r in warm]
         time.sleep(0.5)
         screenshot("after-repeated")
         diffs = compare("after-repeated")
@@ -206,7 +218,12 @@ with (artifacts / "compositor.log").open("w+") as log:
             subprocess.run(["wtype", "-k", name], env=env, check=True, timeout=10)
         def open_ui():
             lua('hl.plugin.hypr2d.overview()')
-            wait(lambda: ui_state().get("pending") == 0, "UI captures settle")
+            try:
+                wait(lambda: ui_state().get("pending") == 0, "UI captures settle")
+            except AssertionError:
+                print("UI diagnostic",ui_state(),ctl("-j","monitors"),flush=True)
+                print((artifacts/"compositor.log").read_text()[-20000:],flush=True)
+                raise
             time.sleep(0.2)
         open_ui()
         fitted=ui_state()["ui"]
@@ -228,7 +245,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         label_windows=[]
         for i in range(3):
             before={w["address"] for w in mapped()}
-            process=subprocess.Popen(["foot","--config=/dev/null","--app-id=org.mozilla.firefox","--override=cursor.blink=no","--override=colors-dark.background=701010","sh","-c","printf '\\033[?25l'; sleep 600"],env=env,stdout=log,stderr=log,start_new_session=True)
+            process=subprocess.Popen(["foot","--config=/dev/null","--app-id=org.mozilla.firefox","--override=cursor.blink=no","--override=colors-dark.background=701010","sh","-c","printf '\\033[?25lhypr2d display-sized thumbnail\\nFine text and grouped window fixture\\n'; sleep 600"],env=env,stdout=log,stderr=log,start_new_session=True)
             clients.append(process)
             wait(lambda:any(w["class"]=="org.mozilla.firefox" and w["address"] not in before for w in mapped()),"label fixture mapped")
             address=next(w["address"] for w in mapped() if w["class"]=="org.mozilla.firefox" and w["address"] not in before)
@@ -431,7 +448,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         screenshot("ui-clean-after");compare("ui-clean-after","ui-clean-before")
         rss=[int(r["rss"].split()[1]) for r in ui_runs[5:]]
         assert max(rss)-min(rss)<16*1024,rss
-        assert len({r["fds"] for r in ui_runs[5:]})==1
+        assert len({r["fds"] for r in ui_runs[5:]})==1,ui_runs
         ptr.stdin.write(b"quit\n");ptr.stdin.flush();ptr.wait(timeout=10)
         print("PASS M5: real pointer drags, cross-monitor moves/swaps, specials, fullscreen swap, floating placement, ghost/target, two-stage Esc, disappearing source, 20 clean UI cycles")
         # M6 protocol, native placement, event routing and rendered annotations.
@@ -488,6 +505,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         module.terminate();module.wait(timeout=10)
         print("PASS M6: versioned socket, annotations in overview/waybar, reservations, native placement, owned callbacks, disconnect cleanup")
         if os.environ.get("HYPR2D_TEST_MODULE"):
+            ok("eval",'hl.bind("SUPER + TAB",hl.dsp.group.next())')
             ok("eval",f'assert(loadfile({json.dumps(os.environ["HYPR2D_TEST_MODULE"])}))()')
             configured=json.loads(ctl("hypr2d","state","-j"))
             assert configured["overview_config"]["font_size"]==18 and configured["overview_config"]["rounding"]==2
@@ -520,7 +538,130 @@ with (artifacts / "compositor.log").open("w+") as log:
         assert probe("stats")["restored_captures"] == 10
         assert probe("close")["deleted_gl_objects"]
         wait(lambda: all(abs(v) < 0.01 for m in json.loads(ctl("hypr2d", "state", "-j"))["monitors"] for v in m["offset"]), "animation resumes after capture")
-        # Unload with the overlay still open: no custom vtable may survive dlclose.
+        # Real-hardware regressions: one named 3:2 output at a non-zero origin,
+        # forced software cursor, with the active window in a two-member group.
+        ok("eval",'hl.config({animations={enabled=false},debug={vfr=false}})')
+        for w in mapped():
+            lua(f'hl.dsp.window.close({{window="address:{w["address"]}"}})')
+        wait(lambda:not mapped(),"old fixtures close")
+        ok("output","create","wayland","eDP-1")
+        wait(lambda:any(m["name"]=="eDP-1" for m in monitors()),"named laptop output")
+        ok("eval",'hl.monitor({output="eDP-1",mode="2256x1504@60",position="8934x6682",scale=1})')
+        wait(lambda:any(m["name"]=="eDP-1" and m["enabled"] for m in json.loads(ctl("hypr2d","overview","invariants"))["outputs"]),"new laptop output enabled before removing old outputs")
+        for m in mons:
+            ok("output","remove",m["name"])
+        ok("eval",'hl.monitor({output="eDP-1",mode="2256x1504@60",position="8934x6682",scale=1,disabled=false})')
+        wait(lambda:len(monitors())==1 and monitors()[0]["name"]=="eDP-1" and json.loads(ctl("hypr2d","overview","invariants"))["outputs"][0]["enabled"],"single enabled eDP-1")
+        wait(lambda:(monitors()[0]["width"],monitors()[0]["height"],monitors()[0]["x"],monitors()[0]["y"] )==(2256,1504,8934,6682),"laptop mode/origin applied")
+        mons=monitors(); edp=mons[0]
+        assert (edp["width"],edp["height"],edp["x"],edp["y"],edp["scale"])==(2256,1504,8934,6682,1),edp
+        ok("eval",'hl.config({animations={enabled=false},group={groupbar={height=4,render_titles=false,gradients=false,scrolling=true}},input={follow_mouse=1,resolve_binds_by_sym=true},cursor={invisible=false,no_hardware_cursors=1,hide_on_key_press=false}})')
+        ok("hypr2d","overview-config",'{"fit":true,"font_size":16,"rounding":3}')
+        ok("hypr2d","goto","0","0",str(edp["id"]))
+        def laptop_fixture(app):
+            pattern = "\x1b[?25l\x1b[97mPIXEL CAPTURE\n0123456789 abcdef\nSharp thumbnail detail\nGroups stay unchanged\n"
+            clients.append(subprocess.Popen(["foot","--config=/dev/null",f"--app-id={app}","--override=font=monospace:size=32","--override=cursor.blink=no","sh","-c",'printf "%s" "$1"; sleep 600',"fixture",pattern],env=env,stdout=log,stderr=log,start_new_session=True))
+            wait(lambda:any(w["class"]==app for w in mapped()),"laptop fixture")
+            return next(w["address"] for w in mapped() if w["class"]==app)
+        first=laptop_fixture("kitty")
+        lua('hl.dsp.group.toggle()')
+        second=laptop_fixture("firefox")
+        wait(lambda:len(real_window(second)["grouped"])==2,"active two-window group")
+        # Deliberately choose the other member: restoring to the group's head
+        # or most recently mapped window would fail this regression.
+        lua('hl.dsp.group.active({index=1})')
+        current=json.loads(ctl("-j","activewindow"))["address"]
+        assert current==first,(current,first)
+        ok("hypr2d","goto","1","0",str(edp["id"]))
+        hidden=laptop_fixture("hidden-cell")
+        ok("hypr2d","goto","0","0",str(edp["id"]))
+        lua('hl.dsp.workspace.toggle_special("laptop")')
+        special=laptop_fixture("special-cell")
+        lua('hl.dsp.workspace.toggle_special("laptop")')
+        # A hidden group too, to cover EVERY group's current member.
+        ok("hypr2d","goto","2","0",str(edp["id"]))
+        hidden_first=laptop_fixture("hidden-group-first")
+        lua('hl.dsp.group.toggle()')
+        hidden_second=laptop_fixture("hidden-group-second")
+        wait(lambda:len(real_window(hidden_second)["grouped"])==2,"hidden group")
+        lua('hl.dsp.group.active({index=1})')
+        ok("hypr2d","goto","0","0",str(edp["id"]))
+        lua(f'hl.dsp.focus({{window="address:{first}"}})')
+        def invariants():
+            return {"native":json.loads(ctl("hypr2d","overview","invariants")),"monitors":snapshot(),
+                    "windows":[{k:w[k] for k in ("address","hidden","grouped","workspace","monitor")} for w in mapped()]}
+        # Keep cursor on an empty margin, not over the underlying group's tab bar.
+        lua('hl.dsp.cursor.move({x=8944,y=6692})')
+        time.sleep(.3)
+        def super_tab():
+            subprocess.run(["wtype","-M","logo","-P","Super_L","-s","50","-k","Tab","-s","50","-p","Super_L","-m","logo"],env=env,check=True,timeout=10)
+        # Reproduce the user's duplicate chord: both native dispatchers run.
+        ok("eval",'hl.unbind("SUPER + TAB"); hl.bind("SUPER + TAB",hl.dsp.group.next()); hl.bind("SUPER + TAB",hl.plugin.hypr2d.overview())')
+        super_tab()
+        wait(lambda:ui_state().get("pending")==0,"duplicate chord capture")
+        assert json.loads(ctl("-j","activewindow"))["address"]==second,"duplicate chord must reproduce group-next bug"
+        keypress("Escape");wait(lambda:ui_state().get("open") is False,"duplicate chord close")
+        lua('hl.dsp.group.active({index=1})')
+        assert os.environ.get("HYPR2D_TEST_MODULE"),"hardware bind regression uses generated Home Manager config"
+        ok("eval",f'assert(loadfile({json.dumps(os.environ["HYPR2D_TEST_MODULE"])}))()')
+        baseline=invariants()
+        assert baseline["native"]["focus"]==first,baseline
+        screenshot("hardware-before")
+        super_tab()
+        wait(lambda:ui_state().get("ui",{}).get("open") and ui_state().get("pending")==0,"grouped SUPER+TAB overview")
+        time.sleep(.2)
+        assert invariants()==baseline,"opening/capturing must not mutate focus/groups/order/workspaces"
+        state=ui_state(); geometries=state["ui"]
+        (artifacts/"hardware-fit.json").write_text(json.dumps(state,indent=2))
+        rects=[c["rect"] for c in geometries["cells"]]+[l["rect"] for l in geometries["labels"]]
+        left=min(r[0] for r in rects);right=max(r[0]+r[2] for r in rects)
+        top=min(r[1] for r in rects);bottom=max(r[1]+r[3] for r in rects)
+        assert abs(left-(2256-right))<.01 and abs(top-(1504-bottom))<.01,(left,right,top,bottom)
+        assert all(abs(c["rect"][2]/c["rect"][3]-1.5)<.001 for c in geometries["cells"])
+
+        for image in state["images"]:
+            cell=next(c for c in geometries["cells"] if c["key"]==image["key"])
+            assert image["width"]==math.ceil(cell["rect"][2]) and image["height"]==math.ceil(cell["rect"][3]),(image,cell)
+        fitted_width=state["images"][0]["width"]
+        assert fitted_width>160,state["images"]
+        assert sum(i["width"]*i["height"]*4*4/3 for i in state["images"])<=64*1024*1024
+        # Software cursors are baked into normal screencopy; no grim -c path
+        # that could independently synthesize a cursor and mask a render bug.
+        screenshot("hardware-fit-cursor")
+        before=Image.open(artifacts/"hardware-fit-cursor-0.png").convert("RGB")
+        assert before.size==(2256,1504),before.size
+        assert any(max(before.getpixel((x,y)))>60 for x in range(10,40) for y in range(10,45)),"software cursor must appear over opaque overview"
+        def images_fit(fit):
+            s=ui_state()
+            if s.get("pending")!=0 or s.get("ui",{}).get("fit")!=fit:return False
+            cells={c["key"]:c for c in s["ui"]["cells"] if c["occupied"]}
+            return {i["key"] for i in s["images"]}==cells.keys() and all((i["width"],i["height"])==(math.ceil(cells[i["key"]]["rect"][2]),math.ceil(cells[i["key"]]["rect"][3])) for i in s["images"])
+        keypress("a");wait(lambda:images_fit(False),"hardware full recapture")
+        full=ui_state()
+        assert max(i["width"] for i in full["images"])<fitted_width,(full["images"],fitted_width)
+        for image in full["images"]:
+            cell=next(c for c in full["ui"]["cells"] if c["key"]==image["key"])
+            assert (image["width"],image["height"])==(math.ceil(cell["rect"][2]),math.ceil(cell["rect"][3]))
+        screenshot("hardware-full")
+        keypress("a");wait(lambda:images_fit(True),"hardware fit recapture")
+        assert ui_state()["images"][0]["width"]==fitted_width
+        screenshot("hardware-fit")
+        keypress("Escape");wait(lambda:ui_state().get("open") is False,"hardware close")
+        assert invariants()==baseline,"closing must preserve group state"
+        screenshot("hardware-after")
+        assert ImageChops.difference(Image.open(artifacts/"hardware-before-0.png").convert("RGB"),Image.open(artifacts/"hardware-after-0.png").convert("RGB")).getbbox() is None,"group/cursor scene unchanged"
+        # Already-visible special: opening/closing may not toggle it or focus it.
+        lua('hl.dsp.workspace.toggle_special("laptop")')
+        time.sleep(.2); shown=invariants()
+        for _ in range(5):
+            open_ui();assert invariants()==shown
+            keypress("Escape");wait(lambda:ui_state().get("open") is False,"group repeat close")
+            assert invariants()==shown
+            assert ui_state()["deleted_gl_objects"]
+        (artifacts/"hardware-invariants.json").write_text(json.dumps({"before":baseline,"after":invariants(),"shown":shown},indent=2))
+        print("PASS hardware: eDP-1 2256x1504 scale1 at 8934x6682, display-sized captures/fit toggle, software cursor screenshot, group/focus/order/workspace/special preservation")
+        # Unload/reload comes LAST: loading a plugin may reload Lua config,
+        # which must not race the exact monitor and grouped-window fixture.
         probe("full")
         ok("plugin", "unload", plugin)
         time.sleep(0.5)

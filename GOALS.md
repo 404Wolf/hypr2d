@@ -56,4 +56,10 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Three rows fit the existing automatic 13px-text bar: equal VM heights with/without the real Waybar module, screenshot verified
 - [x] Home Manager start/end placement; start puts the minimap before cpu
 
+## Live-machine overview regressions
+- [x] Capture at displayed physical cell dimensions, resize on fit/full changes, filter minification and bound cache payload
+- [x] Keep the software cursor above the overview; verify composited cursor pixels in the VM
+- [x] Center a 2256×1504 3:2 eDP-1 at layout origin (8934, 6682), with consistent gaps; Rust geometry and VM screenshot checks
+- [x] Preserve grouped-window focus/current members/order and normal/special workspace state; replace the conflicting SUPER+Tab bind and exercise it in the VM
+
 ## Questions

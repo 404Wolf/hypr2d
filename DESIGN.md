@@ -699,3 +699,71 @@ Rust/formatting/Clippy, Home Manager generation and complete VM integration),
 including 32 Rust tests and the real Waybar screenshot/height regression.
 The Waybar screenshot was inspected. No live-session load or Home Manager
 checkout edit/activation was performed.
+
+### Live-machine overview fixes
+
+Production capture dimensions now come from Rust's actual visible cell geometry
+at the largest physical presentation across all outputs (including output scale).
+The shim detects dimension changes on every render, including fit/full toggles,
+and recaptures through the existing budgeted dirty queue. Hidden and empty cells
+retain no texture. RGBA8 plus mip storage has a 64 MiB planning budget; extreme
+layouts reduce dimensions proportionally. Production textures have regenerated
+mip chains with trilinear minification and linear magnification. The test-only
+fixed-size prototype remains separate from this production policy. Renderer
+scratch buffers, client buffers and driver overhead are additional allocations.
+
+Layout centers both axes using the actual composition bounds. Cell dimensions
+preserve each source monitor's aspect, horizontal and vertical cell gaps match,
+panels have an inset between neighbours, headers follow their grids, and the
+special strip follows the bottommost visible grid with the same gap. The Rust
+regressions use eDP-1 at (8934, 6682), 2256×1504, and check physical capture sizes,
+fit/full/fit resizing, scale, translation invariance and the memory budget.
+
+The pinned renderer queues software cursors before LAST_MOMENT. The overview
+now queues the native software-cursor render after its own pass, respecting
+native visibility and hardware-cursor handling. Pending captures/fades request
+a continuation during rendering so the native renderer schedules after commit,
+rather than allowing the current commit to consume a pre-render frame request.
+
+Read-only inspection of the user's configuration found SUPER+Tab still bound
+to group.next alongside the module's overview bind. Hyprland supports multiple
+dispatches on a chord. When overview.bind is enabled the module now explicitly
+unbinds that chord before registering the overview, after ordinary extraConfig.
+Manual Lua bind examples show the same replacement. SUPER+Shift+Tab and other
+group binds are unaffected. No user Home Manager file is edited or activated.
+The capture path continues to use scoped native workspace/renderer restoration;
+the regression inspects every group's current member and member order, focus,
+window stacking order, hidden flags, active workspace and special visibility.
+
+
+The final VM uses a single named eDP-1 output at 2256×1504, scale 1, origin
+(8934,6682), forced software cursors, an active two-member group and another
+hidden group. Groupbar settings mirror the user's four-pixel, title-free bar.
+Its fit view captures three normal cells at 507×338 and the special at 394×263
+(the displayed dimensions rounded up). The planned RGBA8+mip payload is about
+3.14 MiB, excluding driver/renderer overhead. Fit/full/fit checks compare every
+actual framebuffer dimension with the current displayed geometry. Screenshots
+at 2256×1504 show the cursor over the overlay and readable fixture detail; the
+unmasked before/after RGB comparison changes zero pixels. The VM first
+reproduces the group switch with duplicate SUPER+Tab bindings, then applies the
+generated module and verifies focus, every group's current member/member order,
+window stacking/hidden flags, active workspace and shown-special identity on
+open, after toggles and on close. Five more cycles preserve an already-shown
+special and delete all capture GL objects.
+
+Two fixture details matter on this exact revision: VFR is debug.vfr, and the
+JSON monitor field named disabled incorrectly exports m_enabled (the text
+output uses its inverse). Readiness therefore checks the native enabled flag
+through test-only diagnostics. The capacity/UI leak tests now record five FD
+samples over a bounded 100 ms quiet window and compare the minimum retained
+count; deferred IPC/fence retirement must not be mistaken for a retained leak.
+Permanent leaks remain present in every sample and still fail exact equality.
+The final warmed UI descriptor count stayed at 100. Explicit GL deletion,
+bounded RSS and screenshot checks remain in place.
+
+All four x86_64 flake checks passed with the final readable fixture and explicit
+RGB comparisons, including 32 Rust tests, the 25-cycle capacity test, 20 UI
+cycles, the exact laptop regressions, the Waybar equal-height test and Home
+Manager generation. Both overview and Waybar screenshots were inspected. No
+plugin was loaded into the live session and no Home Manager checkout was edited
+or activated.
