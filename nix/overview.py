@@ -630,6 +630,14 @@ with (artifacts / "compositor.log").open("w+") as log:
             assert image["direct"] and image["width"]==image["drawn_width"] and image["height"]==image["drawn_height"]
             assert image["width"]==math.ceil(cell["rect"][2]) and image["height"]==math.ceil(cell["rect"][3]),(image,cell)
         assert next(c for c in geometries["cells"] if c["key"]=="special:8")["label"]=="obsidian"
+        for label,special_panel in [("eDP-1",False),("Special workspaces",True)]:
+            header=next(h for h in geometries["labels"] if h["text"]==label)["rect"]
+            cells=[c["rect"] for c in geometries["cells"] if c["key"].startswith("special:")==special_panel]
+            assert abs(header[0]-min(c[0] for c in cells))<.01,(header,cells)
+            assert 15<=header[3]<=25,header
+            assert abs(min(c[1] for c in cells)-header[1]-header[3]-8)<.01,(header,cells)
+            reported=next(h for h in geometries["panels"] if h["label"]==label)["rect"]
+            assert reported==header,(reported,header)
         fitted_width=state["images"][0]["width"]
         assert fitted_width>160,state["images"]
         assert sum(i["width"]*i["height"]*4*4/3 for i in state["images"])<=64*1024*1024

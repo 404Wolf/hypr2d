@@ -206,12 +206,28 @@ mod ffi {
         fn extension_drain(self: &mut Core, monitors: &[Monitor]) -> ExtensionBatch;
         fn extension_result(self: &mut Core, token: u64, error: &str);
         fn extension_event(self: &mut Core, event: &str, workspace: &str, window: &str);
+        fn ui_header_width(self: &mut Core, text: &str, width: f64);
+        fn ui_font_height(self: &mut Core, height: f64);
         fn ui_style(self: &Core) -> UIStyle;
         fn overview_press(self: &mut Overview, width: f64, height: f64, x: f64, y: f64);
         fn overview_release(self: &mut Overview, width: f64, height: f64, x: f64, y: f64)
             -> UIDrop;
         fn overview_reconcile(self: &mut Overview, replacement: Box<Overview>) -> Vec<String>;
         fn overview_windows(self: &mut Overview, windows: &[UIWindow]) -> Vec<String>;
+        fn overview_frame_scaled(
+            self: &Overview,
+            width: f64,
+            height: f64,
+            scale: f64,
+            now: f64,
+        ) -> UIFrame;
+        fn overview_state_scaled(
+            self: &Overview,
+            width: f64,
+            height: f64,
+            scale: f64,
+            now: f64,
+        ) -> String;
         fn overview_state(self: &Overview, width: f64, height: f64, now: f64) -> String;
         fn overview_new(
             self: &Core,
@@ -256,6 +272,8 @@ mod ffi {
     }
 }
 pub struct Core {
+    ui_font_height: Option<f64>,
+    ui_header_widths: HashMap<String, f64>,
     extensions: extension::Extensions,
     extension_grids: HashMap<u32, Grid>,
     theme: theme::Theme,
@@ -270,6 +288,8 @@ impl Default for Core {
         Self {
             extensions: extension::Extensions::default(),
             extension_grids: HashMap::new(),
+            ui_font_height: None,
+            ui_header_widths: HashMap::new(),
             theme: theme::Theme::default(),
             grids: HashMap::new(),
             stride: 10,
@@ -585,6 +605,21 @@ impl Core {
 }
 
 impl Core {
+    fn ui_header_width(&mut self, text: &str, width: f64) {
+        guarded(|| {
+            if width.is_finite() && width > 0. {
+                self.ui_header_widths.insert(text.into(), width);
+            }
+        })
+    }
+    fn ui_font_height(&mut self, height: f64) {
+        guarded(|| {
+            if height.is_finite() && (1.0..=128.0).contains(&height) {
+                self.ui_font_height = Some(height);
+                self.ui_header_widths.clear();
+            }
+        })
+    }
     fn ui_style(&self) -> ffi::UIStyle {
         guarded(|| {
             let t = &self.theme;

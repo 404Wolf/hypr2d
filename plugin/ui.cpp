@@ -93,7 +93,11 @@ static void watchSurfaces() {
             nullptr);
     }
 }
+static SP<Render::ITexture> text(const std::string &, int, int, uint32_t);
 static void build() {
+    auto style = core->ui_style();
+    if (auto metrics = text("Ag", static_cast<int>(style.font_size), 1000, style.label))
+        core->ui_font_height(metrics->m_size.y);
     std::vector<hypr2d::UIOutput> outputs;
     std::vector<hypr2d::UISpecial> specials;
     auto previousSpecials = std::move(heldSpecials);
@@ -108,6 +112,11 @@ static void build() {
             specials.push_back(
                 {static_cast<uint32_t>(w->m_monitor->m_id), w->addressableName(), w->m_monitor->m_activeSpecialWorkspace == w});
         }
+    for (const auto &output : outputs)
+        if (auto metrics = text(std::string(output.name), static_cast<int>(style.font_size), 1000, style.label))
+            core->ui_header_width(output.name, metrics->m_size.x);
+    if (auto metrics = text("Special workspaces", static_cast<int>(style.font_size), 1000, style.label))
+        core->ui_header_width("Special workspaces", metrics->m_size.x);
     auto wins = windows();
     auto replacement =
         core->overview_new({outputs.data(), outputs.size()}, {specials.data(), specials.size()}, {wins.data(), wins.size()}, now());
@@ -222,9 +231,10 @@ class GhostPass final : public IPassElement {
 class Pass final : public IPassElement {
     hypr2d::UIFrame frame;
     Vector2D size;
+    double outputScale;
 
   public:
-    Pass(hypr2d::UIFrame f, Vector2D s) : frame(std::move(f)), size(s) {}
+    Pass(hypr2d::UIFrame f, Vector2D s, double scale) : frame(std::move(f)), size(s), outputScale(scale) {}
     std::vector<UP<IPassElement>> draw() override {
         std::vector<UP<IPassElement>> items;
         auto style = core->ui_style();
@@ -233,7 +243,7 @@ class Pass final : public IPassElement {
                 CRectPassElement::SRectData{.box = box, .color = color, .round = static_cast<int>(style.gap ? style.rounding : 0)}));
         };
         auto label = [&](const std::string &str, const CBox &box, float opacity = 1.f, uint32_t labelColor = 0) {
-            auto tex = text(str, static_cast<int>(style.font_size), std::clamp(static_cast<int>(box.w), 1, 1000),
+            auto tex = text(str, static_cast<int>(style.font_size * outputScale), std::clamp(static_cast<int>(box.w), 1, 1000),
                             labelColor ? labelColor : style.label);
             if (tex)
                 items.push_back(makeUnique<CTexPassElement>(
@@ -263,7 +273,7 @@ class Pass final : public IPassElement {
             rect({box.x, box.y, 1, box.h}, borderColor);
             rect({box.x + box.w - 1, box.y, 1, box.h}, borderColor);
             if (!c.label.empty()) {
-                const auto caption = text(std::string(c.label), static_cast<int>(style.font_size),
+                const auto caption = text(std::string(c.label), static_cast<int>(style.font_size * outputScale),
                                           std::clamp(static_cast<int>(box.w - 8), 1, 1000), style.label);
                 if (caption) {
                     const auto h = std::min(box.h * 0.45, caption->m_size.y + 4);
@@ -437,7 +447,7 @@ void init(hypr2d::Core *c) {
         }
         std::vector<hypr2d::UIRect> viewports;
         for (auto &m : State::monitorState()->monitors())
-            viewports.push_back({0, 0, m->m_transformedSize.x, m->m_transformedSize.y});
+            viewports.push_back({m->m_scale, 0, m->m_transformedSize.x, m->m_transformedSize.y});
         auto plans = (*ui)->overview_captures({viewports.data(), viewports.size()});
         std::set<std::string> visible;
         for (auto &cap : plans) {
@@ -502,9 +512,9 @@ void init(hypr2d::Core *c) {
     listeners.push_back(e.render.stage.listen([](eRenderStage stage) {
         if (ui && !capturing && stage == RENDER_LAST_MOMENT) {
             auto m = g_pHyprRenderer->m_renderData.pMonitor.lock();
-            auto frame = (*ui)->overview_frame(m->m_transformedSize.x, m->m_transformedSize.y, now());
+            auto frame = (*ui)->overview_frame_scaled(m->m_transformedSize.x, m->m_transformedSize.y, m->m_scale, now());
             const bool more = frame.animating || !dirty.empty();
-            g_pHyprRenderer->m_renderPass.add(makeUnique<Pass>(std::move(frame), m->m_transformedSize));
+            g_pHyprRenderer->m_renderPass.add(makeUnique<Pass>(std::move(frame), m->m_transformedSize, m->m_scale));
             // pre-render requests can be consumed by this frame's commit.
             // During rendering scheduleFrame also sets pendingFrame, which the
             // native renderer schedules AFTER commit (essential on headless).
@@ -656,7 +666,8 @@ std::string command(const std::string &input) {
         for (auto &[key, fb] : cache) {
             if (images.size() > 1)
                 images += ",";
-            auto frame = (*ui)->overview_frame(m ? m->m_transformedSize.x : 1000.0, m ? m->m_transformedSize.y : 700.0, now());
+            auto frame = (*ui)->overview_frame_scaled(m ? m->m_transformedSize.x : 1000.0, m ? m->m_transformedSize.y : 700.0,
+                                                      m ? m->m_scale : 1.0, now());
             auto cell = std::ranges::find_if(frame.cells, [&](const auto &c) { return std::string(c.key) == key; });
             const auto drawn = cell == frame.cells.end() ? Vector2D{} : Vector2D{std::ceil(cell->rect.width), std::ceil(cell->rect.height)};
             images += std::format("{{\"key\":\"{}\",\"width\":{},\"height\":{},\"drawn_width\":{},\"drawn_height\":{},\"direct\":true}}",
@@ -664,8 +675,9 @@ std::string command(const std::string &input) {
         }
         images += "]";
         return std::format("{{\"ui\":{},\"captures\":{},\"capture_ms\":{},\"pending\":{},\"images\":{}}}",
-                           std::string((*ui)->overview_state(m ? m->m_size.x : 1000.0, m ? m->m_size.y : 700.0, now())), captures,
-                           captureMs, dirty.size(), images);
+                           std::string((*ui)->overview_state_scaled(m ? m->m_transformedSize.x : 1000.0, m ? m->m_transformedSize.y : 700.0,
+                                                                    m ? m->m_scale : 1.0, now())),
+                           captures, captureMs, dirty.size(), images);
     }
     if (input == "overview close") {
         if (ui)

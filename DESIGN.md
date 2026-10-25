@@ -812,3 +812,26 @@ match at 528×352 for normal cells and 399×266 for the special. Before/after
 state, grouped windows, GL deletion, bounded memory and repeated-cycle checks
 remain passing. The screenshot and a 1:1 crop of the supplied live screenshot
 were inspected. No live compositor load or Home Manager checkout edit occurred.
+
+### Live Radeon confirmation and header alignment follow-up
+
+The user deployed 5c158b6 and confirmed a visible composited cursor on the
+Radeon 780M/radeonsi path, software cursors enabled. Diagnostics reported a
+32×32 cursor texture, no hardware cursor and overview_open=true. The same live
+run confirmed 528×352 framebuffer/drawn dimensions, flush cells, label pills
+and app-labelled specials; 187 captures accumulated about 36 ms.
+
+The remaining header gap came from scaling 24-unit layout boxes while drawing
+fixed-size Pango text at their top. Header layout now takes the actual native
+Pango text height and widths, reserving that height plus an 8px gap per output
+scale. Viewport layout uses those same metrics for rendering, hit testing,
+capture planning and state output. State panels and labels now report the same
+physical header rectangles, rather than mixing canonical and physical spaces.
+
+Header validation passed all four x86_64 flake checks, including 36 Rust
+tests and the complete VM suite. Rust checks fit/full at scale 1 and 2 for
+eDP-1 (2256×1504 at 8934,6682), matching reported header rectangles, text
+height, left alignment and an exact 8px × scale box-to-panel gap. The VM
+asserts the measured Pango header height and physical geometry and its
+2256×1504 screenshot was inspected. Capture plans continue to match the
+responsive drawn geometry; native input and all drag/resource tests pass.

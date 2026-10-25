@@ -70,4 +70,7 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] VM minimap latency below 50 ms from commit/native events on swipe, carry, drop, map/unmap, specials, monitor and external workspace focus
 - [ ] Stable persisted monitor slots, parked workspace lifecycle, parked overview cards/expansion, minimap tooltip and hotplug VM regressions
 
+- [x] Text-sized, physically aligned panel/special headers with consistent scaled 8px gaps; Rust and laptop VM screenshot regression
+- [ ] Drop-on-window stacks, Shift-drop swaps, locked-group refusal and immediate empty-special cleanup; VM regressions
+
 ## Questions

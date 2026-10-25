@@ -42,6 +42,7 @@ fn window_snapshot(windows: &[ffi::UIWindow]) -> Vec<Window> {
         })
         .collect()
 }
+#[derive(Clone)]
 struct CellView {
     key: String,
     monitor: u32,
@@ -55,12 +56,17 @@ struct CellView {
     visible: bool,
     annotated: bool,
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Overview {
     annotations: std::collections::BTreeMap<String, hypr2d_client::Annotation>,
     regions: Vec<(u32, u32, String)>,
     fit: bool,
     gap: f64,
+    font_height: f64,
+    gap_pixels: f64,
+    header_widths: std::collections::HashMap<String, f64>,
+    header_height: f64,
+    header_gap: f64,
     panels: Vec<Rect>,
     windows: Vec<Window>,
     outputs: Vec<(u32, f64, f64)>,
@@ -88,6 +94,13 @@ impl Core {
             let mut ui = Overview {
                 fit: self.theme.fit,
                 gap: f64::from(self.theme.gap),
+                font_height: self
+                    .ui_font_height
+                    .unwrap_or(f64::from(self.theme.font_size) + 4.),
+                gap_pixels: 8.,
+                header_widths: self.ui_header_widths.clone(),
+                header_height: 20.,
+                header_gap: 8.,
                 started: now,
                 windows: window_snapshot(windows),
                 outputs: outputs.iter().map(|m| (m.id, m.width, m.height)).collect(),
@@ -211,7 +224,34 @@ impl Core {
     }
 }
 impl Overview {
+    fn for_viewport(&self, width: f64, height: f64) -> Self {
+        self.scaled_viewport(width, height, 1.)
+    }
+    fn scaled_viewport(&self, width: f64, height: f64, scale: f64) -> Self {
+        let mut layout = self.clone();
+        layout.font_height *= scale;
+        layout.gap_pixels *= scale;
+        for width in layout.header_widths.values_mut() {
+            *width *= scale;
+        }
+        layout.fit_headers(width, height);
+        layout
+    }
+    fn fit_headers(&mut self, width: f64, height: f64) {
+        for _ in 0..12 {
+            let scale = self.transform(width, height).0.max(0.001);
+            let h = self.font_height / scale;
+            let gap = self.gap_pixels / scale;
+            if (self.header_height - h).abs() < 1e-9 && (self.header_gap - gap).abs() < 1e-9 {
+                break;
+            }
+            self.header_height = h;
+            self.header_gap = gap;
+            self.reflow();
+        }
+    }
     fn reflow(&mut self) {
+        let header = self.header_height + self.header_gap;
         for (g, p) in self.panels.iter().enumerate() {
             let cells: Vec<_> = self
                 .cells
@@ -258,13 +298,14 @@ impl Overview {
             let (y0, ny) = bounds(false, rows);
             let ratio = self.outputs[g].2 / self.outputs[g].1;
             let w = ((p.w - self.gap * f64::from(nx)) / f64::from(nx))
-                .min((p.h - 30. - self.gap * f64::from(ny - 1)) / f64::from(ny) / ratio)
+                .min((p.h - header - self.gap * f64::from(ny - 1)) / f64::from(ny) / ratio)
                 .max(1.);
             let grid_w = w * f64::from(nx) + self.gap * f64::from(nx - 1);
             let grid_h = w * ratio * f64::from(ny) + self.gap * f64::from(ny - 1);
             let left = p.x + (p.w - grid_w) / 2.;
-            let top = p.y + 30. + (p.h - 30. - grid_h) / 2.;
-            self.headers[g].0.y = top - 30.;
+            let top = p.y + header + (p.h - header - grid_h) / 2.;
+            self.headers[g].0.y = top - header;
+            self.headers[g].0.h = self.header_height;
             self.headers[g].0.x = left;
             self.headers[g].0.w = grid_w;
             for c in self.cells.iter_mut().filter(|c| c.group == g) {
@@ -299,7 +340,7 @@ impl Overview {
                 x: left,
                 y: bottom + self.gap,
                 w: right - left,
-                h: 24.,
+                h: self.header_height,
             };
         }
         let n = self
@@ -323,7 +364,7 @@ impl Overview {
             let w = ((right - left - self.gap * (n - 1.)) / n).min(150.);
             c.rect = Rect {
                 x,
-                y: bottom + 30. + self.gap,
+                y: bottom + header + self.gap,
                 w,
                 h: w * ratio,
             };
@@ -334,54 +375,64 @@ impl Overview {
             .iter()
             .filter(|c| c.visible)
             .map(|c| c.rect.y + c.rect.h)
-            .fold(bottom + 30., f64::max)
+            .fold(bottom + header, f64::max)
             + 28.;
     }
     /// Only visible occupied cells retain textures. Shared cache uses the largest
     /// presentation across outputs; 64 MiB RGBA8+mip payload caps extreme layouts.
     pub fn overview_captures(&self, viewports: &[ffi::UIRect]) -> Vec<ffi::ProbeCell> {
         guarded(|| {
-            let scale = viewports
-                .iter()
-                .map(|v| self.transform(v.width, v.height).0)
-                .fold(0., f64::max);
-            let cells: Vec<_> = self
-                .cells
-                .iter()
-                .filter(|c| c.visible && c.occupied)
-                .collect();
-            let area: f64 = cells
-                .iter()
-                .map(|c| (c.rect.w * scale).ceil() * (c.rect.h * scale).ceil())
+            let mut plans = std::collections::BTreeMap::<String, ffi::ProbeCell>::new();
+            for viewport in viewports {
+                let frame = self.overview_frame_scaled(
+                    viewport.width,
+                    viewport.height,
+                    viewport.x.max(1.),
+                    0.,
+                );
+                for cell in frame.cells.into_iter().filter(|c| c.occupied) {
+                    let w = cell.rect.width.ceil().max(1.) as u32;
+                    let h = cell.rect.height.ceil().max(1.) as u32;
+                    let entry = plans
+                        .entry(cell.key.clone())
+                        .or_insert_with(|| ffi::ProbeCell {
+                            monitor: cell.monitor,
+                            workspace: cell.key.parse().unwrap_or(0),
+                            special: if cell.key.starts_with("special:") {
+                                cell.key
+                            } else {
+                                String::new()
+                            },
+                            x: 0.,
+                            y: 0.,
+                            width: 0.,
+                            height: 0.,
+                            capture_width: 0,
+                            capture_height: 0,
+                        });
+                    entry.capture_width = entry.capture_width.max(w);
+                    entry.capture_height = entry.capture_height.max(h);
+                    entry.width = entry.capture_width.into();
+                    entry.height = entry.capture_height.into();
+                }
+            }
+            let area: f64 = plans
+                .values()
+                .map(|p| f64::from(p.capture_width) * f64::from(p.capture_height))
                 .sum();
-            let budget_scale = (64. * 1024. * 1024. / (area.max(1.) * 4. * 4. / 3.))
+            let factor = (64. * 1024. * 1024. / (area.max(1.) * 4. * 4. / 3.))
                 .sqrt()
                 .min(1.);
-            let pixels = |n: f64| {
-                let n = n * scale * budget_scale;
-                (if budget_scale < 1. {
-                    n.floor()
-                } else {
-                    n.ceil()
-                })
-                .max(1.) as u32
-            };
-            cells
-                .into_iter()
-                .map(|c| ffi::ProbeCell {
-                    monitor: c.monitor,
-                    workspace: c.key.parse().unwrap_or(0),
-                    special: if c.key.starts_with("special:") {
-                        c.key.clone()
-                    } else {
-                        String::new()
-                    },
-                    x: 0.,
-                    y: 0.,
-                    width: (c.rect.w * scale).ceil(),
-                    height: (c.rect.h * scale).ceil(),
-                    capture_width: pixels(c.rect.w),
-                    capture_height: pixels(c.rect.h),
+            plans
+                .into_values()
+                .map(|mut p| {
+                    if factor < 1. {
+                        p.capture_width =
+                            (f64::from(p.capture_width) * factor).floor().max(1.) as u32;
+                        p.capture_height =
+                            (f64::from(p.capture_height) * factor).floor().max(1.) as u32;
+                    }
+                    p
                 })
                 .collect()
         })
@@ -416,6 +467,8 @@ impl Overview {
     pub fn overview_reconcile(&mut self, mut replacement: Box<Overview>) -> Vec<String> {
         guarded(|| {
             replacement.fit = self.fit;
+            replacement.header_height = self.header_height;
+            replacement.header_gap = self.header_gap;
             replacement.reflow();
             let mut dirty = BTreeSet::new();
             for w in self
@@ -466,14 +519,41 @@ impl Overview {
             dirty.into_iter().collect()
         })
     }
+    pub fn overview_frame_scaled(
+        &self,
+        width: f64,
+        height: f64,
+        scale: f64,
+        now: f64,
+    ) -> ffi::UIFrame {
+        guarded(|| {
+            self.scaled_viewport(width, height, scale)
+                .frame(width, height, now)
+        })
+    }
+    pub fn overview_state_scaled(&self, width: f64, height: f64, scale: f64, now: f64) -> String {
+        guarded(|| {
+            self.scaled_viewport(width, height, scale)
+                .state_frame(width, height, now)
+        })
+    }
     pub fn overview_state(&self, width: f64, height: f64, now: f64) -> String {
+        guarded(|| {
+            self.for_viewport(width, height)
+                .state_frame(width, height, now)
+        })
+    }
+    fn state_frame(&self, width: f64, height: f64, now: f64) -> String {
         guarded(|| {
             let f = self.overview_frame(width, height, now);
             let (s, ox, oy) = self.transform(width, height);
-            serde_json::json!({"labels":f.labels.iter().map(|l|serde_json::json!({"text":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>(),"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":self.headers.iter().map(|(r,t)|serde_json::json!({"label":t,"rect":[r.x,r.y,r.w,r.h]})).collect::<Vec<_>>()}).to_string()
+            serde_json::json!({"labels":f.labels.iter().map(|l|serde_json::json!({"text":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>(),"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":f.labels.iter().take(self.headers.len()).map(|l|serde_json::json!({"label":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>()}).to_string()
         })
     }
     pub fn overview_frame(&self, width: f64, height: f64, now: f64) -> ffi::UIFrame {
+        guarded(|| self.for_viewport(width, height).frame(width, height, now))
+    }
+    fn frame(&self, width: f64, height: f64, now: f64) -> ffi::UIFrame {
         guarded(|| {
             let (scale, ox, oy) = self.transform(width, height);
             let convert = |r: Rect| ffi::UIRect {
@@ -521,7 +601,13 @@ impl Overview {
                     .headers
                     .iter()
                     .map(|(r, text)| ffi::UILabel {
-                        rect: convert(*r),
+                        rect: {
+                            let mut rect = convert(*r);
+                            if let Some(width) = self.header_widths.get(text) {
+                                rect.width = rect.width.min(*width);
+                            }
+                            rect
+                        },
                         text: text.clone(),
                         colour: 0,
                         band: false,
@@ -678,6 +764,7 @@ impl Overview {
             if self.closing.is_some() {
                 return String::new();
             }
+            self.fit_headers(width, height);
             let (s, ox, oy) = self.transform(width, height);
             self.pointer = ((x - ox) / s, (y - oy) / s);
             self.drag_motion(s);
@@ -888,6 +975,62 @@ mod tests {
             height: 720.0,
             workspace: id + 1,
             focused: id == 0,
+        }
+    }
+    #[test]
+    fn edp_headers_are_text_sized_flush_and_eight_pixels_above_each_panel() {
+        let mut output = output(0, 8934., 6682.);
+        output.name = "eDP-1".into();
+        output.width = 2256.;
+        output.height = 1504.;
+        let mut core = Core::default();
+        core.ui_font_height(19.);
+        core.ui_header_width("eDP-1", 52.);
+        core.ui_header_width("Special workspaces", 148.);
+        let mut ui = core.overview_new(
+            &[output],
+            &[ffi::UISpecial {
+                monitor: 0,
+                name: "special:8".into(),
+                shown: false,
+            }],
+            &[],
+            0.,
+        );
+        for full in [false, true] {
+            ui.fit = !full;
+            ui.reflow();
+            for scale in [1., 2.] {
+                let f = ui.overview_frame_scaled(2256. * scale, 1504. * scale, scale, 101.);
+                for (label, special) in [("eDP-1", false), ("Special workspaces", true)] {
+                    let header = f.labels.iter().find(|l| l.text == label).unwrap();
+                    let cells: Vec<_> = f
+                        .cells
+                        .iter()
+                        .filter(|c| c.key.starts_with("special:") == special)
+                        .collect();
+                    let left = cells.iter().map(|c| c.rect.x).fold(f64::INFINITY, f64::min);
+                    let top = cells.iter().map(|c| c.rect.y).fold(f64::INFINITY, f64::min);
+                    assert!((header.rect.x - left).abs() < 1e-6);
+                    assert!((header.rect.height - 19. * scale).abs() < 1e-6);
+                    assert!((top - header.rect.y - header.rect.height - 8. * scale).abs() < 1e-6);
+                }
+                let state: serde_json::Value = serde_json::from_str(&ui.overview_state_scaled(
+                    2256. * scale,
+                    1504. * scale,
+                    scale,
+                    101.,
+                ))
+                .unwrap();
+                for (header, label) in state["panels"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .zip(state["labels"].as_array().unwrap())
+                {
+                    assert_eq!(header["rect"], label["rect"]);
+                }
+            }
         }
     }
     #[test]
