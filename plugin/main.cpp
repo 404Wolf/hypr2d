@@ -198,7 +198,8 @@ static std::string execute(const std::string &input) {
         auto reply = (*core)->command({ms.data(), ms.size()}, {ws.data(), ws.size()}, input);
         if (!reply.error.empty())
             return "error: " + std::string(reply.error);
-        if (!reply.moves.empty() || input.starts_with("configure ") || input.starts_with("swipe-config "))
+        if (!reply.moves.empty() || input.starts_with("configure ") || input.starts_with("swipe-config ") ||
+            input.starts_with("swipe-enabled "))
             cancelSwipe();
         const auto focus = Desktop::focusState()->monitor();
         const auto window = Desktop::focusState()->window();

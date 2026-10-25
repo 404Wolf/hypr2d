@@ -454,6 +454,33 @@ with (artifacts / "compositor.log").open("w+") as log:
         assert not json.loads(ctl("hypr2d","state","-j"))["extensions"]["regions"]
         module.terminate();module.wait(timeout=10)
         print("PASS M6: versioned socket, annotations in overview/waybar, reservations, native placement, owned callbacks, disconnect cleanup")
+        if os.environ.get("HYPR2D_TEST_MODULE"):
+            ok("eval",f'assert(loadfile({json.dumps(os.environ["HYPR2D_TEST_MODULE"])}))()')
+            configured=json.loads(ctl("hypr2d","state","-j"))
+            assert configured["overview_config"]["font_size"]==18 and configured["overview_config"]["rounding"]==2
+            assert configured["swipe_config"]["fingers"]==4 and not configured["swipe_config"]["natural"]
+            assert configured["swipe_enabled"]
+            configured_grid=next(m["grid"] for m in configured["monitors"] if m["name"]=="WAYLAND-1")
+            assert configured_grid["rows"]==9 and not configured_grid["wrap"]
+            ok("hypr2d","swipe-enabled","false")
+            ok("eval",'return hl.plugin.hypr2d._test_swipe("begin",4,0,false)')
+            ok("hypr2d","swipe-enabled","true")
+            ok("eval",'return hl.plugin.hypr2d._test_swipe("begin",4,0,true)')
+            ok("eval",'return hl.plugin.hypr2d._test_swipe("end",true,0,true)')
+            wait(lambda:all(abs(v)<0.01 for m in json.loads(ctl("hypr2d","state","-j"))["monitors"] for v in m["offset"]),"configured gesture settles")
+            # wtype supplies a synthetic keymap, not physical evdev positions.
+            ok("eval",'hl.config({input={resolve_binds_by_sym=true}})')
+            (artifacts / "module-binds.json").write_text(ctl("-j","binds"))
+            subprocess.run(["wtype","-M","logo","-P","Super_L","-s","50","-k","Tab","-s","50","-p","Super_L","-m","logo"],env=env,check=True,timeout=10)
+            try:
+                wait(lambda:ui_state().get("ui",{}).get("open") and ui_state().get("pending")==0,"generated SUPER+TAB bind")
+            except AssertionError:
+                print("M7 bind diagnostic",ctl("-j","binds"),ui_state(),flush=True)
+                print((artifacts / "compositor.log").read_text()[-12000:],flush=True)
+                raise
+            time.sleep(0.2);screenshot("ui-home-manager")
+            keypress("Escape");wait(lambda:ui_state().get("open") is False,"HM overview closes")
+            print("PASS M7 module: generated Lua config, theme, grid, gesture enable/settings and overview bind")
         # One IPC eval performs a real animated transition followed immediately
         # by the capture, without allowing the animation to settle first.
         ok("eval", 'hl.config({animations={enabled=true}}); hl.dispatch(hl.plugin.hypr2d.move("right")); hl.plugin.hypr2d._execute("probe open")')

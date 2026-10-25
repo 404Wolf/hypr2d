@@ -259,6 +259,7 @@ pub struct Core {
     theme: theme::Theme,
     grids: HashMap<String, Grid>,
     stride: u32,
+    swipe_enabled: bool,
     swipe_config: swipe::Config,
     gesture: Option<swipe::Swipe>,
 }
@@ -270,6 +271,7 @@ impl Default for Core {
             theme: theme::Theme::default(),
             grids: HashMap::new(),
             stride: 10,
+            swipe_enabled: true,
             swipe_config: swipe::Config::default(),
             gesture: None,
         }
@@ -349,7 +351,7 @@ impl Core {
             error: String::new(),
         };
         if matches!(args.as_slice(), ["state"] | ["state", "-j"]) {
-            reply.output = json!({"version":1,"extensions":self.extensions.snapshot(),"overview_config":self.theme,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
+            reply.output = json!({"version":1,"extensions":self.extensions.snapshot(),"swipe_enabled":self.swipe_enabled,"overview_config":self.theme,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
                 let g = self.grid(m);
                 json!({"id":m.id,"name":m.name,"workspace":m.workspace,"focused":m.focused,"grid":g,"cell":g.cell(m.workspace,m.id),"offset":[m.offset_x,m.offset_y],
                     "cells":(0..g.rows).flat_map(|y|(0..g.columns).map(move |x|Cell{x,y})).filter_map(|c|g.id(c,m.id).ok().map(|id|json!({"x":c.x,"y":c.y,"workspace":id,"windows":windows.iter().filter(|w|w.workspace==id).map(|w|json!({"address":w.address,"title":w.title,"app_id":w.app_id,"urgent":w.urgent})).collect::<Vec<_>>()}))).collect::<Vec<_>>()})
@@ -385,6 +387,11 @@ impl Core {
             self.stride = g.stride;
             self.grids.insert((*name).to_string(), g);
             self.extension_grids.insert(id, g);
+            return Ok(reply);
+        }
+        if let ["swipe-enabled", enabled] = args.as_slice() {
+            self.swipe_enabled = enabled.parse().map_err(|_| "enabled must be true/false")?;
+            self.gesture = None;
             return Ok(reply);
         }
         if let ["swipe-config", fingers, distance, velocity, natural, axis_lock] = args.as_slice() {
@@ -511,6 +518,9 @@ impl Core {
                 return ffi::SwipeFrame::default();
             }
             if phase == ffi::SwipePhase::Begin {
+                if !self.swipe_enabled {
+                    return ffi::SwipeFrame::default();
+                }
                 if fingers != self.swipe_config.fingers {
                     return ffi::SwipeFrame {
                         done: false,

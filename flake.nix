@@ -2,10 +2,13 @@
   description = "hypr2d: Rust-backed 2D workspace grid plugin";
   inputs.hyprland.url = "github:hyprwm/Hyprland/e368c13c27a42a173b9e08fa0bf413f9f7073187";
   inputs.nixpkgs.follows = "hyprland/nixpkgs";
-  outputs = { self, nixpkgs, hyprland }: let
+  inputs.home-manager.url = "github:nix-community/home-manager/2cd3234928f60bbff695a7ee56115ef7799c47cd";
+  inputs.home-manager.inputs.nixpkgs.follows = "nixpkgs";
+  outputs = { self, nixpkgs, hyprland, home-manager }: let
     systems = [ "x86_64-linux" "aarch64-linux" ];
     each = nixpkgs.lib.genAttrs systems;
   in {
+    homeManagerModules.default = import ./nix/home-manager.nix self;
     packages = each (system: let
       pkgs = import nixpkgs { inherit system; };
       compositor = hyprland.packages.${system}.hyprland;
@@ -50,6 +53,7 @@
           cp -r ${./examples} $out/share/hypr2d
         '';
       };
+      moduleTest = import ./nix/module-test.nix { inherit self home-manager pkgs; };
       testPointer = pkgs.stdenv.mkDerivation {
         pname = "hypr2d-test-pointer";
         version = "0.1.0";
@@ -66,7 +70,7 @@
       nested = pkgs.writeShellApplication {
         name = "hypr2d-nested";
         runtimeInputs = [ compositor (pkgs.python3.withPackages (p: [ p.pillow ])) pkgs.foot pkgs.waybar pkgs.grim pkgs.wtype pkgs.wlrctl testPointer ];
-        text = builtins.replaceStrings [ "@PLUGIN@" "@SMOKE@" "@CLI@" "@EXAMPLES@" "@OVERVIEW@" ] [ "${plugin}/lib/libhypr2d.so" "${./nix/smoke.py}" "${rust}/bin/hypr2d" "${./examples}" "${./nix/overview.py}" ] (builtins.readFile ./nix/nested.sh);
+        text = builtins.replaceStrings [ "@PLUGIN@" "@SMOKE@" "@CLI@" "@EXAMPLES@" "@OVERVIEW@" "@HMLUA@" ] [ "${plugin}/lib/libhypr2d.so" "${./nix/smoke.py}" "${rust}/bin/hypr2d" "${./examples}" "${./nix/overview.py}" "${moduleTest.lua}" ] (builtins.readFile ./nix/nested.sh);
       };
       parentConfig = pkgs.writeText "hypr2d-ci-parent.lua" ''
         hl.monitor({ output = "", mode = "1280x720@60", position = "auto", scale = 1 })
@@ -109,9 +113,9 @@
           machine.copy_from_machine("/tmp/hypr2d-overview-results")
         '';
       };
-    in { default = plugin; cli = rust; inherit plugin nested rust integration; });
+    in { default = plugin; cli = rust; inherit plugin nested rust integration; module-check = moduleTest.check; });
     apps = each (system: { default = { type = "app"; meta.description = "hypr2d CLI and Waybar module"; program = "${self.packages.${system}.plugin}/bin/hypr2d"; }; nested = { type = "app"; meta.description = "Run the isolated nested Hyprland spike"; program = "${self.packages.${system}.nested}/bin/hypr2d-nested"; }; });
     devShells = each (system: let pkgs = import nixpkgs { inherit system; }; in { default = pkgs.mkShell { packages = [ pkgs.cargo pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.clang-tools ]; }; });
-    checks = each (system: { inherit (self.packages.${system}) plugin rust integration; });
+    checks = each (system: { inherit (self.packages.${system}) plugin rust integration module-check; });
   };
 }

@@ -18,7 +18,7 @@ if [[ "${1:-}" == "--overview-benchmark" ]]; then
   export HYPR2D_TESTING=1 HYPR2D_PROBE_BENCHMARK=1
   python3 @OVERVIEW@ "$test_dir/hyprland.lua" "@PLUGIN@" "@CLI@"
 elif [[ "${1:-}" == "--overview-test" ]]; then
-  export HYPR2D_TESTING=1
+  export HYPR2D_TESTING=1 HYPR2D_TEST_MODULE="@HMLUA@"
   python3 @OVERVIEW@ "$test_dir/hyprland.lua" "@PLUGIN@" "@CLI@"
 elif [[ "${1:-}" == "--smoke-test" ]]; then
   export HYPR2D_TESTING=1

@@ -133,6 +133,41 @@ all session state. Overview and Waybar update on events, without polling.
 See [the protocol](docs/protocol.md) for schema, limits, ownership and examples;
 [`hypr2d-client`](client/src/lib.rs) supplies the typed Rust client.
 
+## Home Manager module
+
+This repository exports `homeManagerModules.default`. Add it to your own
+configuration; nothing here edits or activates a Home Manager checkout.
+Keep the plugin ABI aligned with the compositor:
+
+```nix
+inputs.hypr2d.url = "path:/home/wolf/Documents/hypr2d"; # or your chosen remote
+inputs.hypr2d.inputs.hyprland.follows = "hyprland";
+```
+
+Import `inputs.hypr2d.homeManagerModules.default` in your Home Manager modules,
+then enable `programs.hypr2d`. See [the complete option example](examples/home-manager.nix).
+Options cover `grid.stride`, per-output `grids`, `overview.fit`/`overview.bind`,
+`theme`, `gestures`, and `waybar`. The module loads the plugin through Home
+Manager's Lua plugin support, appends configuration Lua, installs the CLI and
+writes `~/.config/hypr/hypr2d.json` as a readable record of generated settings.
+The plugin is configured by the generated Lua; it does not watch that JSON file.
+Lua `configType` is required. The module defaults the Hyprland package to the
+same pinned flake input; an explicit package override must preserve that ABI. Unlisted outputs retain an 8×8 wrapping grid with
+the shared stride. Output names can be configured before hotplug.
+
+`waybar.enable` appends `custom/hypr2d` to the chosen named bar and position,
+adds absolute CLI paths, event streaming and optional black OneDark CSS.
+Choose `waybar.bar` to match your existing named settings entry; configurations
+using Waybar's list form should convert to named entries before enabling this
+integration. `waybar.monitor = null` follows focus; otherwise it targets the
+named output. No interval or refresh signal is installed.
+
+`gestures.enable = false` stops claiming swipes. When wiring this into your
+configuration, remove conflicting native/execGesture swipes and switch the
+existing movement binds using §Binds. `overview.bind = true` installs SUPER+TAB.
+Other existing binds, your old workspace script and your Home Manager files
+are left for you to migrate.
+
 ## Validation
 
 `nix develop --command cargo test --workspace` runs the pure Rust tests.

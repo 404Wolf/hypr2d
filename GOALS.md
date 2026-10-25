@@ -44,7 +44,8 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] `hypr2d-client` Rust crate + protocol docs; overview and waybar render annotations
 
 ## M7 — Home Manager integration
-- [ ] `homeManagerModules.default`: loads the plugin, writes grid config, provides the waybar module
+- [x] `homeManagerModules.default`: loads the plugin, writes grid config, provides the waybar module
 - [ ] The user's binds and gestures switched over (see DESIGN.md §Binds) in their home-manager repo, `workspace2d.sh` removed
+  - User-owned follow-up: this task implements the module in this repo only; no Home Manager checkout edits or activation.
 
 ## Questions

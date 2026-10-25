@@ -608,3 +608,36 @@ cleanup retains the original 16 MiB warmed-RSS bound, stable descriptors and
 explicit GL deletion checks. Closed RSS is sampled after the existing test-only
 probe completion barrier; without it, deferred renderer retirement produced
 transient spikes which subsequently fell back. Production still uses no glFinish.
+
+### M7 repository-side Home Manager module
+
+`homeManagerModules.default` exposes `programs.hypr2d` options for the package,
+shared stride, per-output grids, overview fit/bind, theme, gestures and Waybar.
+It uses Home Manager's Lua plugin loader, applies validated settings through Lua,
+installs the CLI and writes a JSON record of generated settings. Gesture claiming
+can be disabled independently. Waybar integration extends a chosen named bar,
+uses absolute command paths and optional themed black CSS, and adds no interval.
+An example lives in `examples/home-manager.nix`; README describes ABI follows,
+option use and migration responsibilities.
+
+Checks evaluate against a pinned Home Manager input, parse both generated Lua
+files, verify enabled/disabled output and Waybar wiring, and reject invalid
+settings without activating any home. The VM runs the generated plugin settings,
+checks changed theme/grid/gesture state and gesture enable/disable, and exercises
+the generated SUPER+TAB bind using a virtual keyboard. The test child enables
+symbol-based bind resolution because wtype supplies a synthetic keymap; this
+setting is not added to the shipped module. The user still owns the
+actual Home Manager migration and removal of their old script; that separate
+GOALS item remains unchecked. No user Home Manager checkout is edited or activated.
+
+
+Final x86_64 validation: `nix flake check --builders '' -L` passed all four
+checks (Rust/Clippy/formatting, pinned plugin, full M1–M7 VM integration and
+Home Manager generation). There are 27 Rust tests. Latest VM screenshots were
+inspected for fit/full/theme, independent annotation badges and the generated
+module's overview. Twenty UI cycles kept descriptors at 100 and warmed closed
+RSS between 284,452 and 295,580 KiB after the test completion barrier; both
+outputs' before/after comparisons changed zero pixels. GL objects were checked
+deleted on every close. All VM clients and the VM exited. Aarch64 and physical
+trackpad input remain untested; no live-session plugin load, Home Manager edit,
+activation, remote creation or push was performed.
