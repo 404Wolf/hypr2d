@@ -2,6 +2,7 @@
 use crate::{ffi, grid::Cell, guarded, Core};
 use std::collections::BTreeSet;
 mod drag;
+mod guides;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Rect {
@@ -332,6 +333,16 @@ impl Overview {
             } else {
                 panel
             };
+            // Leave room for cross-panel row/column guides while preserving
+            // physical panel order and the source cell aspect ratios.
+            let mut inset = *p;
+            if self.panels.len() - self.parked.len() > 1 && self.expanded.is_none() {
+                inset.x += self.header_gap;
+                inset.y += self.header_gap;
+                inset.w = (inset.w - 2. * self.header_gap).max(1.);
+                inset.h = (inset.h - 2. * self.header_gap).max(header + 1.);
+            }
+            let p = &inset;
             self.headers[g].1 = if self.parked.contains(&g) {
                 format!("{} · disconnected", self.panel_names[g])
             } else {
@@ -722,7 +733,7 @@ impl Overview {
         guarded(|| {
             let f = self.frame(width, height, now);
             let (s, ox, oy) = self.transform(width, height);
-            serde_json::json!({"expanded_parked":self.expanded.map(|g|self.panel_names[g].clone()),"cards":self.cards.iter().map(|(g,r)|serde_json::json!({"name":self.panel_names[*g],"rect":[r.x*s+ox,r.y*s+oy,r.w*s,r.h*s]})).collect::<Vec<_>>(),"labels":f.labels.iter().map(|l|serde_json::json!({"text":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>(),"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"drop_mode":f.drop_mode,"refused":f.refused,"last_refused":self.refused,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":f.labels.iter().take(self.headers.iter().enumerate().filter(|(g,_)|self.header_visible(*g)).count()).map(|l|serde_json::json!({"label":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>()}).to_string()
+            serde_json::json!({"guides":f.guides.iter().map(|g|serde_json::json!({"from":g.from_monitor,"to":g.to_monitor,"index":g.index,"vertical":g.vertical,"start":[g.start.x,g.start.y],"end":[g.end.x,g.end.y]})).collect::<Vec<_>>(),"expanded_parked":self.expanded.map(|g|self.panel_names[g].clone()),"cards":self.cards.iter().map(|(g,r)|serde_json::json!({"name":self.panel_names[*g],"rect":[r.x*s+ox,r.y*s+oy,r.w*s,r.h*s]})).collect::<Vec<_>>(),"labels":f.labels.iter().map(|l|serde_json::json!({"text":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>(),"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"drop_mode":f.drop_mode,"refused":f.refused,"last_refused":self.refused,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":f.labels.iter().take(self.headers.iter().enumerate().filter(|(g,_)|self.header_visible(*g)).count()).map(|l|serde_json::json!({"label":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>()}).to_string()
         })
     }
     pub fn overview_frame(&self, width: f64, height: f64, now: f64) -> ffi::UIFrame {
@@ -773,6 +784,7 @@ impl Overview {
                 bounds.h = bottom - bounds.y;
             }
             ffi::UIFrame {
+                guides: self.guides(convert),
                 backdrops: backgrounds
                     .into_iter()
                     .map(|(monitor, (r, w, h))| ffi::UIBackdropPanel {
@@ -1252,6 +1264,7 @@ impl Overview {
 impl Default for ffi::UIFrame {
     fn default() -> Self {
         Self {
+            guides: vec![],
             backdrops: vec![],
             ghost: ffi::UIGhost::default(),
             windows: vec![],
@@ -1349,7 +1362,7 @@ fn badge(a: &hypr2d_client::Annotation) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn output(id: u32, x: f64, y: f64) -> ffi::UIOutput {
+    pub(super) fn output(id: u32, x: f64, y: f64) -> ffi::UIOutput {
         ffi::UIOutput {
             id,
             slot: id,

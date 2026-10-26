@@ -19,6 +19,7 @@ let
     pinch.cancelScale = 0.12;
     theme.fontSize = 18;
     theme.rounding = 2;
+    theme.tile = "#D0D0D01F";
     gestures = { fingers = 4; distance = 140; axisLock = 6; natural = false; diagonalWidth = 14; hysteresis=7; hysteresisDistance = 16; projectionDecel = 0.0008; springStiffness = 625; sensitivity = 1.3; };
     waybar = { enable = true; monitor = "WAYLAND-1"; radiusX = 2; radiusY = 1; columns = "full"; placement = "start"; };
   };
@@ -84,6 +85,7 @@ in {
     config=json.loads(${builtins.toJSON c.xdg.configFile."hypr/hypr2d.json".text})
     assert config["theme"]["font_size"] == 18
     assert config["theme"]["rounding"] == 2
+    assert config["theme"]["tile"] == "#D0D0D01F"
     assert config["grid"]["stride"] == 10
     assert config["gestures"]["fingers"] == 4
     PY

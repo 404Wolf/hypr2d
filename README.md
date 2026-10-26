@@ -121,8 +121,8 @@ positions and each thumbnail retains its source monitor's aspect ratio.
 The combined layout fits the output width/height and is centered vertically,
 including the grids and special strip. Cell captions use the main app class's
 short name (for example `firefox` or `kitty`), followed by `+N` for additional
-windows. Empty grid cells have no caption: a thin base02 outline surrounds the
-dimmed wallpaper. Occupied cells retain their workspace thumbnails.
+windows. Empty grid cells have no caption: a thin base02 outline and subtle translucent
+fill sit over the dimmed wallpaper. Occupied cells retain their workspace thumbnails.
 
 Configure appearance with one atomic JSON object (omitted fields use defaults):
 
@@ -130,7 +130,8 @@ Configure appearance with one atomic JSON object (omitted fields use defaults):
 hyprctl hypr2d overview-config '{"fit":true,"background":"#000000","cell":"#303030","border":"#353535","hover":"#4A4A4A","current":"#82AAFF","target":"#FFCB6B","label":"#EEFFFF","font":"sans-serif","font_size":16,"rounding":3}'
 ```
 
-Colours use `#RRGGBB`; font size is 10–40 output pixels and rounding is 0–4 px.
+Colours use `#RRGGBB`; `tile` uses `#RRGGBBAA` (including alpha).
+Font size is 10–40 output pixels and rounding is 0–4 px.
 These defaults match base16 OneDark Extra Dark. Runtime changes apply while
 open. Capture dimensions are the displayed cell size × monitor scale ×
 `overview.supersample` (default 2), reduced only to meet the memory budget.
@@ -141,6 +142,20 @@ Open/close zooms around the current desktop over 180 ms, including interrupted
 open/close transitions. Pointer selection starts when the zoom settles;
 Esc and pinch cancellation remain available throughout.
 
+Every cell has a translucent `programs.hypr2d.theme.tile` fill (default
+`"#FFFFFF1A"`, white at about 10% alpha). For example, `"#D0D0D01F"` gives
+light grey at about 12%. Occupied thumbnails draw above it; empty cells retain
+the continuous wallpaper. Runtime JSON uses `"tile":"#FFFFFF1A"`.
+
+Adjacent live monitor panels have row guides horizontally and column guides
+vertically. These connect the **same visible logical row/column index**, including
+unequal resolutions, using 1×scale px `theme.border` lines at 50% opacity (80%
+while dragging). Small panel gutters leave room for the lines. Only the nearest
+physical neighbour with overlapping span is connected; parked/expanded panels
+and a single live monitor have no guides. In fit mode, indices hidden in either
+panel have no connector. The guides illustrate **drag targets**: `move`/`carry`
+continue to wrap or clamp inside their own monitor's grid, never cross monitors.
+
 Overview cells and special tiles default to flush spacing with one-pixel inset
 borders. Set `programs.hypr2d.overview.gap` (0–32, before layout scaling) to
 increase spacing. Labels have an 80% background-colour scrim. Numeric special
@@ -149,7 +164,7 @@ labels take precedence.
 
 The backdrop captures each monitor's BACKGROUND and BOTTOM layer surfaces
 (including hyprpaper), without windows, top layers or cursor. Default darkening
-is 35%; empty desktops are transparent outlines over this continuous image. No additional
+is 35%; empty desktops retain this continuous image beneath their translucent fill. No additional
 blur pass is added. Wallpapers refresh on layer surface commits/map/unmap.
 Without mapped lower layers, the flat theme fallback needs no backdrop texture.
 

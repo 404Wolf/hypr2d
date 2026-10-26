@@ -348,17 +348,42 @@ class Pass final : public IPassElement {
                 makeUnique<CTexPassElement>(CTexPassElement::SRenderData{.tex = bg->second->getTexture(),
                                                                          .box = {0, 0, size.x, size.y},
                                                                          .a = float((1.0 - style.background_darken) * frame.alpha)}));
+        // Rust provides exact matching row/column endpoints. Use orthogonal
+        // elbow segments for unequal resolutions, one physical pixel per scale.
+        for (const auto &guide : frame.guides) {
+            const double x1 = guide.start.x, y1 = guide.start.y, x2 = guide.end.x, y2 = guide.end.y;
+            const double line = outputScale;
+            const auto ink = color(style.border, frame.alpha * (frame.ghost.visible ? .8 : .5));
+            auto horizontal = [&](double a, double b, double y) {
+                rect({std::min(a, b), y - line / 2, std::max(line, std::abs(b - a)), line}, ink);
+            };
+            auto vertical = [&](double a, double b, double x) {
+                rect({x - line / 2, std::min(a, b), line, std::max(line, std::abs(b - a))}, ink);
+            };
+            if (guide.vertical) {
+                const double middle = (y1 + y2) / 2;
+                vertical(y1, middle, x1);
+                horizontal(x1, x2, middle);
+                vertical(middle, y2, x2);
+            } else {
+                const double middle = (x1 + x2) / 2;
+                horizontal(x1, middle, y1);
+                vertical(y1, y2, middle);
+                horizontal(middle, x2, y2);
+            }
+        }
         // Empty desktops are holes onto the single screen backdrop. Batch only
         // their outlines for zero-gap panels; never repeat wallpaper UVs.
         std::set<uint32_t> outlinedPanels;
         if (style.gap == 0)
             for (const auto &panel : frame.backdrops) {
                 const auto &r = panel.rect;
+                rect({r.x, r.y, r.width, r.height}, color(style.tile, style.tile_alpha * frame.alpha));
                 const double cw = r.width / panel.columns, ch = r.height / panel.rows;
                 for (int x = 0; x <= panel.columns; ++x)
-                    rect({r.x + cw * x - (x == panel.columns ? 1 : 0), r.y, 1, r.height}, color(style.border, frame.alpha));
+                    rect({std::round(r.x + cw * x) - (x == panel.columns ? 1 : 0), r.y, 1, r.height}, color(style.border, frame.alpha));
                 for (int y = 0; y <= panel.rows; ++y)
-                    rect({r.x, r.y + ch * y - (y == panel.rows ? 1 : 0), r.width, 1}, color(style.border, frame.alpha));
+                    rect({r.x, std::round(r.y + ch * y) - (y == panel.rows ? 1 : 0), r.width, 1}, color(style.border, frame.alpha));
                 outlinedPanels.insert(panel.monitor);
             }
         // Layered translucent rounded rectangles form a cheap, bounded soft shadow.
@@ -383,8 +408,8 @@ class Pass final : public IPassElement {
             if (empty && outlinedPanels.contains(c.monitor) && !std::string(c.key).starts_with("special:") && !c.shown && !c.selected &&
                 !c.hovered && std::string(c.key) != std::string(frame.target) && c.label.empty() && !c.colour)
                 continue;
-            if (!empty)
-                rect(box, color(c.occupied ? style.cell : style.background, frame.alpha));
+            if (!outlinedPanels.contains(c.monitor) || std::string(c.key).starts_with("special:"))
+                rect(box, color(style.tile, style.tile_alpha * frame.alpha));
             if (auto it = cache.find(std::string(c.key)); c.occupied && it != cache.end())
                 items.push_back(makeUnique<CTexPassElement>(CTexPassElement::SRenderData{.tex = it->second->getTexture(),
                                                                                          .box = box,

@@ -7,7 +7,7 @@ let
   bool = b: if b then "true" else "false";
   colour = default: mkOption { type = types.strMatching "#[0-9a-fA-F]{6}"; inherit default; description = "RGB overview colour."; };
   theme = {
-    inherit (cfg.theme) background cell border hover current target label font rounding;
+    inherit (cfg.theme) background cell tile border hover current target label font rounding;
     font_size = cfg.theme.fontSize;
     accent = cfg.overview.accent;
     supersample = cfg.overview.supersample;
@@ -85,6 +85,7 @@ in {
     theme = {
       background = colour "#000000";
       cell = colour "#303030";
+      tile = mkOption { type = types.strMatching "#[0-9a-fA-F]{8}"; default = "#FFFFFF1A"; description = "Translucent overview tile fill in #RRGGBBAA (default white at about 10% opacity)."; };
       border = colour "#353535";
       hover = colour "#4A4A4A";
       current = colour "#82AAFF";

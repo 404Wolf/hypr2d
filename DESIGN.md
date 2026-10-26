@@ -1275,3 +1275,52 @@ VM. Thus the requested <30 ms whole-frame target and instant hardware feel are
 **not verified**, rather than being inferred from the fast dispatcher. The
 Radeon deployment check remains user-owned; no live compositor or Home Manager
 checkout was modified. All VM processes exited and the driver cleaned up.
+
+### Translucent tile fill and physical-panel guides
+
+Theme.tile is a validated #RRGGBBAA string, default #FFFFFF1A (26/255 alpha,
+about 10%). Home Manager exposes programs.hypr2d.theme.tile and forwards it to
+the runtime overview theme. RGB overview/minimap colours retain their existing
+formats/defaults. Zero-gap panels batch the fill into one rectangle beneath all
+cell thumbnails/outlines; gaps and specials use per-cell fills. Occupied
+thumbnails draw above the fill. Empty cells still allocate no image and reveal
+the continuous backdrop. Batched one-pixel borders snap to physical pixels.
+
+The exact movement semantics were checked in Core::command_inner and Grid::step:
+move/carry select the current monitor's grid and wrap/clamp each axis there;
+there is no implicit cross-monitor step. Thus guides describe drag targets,
+not an added movement rule. Rust selects the nearest physical panel to the right
+or below with overlapping span, excludes parked/expanded panels, and connects
+matching visible logical row/column indices at their outside cell-edge centres.
+Missing fit-mode indices have no guide. Unequal cell sizes/positions produce
+orthogonal elbow segments. Small 8×scale insets reserve visible panel gutters.
+Single-monitor layouts have no guides. The shim draws only the supplied geometry:
+1×scale px in theme.border at 50% alpha, 80% while dragging.
+
+Validation: 70 Rust tests, formatting/Clippy and all four x86_64 flake checks
+passed. Rust covers RGBA validation, unequal panel dimensions, logical-index
+endpoints, nearest neighbours without skipping the middle, and no single-monitor
+guides. HM checks a custom #D0D0D01F value in generated config. The VM tests tile
+blend pixels against the known continuous wallpaper and keeps the existing
+occupied-only capture/resource checks. Its four headless outputs have three
+1280×720 modes and one 1024×768 mode: first arranged horizontally, then with
+the unequal output below the middle panel. Both arrangements produce exactly
+27 connectors on 9×9 grids; the stacked case has nine column guides. A scripted
+pointer drag verifies changed guide pixels with higher opacity, then cancels
+without moving the grouped client. All output screenshots are saved; inspected
+guides-horizontal-0.png, guides-stacked-0.png, guides-drag-0.png and
+visual-full-0.png in the VM results. No additional captures are required for
+fills or connectors.
+
+The existing app-hidden-cursor fixture was isolated in a fresh Foot window on
+an otherwise empty cell, retaining a real virtual pointer and a typing device
+through the assertion. A dispatcher warp without established seat input was
+not a reliable client pointer-enter setup, and a previously exercised grouped
+client made the hide-on-typing fixture unreliable. The test still requires a
+real client-hidden cursor image, its visible overview override, exact cursor
+pixel removal and restoration on close. Grouped-window focus/current-member
+preservation remains covered separately without changing those assertions.
+The temporary client closes and original cell/focus return before the visual
+benchmark. The complete VM suite passed in 367.34 s, including 60 open/close
+cycles, doctor recovery, hotplug, pinch, drag/special/group and minimap checks.
+All VM processes exited; no live-session or Home Manager checkout changes.

@@ -269,8 +269,9 @@ with (artifacts / "compositor.log").open("w+") as log:
         empty=next(c for c in fitted["cells"] if not c["occupied"] and not c["selected"] and not c["shown"] and not c["key"].startswith("special:"))
         x,y,w,h=empty["rect"]
         empty_image=Image.open(artifacts / "ui-fit-default-0.png").convert("RGB")
-        assert max(empty_image.getpixel((round(x+w/2),round(y+h/2))))<=20,"empty background must be base00"
-        assert empty_image.getpixel((round(x),round(y+h/2)))==(53,53,53),"empty outline must be base02"
+        assert all(abs(c-26)<=2 for c in empty_image.getpixel((round(x+w/2),round(y+h/2)))),"empty background must show translucent tile fill"
+        empty_edges=[c["rect"] for c in fitted["cells"] if not c["occupied"] and not c["shown"] and not c["selected"] and not c["key"].startswith("special:")]
+        assert any(empty_image.getpixel((round(cx)+offset,round(cy+ch/2)))==(53,53,53) for cx,cy,cw,ch in empty_edges for offset in (-1,0,1)),"unshadowed empty outlines must be base02"
         # Real mapped fixtures exercise short reverse-DNS class labels and +N.
         label_windows=[]
         for i in range(3):
@@ -984,16 +985,26 @@ with (artifacts / "compositor.log").open("w+") as log:
         print("PASS pinch: native Lua opening, in/out cancel, no reopen, swipe isolation, grouped focus/special/workspace/order preservation")
         lua('hl.dsp.workspace.toggle_special("8")')
         lua(f'hl.dsp.focus({{window="address:{first}"}})')
+        # Retiring the drag pointer above can remove wl_seat's pointer
+        # capability. Keep a real virtual pointer alive for Foot's cursor test;
+        # a dispatcher warp alone cannot create a client wl_pointer.
+        ptr=subprocess.Popen(["hypr2d-test-pointer"],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,start_new_session=True)
+        clients.append(ptr);pointer_ack(b"ready")
+        pointer_command("move 1 0") # establish the native seat mouse before dispatcher warps
+        ok("hypr2d","goto","7","7",str(edp["id"]))
+        cursor_fixture=laptop_fixture("cursor-fixture")
         # Force a real pointer leave/enter: an unchanged center warp does not
         # deliver motion to Foot after native pinch forwarding.
         lua('hl.dsp.cursor.move({x=8935,y=6683})')
         time.sleep(.1)
-        win=real_window(first)
+        win=real_window(cursor_fixture)
         lua(f'hl.dsp.cursor.move({{x={win["at"][0]+win["size"][0]/2},y={win["at"][1]+win["size"][1]/2}}})')
+        pointer_command("move 1 0")
         # Cursor enter/shape is asynchronous in the client. Let Foot receive the
         # enter before typing, then wait for its actual hide request.
         time.sleep(.2)
-        keypress("x")
+        typing=subprocess.Popen(["wtype","-s","200","-k","x","-s","60000"],env=env,stdout=log,stderr=log,start_new_session=True)
+        clients.append(typing)
         wait(lambda:not json.loads(ctl("hypr2d","overview","cursor"))["texture"],"client hides cursor after typing")
         hidden_cursor=json.loads(ctl("hypr2d","overview","cursor"))
         assert not hidden_cursor["texture"],("fixture must reproduce a missing app cursor image",hidden_cursor)
@@ -1025,6 +1036,12 @@ with (artifacts / "compositor.log").open("w+") as log:
         ok("hypr2d","overview","close")
         wait(lambda:ui_state().get("open") is False,"app-hidden cursor close")
         assert not json.loads(ctl("hypr2d","overview","cursor"))["texture"],"restore hidden app cursor on close"
+        typing.terminate();typing.wait(timeout=5)
+        lua(f'hl.dsp.window.close({{window="address:{cursor_fixture}"}})')
+        wait(lambda:all(w["address"]!=cursor_fixture for w in mapped()),"cursor fixture closes")
+        ok("hypr2d","goto","0","0",str(edp["id"]))
+        lua(f'hl.dsp.focus({{window="address:{first}"}})')
+        ptr.stdin.write(b"quit\n");ptr.stdin.flush();ptr.wait(timeout=10)
         (artifacts/"hardware-invariants.json").write_text(json.dumps({"before":baseline,"after":invariants(),"shown":shown},indent=2))
         # Isolate the actual single-output workload, not the parked grids left
         # by earlier hotplug coverage. These clients still close via dispatchers.
@@ -1084,7 +1101,7 @@ with (artifacts / "compositor.log").open("w+") as log:
             x,y,w,h=empty["rect"]
             px,py=round(x+w*.25),round(y+h*.25)
             colour=(64,96,128) if px<1128 and py<752 else (128,80,64) if py<752 else (64,96,80) if px<1128 else (96,64,128)
-            assert all(abs(a-b*.65)<5 for a,b in zip(image.getpixel((px,py)),colour)),"empty cells must show continuous screen wallpaper"
+            assert all(abs(a-(b*.65*(1-26/255)+26))<5 for a,b in zip(image.getpixel((px,py)),colour)),"empty cells must show continuous screen wallpaper"
             if not full_grid and not completed_gpu:
                 target=next(c for c in state["ui"]["cells"] if c["occupied"] and not c["shown"])
                 x,y,w,h=target["rect"]
@@ -1109,6 +1126,54 @@ with (artifacts / "compositor.log").open("w+") as log:
             assert ui_state()["deleted_gl_objects"],"backdrop and mipmap resources deleted"
             assert invariants()==visual_before,"wallpaper/supersampling preserve focus/group/workspace state"
         (artifacts/"visual-cost.json").write_text(json.dumps(visual_metrics,indent=2))
+        # Four headless outputs: three equal neighbours and an unequal fourth.
+        # Check horizontal-only and then vertical adjacency, including drag ink.
+        assert not ui_state().get("open",False)
+        ok("eval",'hl.monitor({output="eDP-1",mode="1280x720@60",position="0x0",scale=1})')
+        for name,position,mode in [("GUIDE-MIDDLE","1280x0","1280x720@60"),("GUIDE-RIGHT","2560x0","1280x720@60"),("GUIDE-EXTRA","3840x0","1024x768@60")]:
+            ok("output","create","headless",name)
+            ok("eval",f'hl.monitor({{output="{name}",mode="{mode}",position="{position}",scale=1}})')
+        wait(lambda:len(monitors())==4,"four guide outputs")
+        mons=monitors()
+        for m in mons:ok("hypr2d","configure",m["name"],"9","9","true","10")
+        ok("hypr2d","overview-config",'{"fit":false,"tile":"#FFFFFF1A"}')
+        lua(f'hl.dsp.focus({{window="address:{first}"}})')
+        lua('hl.dsp.cursor.move({x=10,y=10})')
+        time.sleep(.3)
+        open_ui()
+        horizontal=ui_state()["ui"]["guides"]
+        assert len(horizontal)==27 and not any(g["vertical"] for g in horizontal),horizontal
+        ordered=sorted(mons,key=lambda m:m["x"])
+        pairs={(a["id"],b["id"]) for a,b in zip(ordered,ordered[1:])}
+        assert {(g["from"],g["to"]) for g in horizontal}==pairs,"never skip middle monitor"
+        screenshot("guides-horizontal")
+        keypress("Escape");wait(lambda:not ui_state().get("open",False),"horizontal guides close")
+        ok("eval",'hl.monitor({output="GUIDE-EXTRA",mode="1024x768@60",position="1280x720",scale=1})')
+        mons=monitors()
+        time.sleep(.3)
+        open_ui()
+        guided=ui_state()["ui"]
+        assert len(guided["guides"])==27
+        assert sum(g["vertical"] for g in guided["guides"])==9
+        screenshot("guides-stacked")
+        ptr=subprocess.Popen(["hypr2d-test-pointer"],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,start_new_session=True)
+        clients.append(ptr);pointer_ack(b"ready")
+        begin_drag(first)
+        r=drawn_window(first)["rect"]
+        move_drag((r[0]+r[2]/2+10,r[1]+r[3]/2+10))
+        screenshot("guides-drag")
+        # A true guide pixel must change as opacity rises while dragging.
+        normal=Image.open(artifacts/"guides-stacked-0.png").convert("RGB")
+        dragging=Image.open(artifacts/"guides-drag-0.png").convert("RGB")
+        guide=next(g for g in guided["guides"] if not g["vertical"] and g["index"]==7)
+        x1,y1=guide["start"];x2,y2=guide["end"]
+        gx,gy=round((3*x1+x2)/4),round(y1)
+        assert any(normal.getpixel((x,y))!=dragging.getpixel((x,y)) for x in range(gx-1,gx+2) for y in range(gy-1,gy+2)),"drag must brighten guide ink"
+        keypress("Escape");pointer_command("up")
+        keypress("Escape");wait(lambda:not ui_state().get("open",False),"guide drag cancel")
+        ptr.stdin.write(b"quit\n");ptr.stdin.flush();ptr.wait(timeout=10)
+        (artifacts/"guides.json").write_text(json.dumps({"horizontal":horizontal,"stacked":guided},indent=2))
+        print("PASS guides: 4 headless outputs, unequal resolution, adjacent row/column indices, drag opacity and screenshots",flush=True)
         paper.terminate();paper.wait(timeout=5)
         clients.remove(paper)
         print("PASS visual: wallpaper background/empty desktops, budgeted 2x supersampling, fit/full 9x9 screenshots and completed-GPU timing",visual_metrics,flush=True)

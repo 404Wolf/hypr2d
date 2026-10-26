@@ -10,6 +10,7 @@ pub struct Theme {
     pub accent: String,
     pub background: String,
     pub cell: String,
+    pub tile: String,
     pub border: String,
     pub hover: String,
     pub current: String,
@@ -30,6 +31,7 @@ impl Default for Theme {
             accent: "#9CBEFF".into(),
             background: "#000000".into(),
             cell: "#303030".into(),
+            tile: "#FFFFFF1A".into(),
             border: "#353535".into(),
             hover: "#4A4A4A".into(),
             current: "#82AAFF".into(),
@@ -59,6 +61,12 @@ impl Theme {
                 return Err("colours must be #RRGGBB".into());
             }
         }
+        if t.tile.len() != 9
+            || !t.tile.starts_with('#')
+            || !t.tile[1..].bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err("tile must be #RRGGBBAA".into());
+        }
         if !t.supersample.is_finite()
             || !(1.0..=4.0).contains(&t.supersample)
             || !(16..=512).contains(&t.memory_budget_mib)
@@ -82,5 +90,21 @@ impl Theme {
             );
         }
         Ok(t)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn translucent_tile_colour_is_validated() {
+        assert_eq!(Theme::parse("{}").unwrap().tile, "#FFFFFF1A");
+        assert_eq!(
+            Theme::parse(r##"{"tile":"#C0C0C020"}"##).unwrap().tile,
+            "#C0C0C020"
+        );
+        for value in ["#FFFFFF", "#FFFFFFGG", "#123456789"] {
+            assert!(Theme::parse(&format!(r#"{{"tile":"{value}"}}"#)).is_err());
+        }
     }
 }

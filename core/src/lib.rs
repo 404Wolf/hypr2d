@@ -182,6 +182,8 @@ mod ffi {
         memory_budget_mib: u32,
         background: u32,
         cell: u32,
+        tile: u32,
+        tile_alpha: f64,
         border: u32,
         hover: u32,
         current: u32,
@@ -252,7 +254,16 @@ mod ffi {
         columns: u32,
         rows: u32,
     }
+    struct UIGuide {
+        from_monitor: u32,
+        to_monitor: u32,
+        index: u32,
+        vertical: bool,
+        start: UIRect,
+        end: UIRect,
+    }
     struct UIFrame {
+        guides: Vec<UIGuide>,
         backdrops: Vec<UIBackdropPanel>,
         ghost: UIGhost,
         windows: Vec<UIWindowView>,
@@ -863,6 +874,8 @@ impl Core {
                 memory_budget_mib: t.memory_budget_mib,
                 background: c(&t.background),
                 cell: c(&t.cell),
+                tile: c(&t.tile[..7]),
+                tile_alpha: u8::from_str_radix(&t.tile[7..], 16).unwrap_or(0) as f64 / 255.,
                 border: c(&t.border),
                 hover: c(&t.hover),
                 current: c(&t.current),
@@ -884,6 +897,8 @@ impl Default for ffi::UIStyle {
             memory_budget_mib: 128,
             background: 0,
             cell: 0x303030,
+            tile: 0xFFFFFF,
+            tile_alpha: 26. / 255.,
             border: 0x353535,
             hover: 0x4A4A4A,
             current: 0x82AAFF,

@@ -91,4 +91,6 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Live full-grid regression: fit five-special strip inside the 2256×1504 output, continuous empty-cell backdrop, no capture feedback, deferred opening frame; Rust and VM checks
   - First frame captures zero thumbnails; the software VM still exceeds 30 ms total frame time. Radeon opening feel remains a user-owned live check.
 
+- [x] Translucent configurable tile fills and adjacent-panel row/column drag guides; unequal-resolution multi-output VM screenshots
+
 ## Questions
