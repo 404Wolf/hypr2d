@@ -1286,7 +1286,7 @@ cell thumbnails/outlines; gaps and specials use per-cell fills. Occupied
 thumbnails draw above the fill. Empty cells still allocate no image and reveal
 the continuous backdrop. Batched one-pixel borders snap to physical pixels.
 
-The exact movement semantics were checked in Core::command_inner and Grid::step:
+The exact movement semantics were checked in Core::plan and Grid::step:
 move/carry select the current monitor's grid and wrap/clamp each axis there;
 there is no implicit cross-monitor step. Thus guides describe drag targets,
 not an added movement rule. Rust selects the nearest physical panel to the right
