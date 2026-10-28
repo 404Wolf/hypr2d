@@ -674,6 +674,25 @@ with (artifacts / "compositor.log").open("w+") as log:
         undo_block()
         wait(lambda:real_window(ra)["workspace"]["id"]==first and real_window(rb)["workspace"]["id"]==second,"cross-monitor undo")
         keypress("Escape");wait(lambda:ui_state().get("open") is False,"region close")
+        ok("hypr2d","goto","2","5",str(mons[0]["id"]));open_ui()
+        for key in ["v","h","m","k","Return"]:keypress(key)
+        wait(lambda:real_window(rb)["workspace"]["id"]==331+slot and real_window(rc)["workspace"]["id"]==341+slot,"keyboard region extension and move")
+        undo_block();wait(lambda:real_window(rb)["workspace"]["id"]==second and real_window(rc)["workspace"]["id"]==dest,"keyboard region undo")
+        keypress("v");keypress("h");keypress("m")
+        for _ in range(6):keypress("l")
+        keypress("Return")
+        wait(lambda:real_window(rb)["workspace"]["id"]==471+slot and real_window(rc)["workspace"]["id"]==401+slot,"wrapped block keeps relative offsets")
+        undo_block();wait(lambda:real_window(rb)["workspace"]["id"]==second and real_window(rc)["workspace"]["id"]==dest,"wrapped block undo")
+        keypress("Escape");wait(lambda:not ui_state().get("open",False),"keyboard region close")
+        ok("hypr2d","configure",mons[0]["name"],"8","8","false","10");open_ui()
+        keypress("v");keypress("h");keypress("m")
+        for _ in range(6):keypress("l")
+        keypress("Return")
+        assert ui_state()["ui"]["region_mode"]==2 and ui_state()["ui"]["last_refused"]=="region"
+        assert real_window(rb)["workspace"]["id"]==second and real_window(rc)["workspace"]["id"]==dest
+        screenshot("ui-region-bounds-refused")
+        keypress("Escape");keypress("Escape");wait(lambda:not ui_state().get("open",False),"bounds refusal close")
+        ok("hypr2d","configure",mons[0]["name"],"8","8","true","10")
         for address in [ra,rb,rc]:lua(f'hl.dsp.window.close({{window="address:{address}"}})')
         wait(lambda:all(w["address"] not in [ra,rb,rc] for w in mapped()),"region fixture cleanup")
         print("PASS regions: marquee, block ghost, occupied merge, Alt swap, cross-monitor move and atomic undo",flush=True)
@@ -901,7 +920,60 @@ with (artifacts / "compositor.log").open("w+") as log:
         assert real_window(parked_b)["workspace"]["id"]==81+live["slot"]
         lua(f'hl.dsp.window.move({{window="address:{parked_b}",workspace={original[parked_b]},follow=false}})')
         wait(lambda:ui_state()["pending"]==0,"parked restore settles")
+        # The live grid can target an empty parked cell, and regions use the
+        # same tab transition in both directions (no native monitor stealing).
+        def drag_tab(label,region=False):
+            tab=next(l["rect"] for l in ui_state()["ui"]["labels"] if l["text"]==label)
+            point=(tab[0]+tab[2]/2,tab[1]+tab[3]/2)
+            if region:pointer_to(point)
+            else:move_drag(point)
+        begin_drag(keeper);drag_tab("parked")
+        wait(lambda:ui_state()["ui"]["expanded_parked"] is not None,"live drag expands parked target")
+        move_drag(cell_point(str(1+dock["slot"]),.01,.01));screenshot("ui-live-to-parked");finish_drag()
+        assert real_window(keeper)["workspace"]["id"]==1+dock["slot"]
+        begin_drag(keeper);drag_tab("live");move_drag(cell_point(str(1+live["slot"]),.01,.01));finish_drag()
+        assert real_window(keeper)["workspace"]["id"]==1+live["slot"]
+        select_block(1+live["slot"],11+live["slot"])
+        pointer_to(cell_point(str(1+live["slot"])));pointer_command("down");drag_tab("parked",True)
+        wait(lambda:ui_state()["ui"]["expanded_parked"] is not None,"region enters parked view")
+        pointer_to(cell_point(str(1+dock["slot"])));screenshot("ui-region-parked-target");pointer_command("up")
+        wait(lambda:ui_state()["ui"]["region_mode"]==0 and ui_state()["pending"]==0,"region into parked")
+        assert real_window(keeper)["workspace"]["id"]==1+dock["slot"]
+        select_block(1+dock["slot"],11+dock["slot"])
+        pointer_to(cell_point(str(1+dock["slot"])));pointer_command("down");drag_tab("live",True)
+        pointer_to(cell_point(str(1+live["slot"])));pointer_command("up")
+        wait(lambda:ui_state()["ui"]["region_mode"]==0 and ui_state()["pending"]==0,"region out of parked")
+        assert real_window(keeper)["workspace"]["id"]==1+live["slot"]
+        assert json.loads(ctl("hypr2d","doctor"))["ok"]
         keypress("Escape");wait(lambda:ui_state().get("open") is False,"parked UI closes")
+        # Adopt the disconnected grid; its own current cell follows the grid.
+        remembered=91+dock["slot"]
+        lua(f'hl.dsp.window.move({{window="address:{keeper}",workspace={1+dock["slot"]},follow=false}})')
+        ok("hypr2d","adopt",str(dock["slot"]),live["name"])
+        wait(lambda:monitors()[0]["slot"]==dock["slot"],"adopt parked grid")
+        assert monitors()[0]["activeWorkspace"]["id"]==remembered
+        assert real_window(keeper)["workspace"]["id"]==1+dock["slot"]
+        open_ui();screenshot("ui-adopted-parked-grid")
+        begin_drag(keeper);drag_tab("parked");move_drag(cell_point(str(1+live["slot"]),.01,.01));screenshot("ui-empty-parked-target");finish_drag()
+        begin_drag(keeper);drag_tab("live");move_drag(cell_point(str(1+dock["slot"]),.01,.01));finish_drag()
+        select_block(1+dock["slot"],11+dock["slot"])
+        pointer_to(cell_point(str(1+dock["slot"])));pointer_command("down");drag_tab("parked",True)
+        pointer_to(cell_point(str(1+live["slot"])));pointer_command("up")
+        wait(lambda:ui_state()["ui"]["region_mode"]==0 and ui_state()["pending"]==0,"region into entirely empty parked grid")
+        select_block(1+live["slot"],11+live["slot"])
+        pointer_to(cell_point(str(1+live["slot"])));pointer_command("down");drag_tab("live",True)
+        pointer_to(cell_point(str(1+dock["slot"])));pointer_command("up")
+        wait(lambda:ui_state()["ui"]["region_mode"]==0 and ui_state()["pending"]==0,"region out of formerly empty parked grid")
+        assert real_window(keeper)["workspace"]["id"]==1+dock["slot"]
+        # Drag the now empty old grid card onto the live header to adopt it back.
+        card=ui_state()["ui"]["cards"][0]["rect"]
+        panel=ui_state()["ui"]["panels"][0]["rect"]
+        card_header=next(l["rect"] for l in ui_state()["ui"]["labels"] if l["text"].startswith(live["name"]+" ·"))
+        pointer_to((card_header[0]+min(card_header[2],60)/2,card_header[1]+card_header[3]/2));pointer_command("down")
+        pointer_to((panel[0]+min(panel[2],60)/2,panel[1]+panel[3]/2));screenshot("ui-card-adoption")
+        pointer_command("up")
+        wait(lambda:monitors()[0]["slot"]==live["slot"],"card header adoption")
+        keypress("Escape");wait(lambda:ui_state().get("open") is False,"adoption close")
         ptr.stdin.write(b"quit\n");ptr.stdin.flush();ptr.wait(timeout=10)
         ok("output","create","headless",dock["name"])
         wait(lambda:len(monitors())==2 and any(m["name"]==dock["name"] for m in monitors()),"replug output")
@@ -1293,6 +1365,24 @@ with (artifacts / "compositor.log").open("w+") as log:
         ptr.stdin.write(b"quit\n");ptr.stdin.flush();ptr.wait(timeout=10)
         (artifacts/"guides.json").write_text(json.dumps({"horizontal":horizontal,"stacked":guided},indent=2))
         print("PASS guides: 4 headless outputs, unequal resolution, adjacent row/column indices, drag opacity and screenshots",flush=True)
+        # Three live grids can cycle assignments; workspace IDs never change.
+        three=sorted(monitors(),key=lambda m:m["name"])[:3]
+        original_slots={m["name"]:m["slot"] for m in three}
+        grid_currents={m["slot"]:m["activeWorkspace"]["id"] for m in monitors()}
+        grid_hosts_before={w["address"]:w["workspace"]["id"] for w in mapped() if w["workspace"].get("id",0)>0}
+        for a,b in [(three[0],three[1]),(three[1],three[2])]:
+            ok("hypr2d","swap-grids",a["name"],b["name"])
+            previous=dict(original_slots);original_slots[a["name"]],original_slots[b["name"]]=previous[b["name"]],previous[a["name"]]
+            wait(lambda:all(m["slot"]==original_slots[m["name"]] for m in monitors() if m["name"] in original_slots),"three-output grid permutation")
+            assert json.loads(ctl("hypr2d","doctor"))["ok"]
+            assert all(m["activeWorkspace"]["id"]==grid_currents[m["slot"]] for m in monitors())
+            current_state=json.loads(ctl("hypr2d","state","-j"))
+            hosts={cell["workspace"]:m["id"] for m in current_state["monitors"] for cell in m["cells"]}
+            assert all(real_window(a)["workspace"]["id"]==ws and real_window(a)["monitor"]==hosts[ws] for a,ws in grid_hosts_before.items())
+        for a,b in [(three[1],three[2]),(three[0],three[1])]:
+            ok("hypr2d","swap-grids",a["name"],b["name"])
+            original_slots[a["name"]],original_slots[b["name"]]=original_slots[b["name"]],original_slots[a["name"]]
+            wait(lambda:all(m["slot"]==original_slots[m["name"]] for m in monitors() if m["name"] in original_slots),"three-output restore")
         paper.terminate();paper.wait(timeout=5)
         clients.remove(paper)
         print("PASS visual: wallpaper background/empty desktops, budgeted 2x supersampling, fit/full 9x9 screenshots and completed-GPU timing",visual_metrics,flush=True)
@@ -1309,6 +1399,28 @@ with (artifacts / "compositor.log").open("w+") as log:
         ok("plugin", "unload", plugin)
         time.sleep(0.5)
         ok("plugin", "load", plugin)
+        # Startup/reconnect restore policies are tested against persisted divergent
+        # preferences and fallback assignments, not merely the Rust planner.
+        state_root=Path(env.get("XDG_STATE_HOME",str(Path.home()/".local/state")))/"hypr2d"
+        config_root=Path(env.get("XDG_CONFIG_HOME",str(Path.home()/".config")))/"hypr"
+        config_root.mkdir(parents=True,exist_ok=True)
+        slot_state=json.loads((state_root/"slots.json").read_text())
+        live_slots={m["slot"] for m in monitors()}
+        free_slot=next(e["slot"] for e in slot_state["entries"] if e["slot"] not in live_slots)
+        for policy,expected in [("auto",0),("keep",free_slot)]:
+            ok("plugin","unload",plugin)
+            stored=json.loads((state_root/"grids.json").read_text())
+            stored["preferred"]["0"]=0;stored["last"]["0"]=free_slot
+            (state_root/"grids.json").write_text(json.dumps(stored))
+            (config_root/"hypr2d.json").write_text(json.dumps({"gridRestore":policy,"monitors":{"labels":{"GUIDE-MIDDLE":"centre configured"},"autoLabel":"position"},"specials":{"names":{"visual-0":"configured special"}}}))
+            ok("plugin","load",plugin)
+            wait(lambda:next(m for m in monitors() if m["name"]=="eDP-1")["slot"]==expected,"persisted restore "+policy)
+            ok("output","remove","eDP-1")
+            wait(lambda:all(m["name"]!="eDP-1" for m in monitors()),"restore policy unplug")
+            ok("output","create","headless","eDP-1")
+            wait(lambda:any(m["name"]=="eDP-1" and m["slot"]==expected for m in monitors()),"reconnect restore "+policy)
+            assert json.loads(ctl("hypr2d","doctor"))["ok"]
+        print("PASS assignment persistence: native restart/reconnect auto/keep, three live swaps",flush=True)
         results = {"instance":instance.name,"small":small,"runs":runs,"screenshot_changed_pixels":diffs,"ui_cycles":ui_runs,"final_memory":process_memory()}
         (artifacts / "results.json").write_text(json.dumps(results, indent=2))
         ctl("dispatch","hl.dsp.exit()")

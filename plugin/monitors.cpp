@@ -159,19 +159,36 @@ std::string command(const std::string &input) {
         if (!Doctor::healthy())
             return "error: layout inconsistent; run hyprctl hypr2d doctor";
         deferred.push_back(g_pEventLoopManager->doLater([input] {
+            if (!core || !Doctor::healthy())
+                return;
+            auto observed = snapshot();
+            core->monitor_observe({observed.data(), observed.size()});
             const auto checkpoint = core->grid_checkpoint();
+            bool changed = false;
             try {
-                if (!core || !Doctor::healthy())
-                    return;
                 auto ms = snapshot();
                 core->monitor_observe({ms.data(), ms.size()});
                 auto result = core->grid_change({ms.data(), ms.size()}, input);
                 if (!result.error.empty())
                     throw std::runtime_error(std::string(result.error));
+                changed = true;
                 applying = true;
                 Hyprutils::Utils::CScopeGuard done([] { applying = false; });
                 reconcile();
             } catch (const std::exception &e) {
+                if (changed) {
+                    applying = true;
+                    Hyprutils::Utils::CScopeGuard done([] { applying = false; });
+                    const auto error = core->grid_rollback(checkpoint);
+                    if (!error.empty())
+                        LOG(Log::ERR, "hypr2d assignment rollback: {}", std::string(error));
+                    else
+                        try {
+                            reconcile();
+                        } catch (const std::exception &failure) {
+                            LOG(Log::ERR, "hypr2d native rollback: {}", failure.what());
+                        }
+                }
                 LOG(Log::ERR, "hypr2d grid mapping: {}", e.what());
                 HyprlandAPI::addNotification(handle, std::string("Grid mapping refused: ") + e.what(), CHyprColor(1, .4, .3, 1), 4000);
             }

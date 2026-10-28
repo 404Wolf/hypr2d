@@ -1340,3 +1340,48 @@ external window focus one row down. Incoming offsets match the chosen axis
 and sign; unload/reload and unchanged animation configuration also passed.
 The broader overview suite exposed a separate Alt modifier-device regression;
 that pending fix does not affect these activation checks.
+
+## Grid assignment and region extension
+
+Physical output identity remains in slots.json. Grid assignment is an exclusive
+live mapping from physical-output slot to displayed grid slot, persisted in
+hypr2d/grids.json with per-grid current cells. Explicit adoption changes a host's
+preferred grid; a live swap updates both preferences. Reconnect never steals a
+live grid. restore=auto prefers the remembered preferred grid if free; keep
+prefers the last fallback assignment. If unavailable, choose a free own grid or
+another free known slot. Normal workspace IDs remain unchanged. Entire workspace
+monitor moves use native public actions at a deferred idle boundary, suppressing
+intermediate current-cell observation; preserve the focused physical monitor.
+Mapping/native reconciliation failures restore the checkpoint before reporting.
+
+Regions select grid cells (specials remain individual targets). A block preserves
+cell offsets; occupied destinations merge window membership without implicitly
+stacking unrelated windows. Alt swaps disjoint source/destination blocks;
+overlapping swaps are refused, identical swaps are no-ops. Non-wrapping grids
+refuse rectangles that do not fit; wrapping applies per destination axis.
+Groups move whole, preserving locks/current members; no raw layout-target swaps.
+Each operation preflights all clients and cells, uses the deferred public-action
+path, and records one inverse transaction. Undo must preflight the inverse too.
+Floating placements retain normalized intra-cell positions on unequal outputs.
+Esc cancels a pending block interaction before closing. v/extension/move keys and Enter
+use the same plans as pointer marquee/pickup/drop. Ctrl+Z undoes one operation.
+
+The final audit covers all requested states and includes neutral-grey backdrop
+tint, labels and before/after screenshot references; items stay unchecked until
+verified in the VM.
+
+### Drag modifiers (supersedes earlier Shift-swap mapping)
+
+Plain single-window drags detach only the visible/current member; the other
+members stay behind and native group selection advances. A window target means
+stack, with the moved member active. Shift moves the intact stack instead,
+with a stacked-card ghost that updates on modifier transitions. Alt swaps the
+visible source and target; Shift+Alt swaps intact groups. Regions already carry
+all members, with plain merge and Alt block swap. Ctrl-drag starts a marquee
+anywhere; Esc cancels the pending interaction first. Locked groups are refused
+before any dispatcher runs. All mutations remain deferred public dispatchers.
+
+
+Native VM coverage includes live two/three-output assignments, parked and empty
+parked targets in both directions, keyboard/wrapped regions, whole-operation
+undo, and persisted restart/reconnect restore policies.

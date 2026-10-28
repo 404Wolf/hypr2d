@@ -222,6 +222,27 @@ availability and native software/hardware state for hardware diagnostics.
 The overview temporarily owns an arrow cursor and restores the application's
 cursor, including a hidden image, when it closes.
 
+## Grid assignments and parked targets
+
+A grid keeps its slot, workspace numbers, windows and current cell independently
+of the output displaying it. `hypr2d adopt SLOT [MONITOR]` assigns a parked grid
+to an output (the focused output by default), parking its previous grid.
+`hypr2d swap-grids A B` exchanges two live assignments. Output names and numeric monitor IDs are accepted. Lua binds use `hl.plugin.hypr2d.adopt(slot, monitor)` and
+`hl.plugin.hypr2d.swap_grids(monitorA, monitorB)` dispatcher constructors.
+
+Drag a parked card's header onto a live panel header to adopt it; drag between
+two live headers to swap. Keyboard: Tab to the source grid, `g`, Enter assigns it
+to the monitor that was focused when the overview opened. Esc cancels.
+Parked grids remain available even when empty. Expand their cards to use the
+full grid; during a single-window or region drag, hover the live/parked tab to
+change the destination view. Both directions use the same safe drop path.
+
+Assignments and each grid's current cell persist in
+`$XDG_STATE_HOME/hypr2d/grids.json`. `programs.hypr2d.gridRestore = "auto"`
+(default) prefers the output's remembered assignment on reconnect if free;
+`"keep"` prefers its last fallback. Neither policy steals a live grid. Workspace
+numbers never change on adoption or swap. Output identity remains in slots.json.
+
 ## Extension clients
 
 The plugin serves a versioned, connection-scoped JSON-lines protocol at
