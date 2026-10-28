@@ -33,7 +33,15 @@ std::vector<hypr2d::Monitor> snapshot() {
                               m == Desktop::focusState()->monitor(), 0, 0, m->m_size.x, m->m_size.y});
     return result;
 }
+void observeWorkspaces() {
+    std::vector<uint32_t> ids;
+    for (auto &w : State::Workspace::state()->workspaces())
+        if (w->numberedID())
+            ids.push_back(*w->numberedID());
+    core->catalog_workspaces({ids.data(), ids.size()});
+}
 static void update() {
+    observeWorkspaces();
     std::vector<hypr2d::MonitorIdentity> identities;
     for (auto &m : State::monitorState()->monitors())
         if (m->m_enabled && m->m_name != "FALLBACK") {

@@ -261,6 +261,7 @@ impl crate::Core {
                         .ok()
                         .and_then(|b| serde_json::from_slice(&b).ok())
                         .unwrap_or_default();
+                self.load_grid_config(&config_value)?;
                 self.labels =
                     crate::labels::Labels::open(state.join("hypr2d/labels.json"), &config_value)?;
                 let keep = match config_value
@@ -274,6 +275,7 @@ impl crate::Core {
                 };
                 self.assignments =
                     crate::assignment::Assignment::open(state.join("hypr2d/grids.json"), keep)?;
+                self.catalog_open(state.join("hypr2d/catalog.json"))?;
                 self.remembered_cells = self
                     .assignments
                     .cells
@@ -311,10 +313,55 @@ impl crate::Core {
                 }
             }
             let physical = connected.iter().map(|(n, s)| (n.clone(), *s)).collect();
+            for slot in connected.values() {
+                if let Err(e) = self.ensure_output_grid(*slot) {
+                    return e;
+                }
+            }
+            // A deliberately deleted default stays deleted. Provision a new
+            // independent grid only when too few grids remain for live outputs.
+            while self.catalog.entries.len() < connected.len() {
+                let fresh = connected.iter().find_map(|(name, host)| {
+                    (!self.connected_slots.contains_key(name)
+                        && self
+                            .catalog
+                            .defaults
+                            .get(host)
+                            .is_none_or(|g| !self.catalog.entries.contains_key(g)))
+                    .then_some(*host)
+                });
+                let Some(host) = fresh.or_else(|| {
+                    connected
+                        .values()
+                        .copied()
+                        .find(|host| {
+                            self.catalog
+                                .defaults
+                                .get(host)
+                                .is_none_or(|g| !self.catalog.entries.contains_key(g))
+                        })
+                        .or_else(|| connected.values().next().copied())
+                }) else {
+                    break;
+                };
+                let legacy = self.legacy_grids();
+                let ids = self.known_workspaces.iter().copied().collect::<Vec<_>>();
+                if let Err(e) = self.catalog.create_owned(
+                    host,
+                    crate::grid::Grid {
+                        stride: self.stride,
+                        ..Default::default()
+                    },
+                    &legacy,
+                    &ids,
+                ) {
+                    return e;
+                }
+            }
             let old = self.connected_slots.clone();
             match self
                 .assignments
-                .connect(&physical, &old, &self.slots.known())
+                .connect(&physical, &old, &self.catalog.known())
             {
                 Ok(mapping) => self.connected_slots = mapping,
                 Err(e) => return e,
@@ -351,24 +398,15 @@ impl crate::Core {
     }
 }
 
-impl Slots {
-    fn detached(&self, connected: &std::collections::HashMap<String, u32>) -> Vec<(u32, String)> {
-        self.entries
-            .iter()
-            .filter(|e| !connected.values().any(|s| *s == e.slot))
-            .map(|e| (e.slot, e.names.iter().next().cloned().unwrap_or_default()))
-            .collect()
-    }
-}
 impl crate::Core {
     fn parked_grid(&self, slot: u32, name: &str) -> crate::grid::Grid {
         self.slot_grid(slot, name)
     }
     pub fn parked_snapshot(&self, windows: &[crate::ffi::Window]) -> serde_json::Value {
-        serde_json::Value::Array(self.slots.detached(&self.connected_slots).into_iter().filter_map(|(slot,name)|{
+        serde_json::Value::Array(self.detached_grids().into_iter().filter_map(|(slot,name)|{
             let grid=self.parked_grid(slot,&name);
             let occupied:Vec<_>=windows.iter().filter(|w|grid.cell(w.workspace,slot).is_some()).collect();
-            if occupied.is_empty(){return None}
+            if occupied.is_empty() && !self.catalog.entries.contains_key(&slot){return None}
             Some(serde_json::json!({"slot":slot,"name":self.slot_label(slot,&name),"windows":occupied.len(),"workspaces":occupied.iter().map(|w|w.workspace).collect::<BTreeSet<_>>()}))
         }).collect())
     }
@@ -379,11 +417,11 @@ impl crate::Core {
     ) -> Vec<crate::ffi::UIOutput> {
         crate::guarded(|| {
             let detached: Vec<_> = self
-                .slots
-                .detached(&self.connected_slots)
+                .detached_grids()
                 .into_iter()
                 .filter(|(slot, name)| {
-                    self.assignments.known(*slot)
+                    self.catalog.entries.contains_key(slot)
+                        || self.assignments.known(*slot)
                         || windows.iter().any(|w| {
                             w.workspace
                                 .parse()
@@ -440,7 +478,9 @@ impl crate::Core {
                             .remembered_cells
                             .get(&slot)
                             .copied()
-                            .unwrap_or(slot + 1),
+                            .unwrap_or_else(|| {
+                                grid.id(crate::grid::Cell { x: 0, y: 0 }, slot).unwrap_or(0)
+                            }),
                         focused: false,
                     })
                 })

@@ -23,6 +23,9 @@ if [[ "${1:-}" == "--overview-benchmark" ]]; then
 elif [[ "${1:-}" == "--overview-test" ]]; then
   export HYPR2D_TESTING=1 HYPR2D_TEST_MODULE="@HMLUA@"
   python3 @OVERVIEW@ "$test_dir/hyprland.lua" "@PLUGIN@" "@CLI@"
+elif [[ "${1:-}" == "--catalog-test" ]]; then
+  export HYPR2D_TESTING=1
+  python3 @CATALOG@ "$test_dir/hyprland.lua" "@PLUGIN@" "@CLI@"
 elif [[ "${1:-}" == "--doctor-test" ]]; then
   export HYPR2D_TESTING=1
   python3 @DOCTOR@ "$test_dir/hyprland.lua" "@PLUGIN@"

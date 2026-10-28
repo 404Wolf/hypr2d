@@ -4,6 +4,7 @@
 #include <vector>
 namespace MonitorPolicy {
 std::vector<hypr2d::Monitor> snapshot();
+void observeWorkspaces();
 void init(hypr2d::Core *, HANDLE);
 void shutdown();
 std::string command(const std::string &);

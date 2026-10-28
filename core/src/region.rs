@@ -96,8 +96,8 @@ impl Core {
         guarded(|| {
             let result = (|| {
                 let request: Request = serde_json::from_str(input).map_err(|e| e.to_string())?;
-                if self.slots.aliases(request.source_slot).next().is_none()
-                    || self.slots.aliases(request.target_slot).next().is_none()
+                if !self.known_grids().contains(&request.source_slot)
+                    || !self.known_grids().contains(&request.target_slot)
                 {
                     return Err("unknown grid".into());
                 }

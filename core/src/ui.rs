@@ -131,19 +131,11 @@ impl Core {
             let mut ui = Overview {
                 focused_panel: outputs.iter().position(|o| o.focused).unwrap_or(0),
                 current_colour: parse_colour(&self.theme.current),
-                grid_names: outputs
-                    .iter()
-                    .map(|o| {
-                        self.slot_label(
-                            o.slot,
-                            self.slots.aliases(o.slot).next().unwrap_or(&o.name),
-                        )
-                    })
-                    .collect(),
+                grid_names: outputs.iter().map(|o| self.grid_name(o.slot)).collect(),
                 parked_attached: outputs
                     .iter()
                     .enumerate()
-                    .filter(|(_, o)| o.parked && self.physical_slots.values().any(|s| *s == o.slot))
+                    .filter(|(_, o)| o.parked && !self.grid_disconnected(o.slot))
                     .map(|(i, _)| i)
                     .collect(),
                 group_slots: outputs.iter().map(|o| o.slot).collect(),
@@ -172,14 +164,14 @@ impl Core {
                 panel_targets: outputs
                     .iter()
                     .map(|o| {
-                        format!(
-                            "monitor:{}",
-                            if o.parked {
-                                o.slot
-                            } else {
-                                *self.physical_slots.get(&o.name).unwrap_or(&o.slot)
-                            }
-                        )
+                        if o.parked {
+                            format!("grid:{}", o.slot)
+                        } else {
+                            format!(
+                                "monitor:{}",
+                                self.physical_slots.get(&o.name).unwrap_or(&o.slot)
+                            )
+                        }
                     })
                     .collect(),
                 panel_counts: outputs

@@ -255,7 +255,9 @@ impl crate::Core {
     }
     pub fn ui_output_label(&self, output: &crate::ffi::UIOutput) -> String {
         crate::guarded(|| {
-            if output.parked {
+            if output.parked && self.catalog.entries.contains_key(&output.slot) {
+                self.grid_name(output.slot)
+            } else if output.parked {
                 self.slot_label(output.slot, &output.name)
             } else {
                 self.monitor_label(&output.name)
@@ -283,6 +285,9 @@ impl crate::Core {
                 let [target, value] = args.as_slice() else {
                     return Err("expected label target and text".into());
                 };
+                if let Some(id) = target.strip_prefix("grid:") {
+                    return self.catalog_rename(id, value);
+                }
                 let keys = target
                     .strip_prefix("monitor:")
                     .and_then(|s| s.parse().ok())

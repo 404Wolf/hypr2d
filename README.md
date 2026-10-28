@@ -222,11 +222,46 @@ availability and native software/hardware state for hardware diagnostics.
 The overview temporarily owns an arrow cursor and restores the application's
 cursor, including a hidden image, when it closes.
 
+## Named grids
+
+Grids can be created independently of outputs. They retain their own dimensions,
+wrap policy, current cell and windows when adopted or swapped:
+
+```sh
+hypr2d grid create work '{"columns":9,"rows":9,"wrap":true}'
+hypr2d grid list
+hypr2d adopt work eDP-1
+hypr2d grid rename work "writing space"
+hypr2d grid delete "empty parked grid"
+```
+
+Creation without options inherits the focused grid's dimensions/wrap. The CLI
+prints the new grid ID and configuration as JSON. Grid names and IDs are accepted
+by adopt/rename/delete. Lua dispatcher constructors are
+`hl.plugin.hypr2d.grid_create("work", {columns=9, rows=9, wrap=true})`,
+`hl.plugin.hypr2d.grid_rename("work", "writing space")`,
+`hl.plugin.hypr2d.grid_delete("empty parked grid")` and
+`hl.plugin.hypr2d.adopt("work", "main")`. They can be passed to `hl.bind` or
+`hyprctl dispatch` just like the move constructors.
+
+Delete refuses live, active or nonempty grids; it never closes clients. IDs are
+not recycled. Legacy grid numbers retain the original formula; named grids use
+collision-checked reserved workspace blocks. Query `state`/`grid list` or use the
+move/goto commands instead of constructing a named workspace number yourself.
+Names and dimensions persist in `$XDG_STATE_HOME/hypr2d/catalog.json`; assignments
+and per-grid current cells remain in `grids.json`. Legacy names initially follow
+their output labels; renaming a grid gives it an independent name.
+
+The focused development VM is `nix build .#catalog-integration --builders ''`.
+It tests grouped/floating clients, virtual IDs, adoption, two/three-output swaps,
+Lua CRUD, captures and restart persistence in an isolated compositor.
+
 ## Grid assignments and parked targets
 
 A grid keeps its slot, workspace numbers, windows and current cell independently
-of the output displaying it. `hypr2d adopt SLOT [MONITOR]` assigns a parked grid
-to an output (the focused output by default), parking its previous grid.
+of the output displaying it. `hypr2d adopt GRID [MONITOR]` assigns a grid
+to an output (the focused output by default), parking its previous grid when the requested grid is parked. If the requested
+grid is already live elsewhere, the two monitors swap grids.
 `hypr2d swap-grids A B` exchanges two live assignments. Output names, numeric
 monitor IDs and unique display labels are accepted, including quoted labels
 with spaces. Lua binds use `hl.plugin.hypr2d.adopt(slot, monitor)` and

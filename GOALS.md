@@ -105,7 +105,7 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Overview UI audit checklist with before/after screenshots at laptop resolutions, all new states, and configurable neutral backdrop tint
 
 ## Multiple grids, fluidly assigned to monitors
-- [ ] Grids are first-class and independent of monitors: any number of named grids (persisted), each shown on at most one monitor at a time; monitors pick which grid they show, unassigned grids stay parked. Swapping which monitor shows which grid is instant and keeps every grid's windows and current cell
+- [x] Grids are first-class and independent of monitors: any number of named grids (persisted), each shown on at most one monitor at a time; monitors pick which grid they show, unassigned grids stay parked. Swapping which monitor shows which grid is instant and keeps every grid's windows and current cell
 - [ ] Overview UI for grids: a grid shelf/strip listing every grid (live mini-thumbnails, labels, which monitor shows it); drag a grid onto a monitor panel to bind it there (the displaced grid swaps back or parks), drag between monitor panels to swap, create/rename/delete grids; keyboard equivalents. VM screenshots
 - [ ] SUPER+CONTROL+SHIFT+H/J/K/L: move the entire current grid one step left/down/up/right, i.e. translate all of its workspaces/windows one cell in that direction (wrapping per grid wrap setting), keeping the view on the same content
   - Interpretation by the orchestrator; if the user meant something else, note it under Questions.

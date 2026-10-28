@@ -9,6 +9,7 @@ pub fn virtual_base(slot: u32) -> Option<u32> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Grid {
     pub columns: u32,
     pub rows: u32,

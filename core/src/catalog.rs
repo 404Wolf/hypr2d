@@ -89,6 +89,12 @@ impl Catalog {
         c.path = Some(path);
         Ok(c)
     }
+    pub fn initialized(&self) -> bool {
+        self.path.is_some()
+            || !self.entries.is_empty()
+            || !self.retired.is_empty()
+            || !self.defaults.is_empty()
+    }
     pub fn known(&self) -> BTreeSet<u32> {
         self.entries.keys().copied().collect()
     }
@@ -108,18 +114,7 @@ impl Catalog {
     ) -> Result<u32, String> {
         let name = valid_name(name)?;
         self.unique(&name, None)?;
-        let id = (16384..=32767)
-            .map(|b| VIRTUAL_GRID | b)
-            .find(|id| {
-                let base = virtual_base(*id).unwrap_or(0);
-                !self.entries.contains_key(id)
-                    && !self.retired.contains(id)
-                    && !legacy.iter().any(|(s, g)| overlaps_legacy(base, *s, *g))
-                    && !workspace_ids.iter().any(|w| {
-                        *w >= base && u64::from(*w) < u64::from(base) + u64::from(GRID_BLOCK)
-                    })
-            })
-            .ok_or("no collision-free named-grid workspace block available")?;
+        let id = self.allocate(legacy, workspace_ids)?;
         grid.validate(id)?;
         self.entries.insert(
             id,
@@ -131,6 +126,49 @@ impl Catalog {
         );
         if let Err(e) = self.save() {
             self.entries.remove(&id);
+            return Err(e);
+        }
+        Ok(id)
+    }
+    fn allocate(&self, legacy: &[(u32, Grid)], workspace_ids: &[u32]) -> Result<u32, String> {
+        (16384..=32767)
+            .map(|b| VIRTUAL_GRID | b)
+            .find(|id| {
+                let base = virtual_base(*id).unwrap_or(0);
+                !self.entries.contains_key(id)
+                    && !self.retired.contains(id)
+                    && !legacy.iter().any(|(s, g)| overlaps_legacy(base, *s, *g))
+                    && !workspace_ids.iter().any(|w| {
+                        *w >= base && u64::from(*w) < u64::from(base) + u64::from(GRID_BLOCK)
+                    })
+            })
+            .ok_or_else(|| "no collision-free named-grid workspace block available".into())
+    }
+    pub fn create_owned(
+        &mut self,
+        owner: u32,
+        grid: Grid,
+        legacy: &[(u32, Grid)],
+        workspace_ids: &[u32],
+    ) -> Result<u32, String> {
+        let id = self.allocate(legacy, workspace_ids)?;
+        grid.validate(id)?;
+        self.entries.insert(
+            id,
+            Entry {
+                name: None,
+                owner: Some(owner),
+                config: Some(grid),
+            },
+        );
+        let old = self.defaults.insert(owner, id);
+        if let Err(e) = self.save() {
+            self.entries.remove(&id);
+            if let Some(old) = old {
+                self.defaults.insert(owner, old);
+            } else {
+                self.defaults.remove(&owner);
+            }
             return Err(e);
         }
         Ok(id)

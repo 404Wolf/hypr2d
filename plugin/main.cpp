@@ -234,6 +234,8 @@ static std::string execute(const std::string &input) {
         auto ms = monitors();
         if (input.starts_with("probe "))
             return testingEnabled ? OverviewProbe::command(**core, ms, input) : "error: test-only command";
+        if (input.starts_with("grid "))
+            MonitorPolicy::observeWorkspaces();
         auto ws = windows();
         auto reply = (*core)->command({ms.data(), ms.size()}, {ws.data(), ws.size()}, input);
         if (!reply.error.empty())
@@ -286,6 +288,10 @@ static std::string execute(const std::string &input) {
         }
         if (input.starts_with("configure "))
             IPC::Socket2::sock()->postEvent({"hypr2d", "config"});
+        if (input.starts_with("grid ") && input != "grid list") {
+            OverviewUI::command("overview refresh");
+            IPC::Socket2::sock()->postEvent({"hypr2d", "grids"});
+        }
         return std::string(reply.output);
     } catch (const std::exception &e) {
         return std::string("error: ") + e.what();
@@ -315,8 +321,35 @@ static int moveLua(lua_State *L) {
     }
     return dispatcher(L, cmd);
 }
+static int gridCreateLua(lua_State *L) {
+    const std::string name = luaL_checkstring(L, 1);
+    int64_t columns = -1, rows = -1;
+    int8_t wrap = -1;
+    if (lua_istable(L, 2)) {
+        lua_getfield(L, 2, "columns");
+        if (!lua_isnil(L, -1))
+            columns = luaL_checkinteger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "rows");
+        if (!lua_isnil(L, -1))
+            rows = luaL_checkinteger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "wrap");
+        if (!lua_isnil(L, -1)) {
+            luaL_checktype(L, -1, LUA_TBOOLEAN);
+            wrap = lua_toboolean(L, -1);
+        }
+        lua_pop(L, 1);
+    } else if (!lua_isnoneornil(L, 2))
+        return luaL_error(L, "expected grid options table");
+    return dispatcher(L, std::string(hypr2d::grid_create_args(name, columns, rows, wrap)));
+}
+static int gridRenameLua(lua_State *L) {
+    return dispatcher(L, std::string(hypr2d::grid_args("grid rename", luaL_checkstring(L, 1), luaL_checkstring(L, 2))));
+}
+static int gridDeleteLua(lua_State *L) { return dispatcher(L, std::string(hypr2d::grid_args("grid delete", luaL_checkstring(L, 1), ""))); }
 static int adoptLua(lua_State *L) {
-    const auto slot = std::to_string(luaL_checkinteger(L, 1));
+    const std::string slot = luaL_checkstring(L, 1);
     const std::string mon = lua_isnoneornil(L, 2) ? "" : luaL_checkstring(L, 2);
     return dispatcher(L, std::string(hypr2d::grid_args("adopt", slot, mon)));
 }
@@ -413,7 +446,10 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     MonitorPolicy::init(&**core, handle);
     ExternalAnimation::init(&**core, handle);
     LOG(Log::INFO, "hypr2d M0: C++ -> Rust -> C++: 41 -> {}", hypr2d::spike_round_trip(41));
-    for (const auto &[name, fn] : std::vector<std::pair<std::string, PLUGIN_LUA_FN>>{{"adopt", adoptLua},
+    for (const auto &[name, fn] : std::vector<std::pair<std::string, PLUGIN_LUA_FN>>{{"grid_create", gridCreateLua},
+                                                                                     {"grid_rename", gridRenameLua},
+                                                                                     {"grid_delete", gridDeleteLua},
+                                                                                     {"adopt", adoptLua},
                                                                                      {"swap_grids", swapGridsLua},
                                                                                      {"move", moveLua},
                                                                                      {"carry", carryLua},

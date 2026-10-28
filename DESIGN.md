@@ -1518,4 +1518,14 @@ progressions (including large custom strides) and existing workspace IDs;
 deleted IDs remain retired. Signed-positive compositor IDs bound allocation,
 and exhaustion returns an error. Rust tests cover round-trips, the signed-ID
 limit, custom-stride collisions, names, atomic persistence and more grids than
-physical outputs. Native catalogue/shelf integration remains unfinished.
+physical outputs. Native catalogue integration is now verified; the shelf and whole-grid movement
+UI remain unfinished.
+
+The focused catalogue VM passed in 37.05s on Hyprland 0.56: a 2256×1504 eDP-1
+at (8934,6682), software cursor, a two-member group and floating window. Named
+workspace IDs above one billion round-trip through native moves/carry/captures;
+legacy (8,8) remains 801. Two/three-output swaps and live adoption preserve client
+IDs, group membership/current, workspace accounting and per-grid current cells.
+Lua CRUD, deletion guards, ID retirement and plugin restart persistence pass.
+Rust also covers default-grid deletion/reconnect, metadata rollback on current-
+cell write failure, JSON quoting and loading 9×9 dimensions before restoration.

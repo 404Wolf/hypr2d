@@ -1,6 +1,7 @@
 mod animation;
 mod assignment;
 pub mod catalog;
+mod catalog_runtime;
 mod doctor;
 mod drop_script;
 mod extension;
@@ -331,6 +332,7 @@ mod ffi {
         fn grid_rollback(self: &mut Core, snapshot: &str) -> String;
         fn grid_change(self: &mut Core, monitors: &[Monitor], input: &str) -> Reply;
         fn slots_init(self: &mut Core) -> String;
+        fn catalog_workspaces(self: &mut Core, ids: &[u32]);
         fn rename(self: &mut Core, input: &str) -> String;
         fn ui_output_label(self: &Core, output: &UIOutput) -> String;
         fn specials_observe(self: &mut Core, windows: &[SpecialInfo]);
@@ -427,6 +429,7 @@ mod ffi {
         fn swipe(self: &mut Core, monitors: &[Monitor], input: SwipeInput) -> SwipeFrame;
         fn texture_bytes(width: u32, height: u32, mipmaps: bool) -> u64;
         fn grid_args(operation: &str, a: &str, b: &str) -> String;
+        fn grid_create_args(name: &str, columns: i64, rows: i64, wrap: i8) -> String;
         fn spike_round_trip(value: u32) -> u32;
         fn command(self: &mut Core, monitors: &[Monitor], windows: &[Window], input: &str)
             -> Reply;
@@ -439,6 +442,8 @@ pub struct Core {
     labels: labels::Labels,
     positions: HashMap<u32, (usize, usize)>,
     special_apps: std::collections::BTreeMap<String, Vec<String>>,
+    catalog: catalog::Catalog,
+    known_workspaces: std::collections::BTreeSet<u32>,
     slots: slots::Slots,
     assignments: assignment::Assignment,
     physical_slots: HashMap<String, u32>,
@@ -469,6 +474,8 @@ impl Default for Core {
             labels: labels::Labels::default(),
             positions: HashMap::new(),
             special_apps: Default::default(),
+            catalog: catalog::Catalog::default(),
+            known_workspaces: Default::default(),
             slots: slots::Slots::default(),
             assignments: assignment::Assignment::default(),
             physical_slots: HashMap::new(),
@@ -563,15 +570,34 @@ impl Core {
                     .find_map(|alias| self.grids.get(alias))
             })
             .or_else(|| {
-                self.connected_slots
-                    .is_empty()
-                    .then(|| self.grids.get(name))
-                    .flatten()
+                self.catalog
+                    .entries
+                    .get(&slot)
+                    .and_then(|e| e.name.as_ref())
+                    .and_then(|name| self.grids.get(name))
+            })
+            .or_else(|| {
+                self.catalog
+                    .entries
+                    .get(&slot)
+                    .and_then(|e| e.owner)
+                    .and_then(|owner| {
+                        self.slots
+                            .aliases(owner)
+                            .find_map(|name| self.grids.get(name))
+                    })
             })
             .copied()
+            .or_else(|| self.catalog.entries.get(&slot).and_then(|e| e.config))
+            .or_else(|| {
+                self.connected_slots
+                    .is_empty()
+                    .then(|| self.grids.get(name).copied())
+                    .flatten()
+            })
             .unwrap_or(Grid {
                 stride: self.stride,
-                ..Grid::default()
+                ..Default::default()
             })
     }
 
@@ -606,6 +632,9 @@ impl Core {
         windows: &[ffi::Window],
         input: &str,
     ) -> Result<ffi::Reply, String> {
+        if input.starts_with("grid ") {
+            return self.catalog_command(monitors, windows, input);
+        }
         if let Some(value) = input.strip_prefix("pinch-config ") {
             let scale: f64 = value.parse().map_err(|_| "invalid pinch cancelScale")?;
             if !scale.is_finite() || scale <= 0.0 || scale >= 1.0 {
@@ -645,7 +674,7 @@ impl Core {
             error: String::new(),
         };
         if matches!(args.as_slice(), ["state"] | ["state", "-j"]) {
-            reply.output = json!({"pinch_config":{"cancel_scale":self.pinch_cancel_scale},"version":1,"special_names":self.labels.names(),"specials":self.special_labels(),"parked":self.parked_snapshot(windows),"extensions":self.extensions.snapshot(),"swipe_enabled":self.swipe_enabled,"overview_config":self.theme,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
+            reply.output = json!({"grids":self.catalog_snapshot(monitors,windows),"pinch_config":{"cancel_scale":self.pinch_cancel_scale},"version":1,"special_names":self.labels.names(),"specials":self.special_labels(),"parked":self.parked_snapshot(windows),"extensions":self.extensions.snapshot(),"swipe_enabled":self.swipe_enabled,"overview_config":self.theme,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
                 let g = self.grid(m);
                 json!({"id":m.id,"slot":m.slot,"name":m.name,"label":self.monitor_label(&m.name),"workspace":m.workspace,"focused":m.focused,"grid":g,"cell":g.cell(m.workspace,m.slot),"offset":[m.offset_x,m.offset_y],
                     "cells":(0..g.rows).flat_map(|y|(0..g.columns).map(move |x|Cell{x,y})).filter_map(|c|g.id(c,m.slot).ok().map(|id|json!({"x":c.x,"y":c.y,"workspace":id,"windows":windows.iter().filter(|w|w.workspace==id).map(|w|json!({"address":w.address,"title":w.title,"app_id":w.app_id,"urgent":w.urgent})).collect::<Vec<_>>()}))).collect::<Vec<_>>()})
@@ -661,6 +690,8 @@ impl Core {
                 .physical_slots
                 .get(*name)
                 .copied()
+                .map(|s| self.catalog.defaults.get(&s).copied().unwrap_or(s))
+                .or_else(|| self.resolve_grid(name).ok())
                 .or_else(|| name.parse::<u32>().ok())
                 .or_else(|| matched.map(|m| m.slot));
             let g = Grid {
@@ -673,8 +704,36 @@ impl Core {
                 configured_slot
                     .unwrap_or(monitors.iter().find(|m| m.id == id).map_or(0, |m| m.slot)),
             )?;
-            if monitors.iter().any(|other| other.slot >= g.stride) {
+            if monitors
+                .iter()
+                .any(|other| other.slot >= g.stride && grid::virtual_base(other.slot).is_none())
+            {
                 return Err("stride must exceed every monitor slot".into());
+            }
+            for slot in self.slots.known() {
+                let old = self.slot_grid(slot, "");
+                let candidate = if configured_slot == Some(slot) {
+                    g
+                } else {
+                    Grid {
+                        stride: g.stride,
+                        ..old
+                    }
+                };
+                if self.catalog.rejects_legacy(slot, candidate) {
+                    return Err("stride/configuration overlaps a named grid workspace block".into());
+                }
+            }
+            if let Some(slot) = configured_slot {
+                if let Some(entry) = self.catalog.entries.get_mut(&slot) {
+                    let old = entry.config.replace(g);
+                    if let Err(e) = self.catalog.save() {
+                        if let Some(entry) = self.catalog.entries.get_mut(&slot) {
+                            entry.config = old;
+                        }
+                        return Err(e);
+                    }
+                }
             }
             // Stride is shared: distinct monitor residues must never collide.
             for config in self.grids.values() {
@@ -1002,6 +1061,25 @@ impl Default for ffi::UIStyle {
     }
 }
 
+pub fn grid_create_args(name: &str, columns: i64, rows: i64, wrap: i8) -> String {
+    guarded(|| {
+        let mut opts = serde_json::Map::new();
+        if columns != -1 {
+            opts.insert("columns".into(), json!(columns));
+        }
+        if rows != -1 {
+            opts.insert("rows".into(), json!(rows));
+        }
+        if wrap != -1 {
+            opts.insert("wrap".into(), json!(wrap != 0));
+        }
+        grid_args(
+            "grid create",
+            name,
+            &serde_json::Value::Object(opts).to_string(),
+        )
+    })
+}
 pub fn grid_args(operation: &str, a: &str, b: &str) -> String {
     guarded(|| {
         format!(

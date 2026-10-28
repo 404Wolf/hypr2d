@@ -7,7 +7,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const USAGE:&str="hypr2d [--instance SIGNATURE] state\nhypr2d [--instance SIGNATURE] move DIR [all] [--monitor NAME]\nhypr2d [--instance SIGNATURE] adopt SLOT [MONITOR]\nhypr2d [--instance SIGNATURE] swap-grids A B\nhypr2d [--instance SIGNATURE] carry DIR\nhypr2d [--instance SIGNATURE] goto X Y [MONITOR]\nhypr2d [--instance SIGNATURE] waybar [--monitor NAME] [--columns full|centered] [--rows full|centered] [--radius-x 0..4] [--radius-y 0..4] [--current-color #RRGGBB] [--occupied-color #RRGGBB] [--empty-color #RRGGBB] [--urgent-color #RRGGBB]";
+const USAGE:&str="hypr2d [--instance SIGNATURE] state\nhypr2d [--instance SIGNATURE] move DIR [all] [--monitor NAME]\nhypr2d [--instance SIGNATURE] adopt GRID [MONITOR]\nhypr2d [--instance SIGNATURE] swap-grids A B\nhypr2d [--instance SIGNATURE] grid list|create NAME [JSON]|rename GRID NAME|delete GRID\nhypr2d [--instance SIGNATURE] carry DIR\nhypr2d [--instance SIGNATURE] goto X Y [MONITOR]\nhypr2d [--instance SIGNATURE] waybar [--monitor NAME] [--columns full|centered] [--rows full|centered] [--radius-x 0..4] [--radius-y 0..4] [--current-color #RRGGBB] [--occupied-color #RRGGBB] [--empty-color #RRGGBB] [--urgent-color #RRGGBB]";
 #[derive(Default)]
 struct Args {
     instance: Option<String>,
@@ -26,6 +26,10 @@ impl Args {
         let mut it = input.into_iter();
         while let Some(arg) = it.next() {
             match arg.as_str() {
+                "--" => {
+                    args.words.extend(it);
+                    break;
+                }
                 "--instance" => args.instance = Some(it.next().ok_or("missing instance")?),
                 "--monitor" => args.monitor = Some(it.next().ok_or("missing monitor")?),
                 "--columns" | "--rows" => {
@@ -89,6 +93,25 @@ impl Args {
         let words: Vec<_> = self.words.iter().map(String::as_str).collect();
         let result = match words.as_slice() {
             ["state"] if self.monitor.is_none() => "state -j".into(),
+            ["grid", "list"] if self.monitor.is_none() => "grid list".into(),
+            ["grid", "create", name] if self.monitor.is_none() => {
+                format!("grid create {}", serde_json::json!([name]))
+            }
+            ["grid", "create", name, options] if self.monitor.is_none() => {
+                if !serde_json::from_str::<serde_json::Value>(options)
+                    .map_err(|e| e.to_string())?
+                    .is_object()
+                {
+                    return Err("grid options must be a JSON object".into());
+                }
+                format!("grid create {}", serde_json::json!([name, options]))
+            }
+            ["grid", "rename", source, name] if self.monitor.is_none() => {
+                format!("grid rename {}", serde_json::json!([source, name]))
+            }
+            ["grid", "delete", source] if self.monitor.is_none() => {
+                format!("grid delete {}", serde_json::json!([source]))
+            }
             ["move", d] => {
                 if let Some(m) = &self.monitor {
                     format!("move {d} monitor {m}")
@@ -192,6 +215,47 @@ fn main() {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn catalogue_commands_encode_names_and_options_as_data() {
+        let args = Args::parse(
+            [
+                "grid",
+                "create",
+                "work \"quoted\"",
+                r#"{"columns":9,"rows":9}"#,
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap();
+        let command = args.command().unwrap();
+        let values: Vec<String> =
+            serde_json::from_str(command.strip_prefix("grid create ").unwrap()).unwrap();
+        assert_eq!(values[0], "work \"quoted\"");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&values[1]).unwrap()["rows"],
+            9
+        );
+        assert!(
+            Args::parse(["grid", "create", "a", "[]"].map(str::to_owned))
+                .unwrap()
+                .command()
+                .is_err()
+        );
+        assert_eq!(
+            Args::parse(["grid", "list"].map(str::to_owned))
+                .unwrap()
+                .command()
+                .unwrap(),
+            "grid list"
+        );
+        assert!(
+            Args::parse(["--", "grid", "delete", "--literal-name"].map(str::to_owned))
+                .unwrap()
+                .command()
+                .unwrap()
+                .contains("--literal-name")
+        );
+    }
     #[test]
     fn diagonal_commands_are_forwarded_without_rewriting() {
         for words in [vec!["move", "up-left", "all"], vec!["carry", "down-right"]] {

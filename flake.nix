@@ -70,7 +70,7 @@
       nested = pkgs.writeShellApplication {
         name = "hypr2d-nested";
         runtimeInputs = [ compositor (pkgs.python3.withPackages (p: [ p.pillow ])) pkgs.foot pkgs.waybar pkgs.grim pkgs.wtype pkgs.wlrctl pkgs.swaybg testPointer ];
-        text = builtins.replaceStrings [ "@PLUGIN@" "@SMOKE@" "@CLI@" "@EXAMPLES@" "@OVERVIEW@" "@HMLUA@" "@LATENCY@" "@DOCTOR@" ] [ "${plugin}/lib/libhypr2d.so" "${./nix/smoke.py}" "${rust}/bin/hypr2d" "${./examples}" "${./nix/overview.py}" "${moduleTest.lua}" "${./nix/latency.py}" "${./nix/doctor.py}" ] (builtins.readFile ./nix/nested.sh);
+        text = builtins.replaceStrings [ "@PLUGIN@" "@SMOKE@" "@CLI@" "@EXAMPLES@" "@OVERVIEW@" "@HMLUA@" "@LATENCY@" "@DOCTOR@" "@CATALOG@" ] [ "${plugin}/lib/libhypr2d.so" "${./nix/smoke.py}" "${rust}/bin/hypr2d" "${./examples}" "${./nix/overview.py}" "${moduleTest.lua}" "${./nix/latency.py}" "${./nix/doctor.py}" "${./nix/catalog.py}" ] (builtins.readFile ./nix/nested.sh);
       };
       parentConfig = pkgs.writeText "hypr2d-ci-parent.lua" ''
         hl.monitor({ output = "", mode = "1280x720@60", position = "auto", scale = 1 })
@@ -129,7 +129,8 @@
           machine.copy_from_machine("/tmp/hypr2d-overview-results")
         '';
       };
-    in { default = plugin; cli = rust; inherit plugin nested rust integration; module-check = moduleTest.check; });
+      catalogIntegration = import ./nix/catalog-vm.nix {inherit pkgs nested compositor;};
+    in { catalog-integration = catalogIntegration; default = plugin; cli = rust; inherit plugin nested rust integration; module-check = moduleTest.check; });
     apps = each (system: { default = { type = "app"; meta.description = "hypr2d CLI and Waybar module"; program = "${self.packages.${system}.plugin}/bin/hypr2d"; }; nested = { type = "app"; meta.description = "Run the isolated nested Hyprland spike"; program = "${self.packages.${system}.nested}/bin/hypr2d-nested"; }; });
     devShells = each (system: let pkgs = import nixpkgs { inherit system; }; in { default = pkgs.mkShell { packages = [ pkgs.cargo pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.clang-tools ]; }; });
     checks = each (system: { inherit (self.packages.${system}) plugin rust integration module-check; });

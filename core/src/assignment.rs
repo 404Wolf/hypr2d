@@ -34,6 +34,14 @@ impl Assignment {
         a.restore_keep = keep;
         Ok(a)
     }
+    pub(crate) fn seed_default(&mut self, host: u32, grid: u32) -> Result<(), String> {
+        if let std::collections::btree_map::Entry::Vacant(e) = self.preferred.entry(host) {
+            e.insert(grid);
+            self.last.insert(host, grid);
+            self.save()?;
+        }
+        Ok(())
+    }
     pub fn known(&self, slot: u32) -> bool {
         self.preferred.contains_key(&slot)
             || self.preferred.values().any(|g| *g == slot)
@@ -87,6 +95,9 @@ impl Assignment {
                 .ok_or("no free grid for connected monitor")?;
             used.insert(grid);
             result.insert(name.clone(), grid);
+            if !self.preferred.get(host).is_some_and(|g| known.contains(g)) {
+                self.preferred.insert(*host, grid);
+            }
             self.last.insert(*host, grid);
         }
         self.save()?;
@@ -191,10 +202,7 @@ impl crate::Core {
                 let old = self.connected_slots.clone();
                 let result = match args.as_slice() {
                     ["adopt", slot] | ["adopt", slot, _] => {
-                        let slot: u32 = slot.parse().map_err(|_| "invalid grid slot")?;
-                        if self.slots.aliases(slot).next().is_none() {
-                            return Err("unknown grid slot".into());
-                        }
+                        let slot = self.resolve_grid(slot)?;
                         let monitor = if args.len() == 3 {
                             select(args[2])?
                         } else {
@@ -203,12 +211,26 @@ impl crate::Core {
                                 .find(|m| m.focused)
                                 .ok_or("no focused monitor")?
                         };
-                        self.assignments.assign(
-                            &self.physical_slots,
-                            &mut self.connected_slots,
-                            &monitor.name,
-                            slot,
-                        )
+                        let source = self
+                            .connected_slots
+                            .iter()
+                            .find(|(n, g)| *n != &monitor.name && **g == slot)
+                            .map(|(n, _)| n.clone());
+                        if let Some(source) = source {
+                            self.assignments.swap(
+                                &self.physical_slots,
+                                &mut self.connected_slots,
+                                &source,
+                                &monitor.name,
+                            )
+                        } else {
+                            self.assignments.assign(
+                                &self.physical_slots,
+                                &mut self.connected_slots,
+                                &monitor.name,
+                                slot,
+                            )
+                        }
                     }
                     ["swap-grids", a, b] => {
                         let a = select(a)?;
