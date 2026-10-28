@@ -5,6 +5,7 @@ mod drop_script;
 mod extension;
 pub mod grid;
 mod overview;
+mod region;
 mod slots;
 mod theme;
 mod transport;
@@ -264,6 +265,13 @@ mod ffi {
         start: UIRect,
         end: UIRect,
     }
+    struct RegionBatch {
+        script: String,
+        undo_script: String,
+        workspaces: Vec<String>,
+        targets: Vec<Move>,
+        error: String,
+    }
     struct UIFrame {
         guides: Vec<UIGuide>,
         backdrops: Vec<UIBackdropPanel>,
@@ -287,6 +295,15 @@ mod ffi {
         fn extension_event(self: &mut Core, event: &str, workspace: &str, window: &str);
         fn ui_header_width(self: &mut Core, text: &str, width: f64);
         fn ui_font_height(self: &mut Core, height: f64);
+        fn region_record(self: &mut Core, batch: &RegionBatch);
+        fn region_inverse(self: &Core) -> RegionBatch;
+        fn region_forget(self: &mut Core, all: bool);
+        fn region_prepare(
+            self: &Core,
+            input: &str,
+            windows: &[UIWindow],
+            monitors: &[Monitor],
+        ) -> RegionBatch;
         fn grid_animation(self: &Core, monitor: &Monitor, target: u32) -> String;
         fn grid_checkpoint(self: &Core) -> String;
         fn grid_rollback(self: &mut Core, snapshot: &str) -> String;
@@ -389,6 +406,7 @@ mod ffi {
     }
 }
 pub struct Core {
+    region_history: Vec<region::Undo>,
     ui_font_height: Option<f64>,
     ui_header_widths: HashMap<String, f64>,
     slots: slots::Slots,
@@ -412,6 +430,7 @@ pub struct Core {
 impl Default for Core {
     fn default() -> Self {
         Self {
+            region_history: Vec::new(),
             extensions: extension::Extensions::default(),
             extension_grids: HashMap::new(),
             extension_slots: HashMap::new(),

@@ -207,6 +207,7 @@ impl crate::Core {
                     self.connected_slots = old;
                     return Err(e);
                 }
+                self.region_history.clear();
                 Ok(crate::ffi::Reply {
                     output: "ok".into(),
                     error: String::new(),
