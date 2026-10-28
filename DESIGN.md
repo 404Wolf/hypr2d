@@ -1324,3 +1324,19 @@ The temporary client closes and original cell/focus return before the visual
 benchmark. The complete VM suite passed in 367.34 s, including 60 open/close
 cycles, doctor recovery, hotplug, pinch, drag/special/group and minimap checks.
 All VM processes exited; no live-session or Home Manager checkout changes.
+
+## External workspace activation animations
+
+The native monitor changeWorkspace path starts both outgoing and incoming
+animations before emitting workspace.active. A scoped hook supplies its style
+override before that call and restores it afterward, without config mutation.
+Rust chooses the shortest wrapped grid delta; vertical wins diagonal ties.
+Native 0.56 has cardinal slide/slidevert directions, so diagonal changes use
+the dominant axis. Special or different-grid changes retain native defaults.
+
+Rust direction/wrap tests and the VM smoke suite passed: external workspace
+focus in all four cardinal directions, wrapped row/column edges, and real
+external window focus one row down. Incoming offsets match the chosen axis
+and sign; unload/reload and unchanged animation configuration also passed.
+The broader overview suite exposed a separate Alt modifier-device regression;
+that pending fix does not affect these activation checks.

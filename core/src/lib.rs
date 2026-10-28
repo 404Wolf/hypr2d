@@ -1,3 +1,4 @@
+mod animation;
 mod doctor;
 mod drop_script;
 mod extension;
@@ -285,6 +286,7 @@ mod ffi {
         fn extension_event(self: &mut Core, event: &str, workspace: &str, window: &str);
         fn ui_header_width(self: &mut Core, text: &str, width: f64);
         fn ui_font_height(self: &mut Core, height: f64);
+        fn grid_animation(self: &Core, monitor: &Monitor, target: u32) -> String;
         fn slots_init(self: &mut Core) -> String;
         fn slots_update(self: &mut Core, monitors: &[MonitorIdentity]) -> String;
         fn monitor_slot(self: &Core, name: &str) -> u32;

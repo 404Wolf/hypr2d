@@ -1,4 +1,5 @@
 #include "doctor.hpp"
+#include "external_animation.hpp"
 #include "hypr2d-core/src/lib.rs.h"
 #include "monitors.hpp"
 #include "overview.hpp"
@@ -208,6 +209,8 @@ static std::string execute(const std::string &input) {
     if (input.starts_with("monitor-test "))
         return MonitorPolicy::command(input);
     try {
+        if (input == "animation-state" && testingEnabled)
+            return ExternalAnimation::state();
         if (input == "doctor")
             return Doctor::report();
         if (input == "doctor repair") {
@@ -392,6 +395,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("hypr2d: compositor build does not match plugin");
     core.emplace(hypr2d::new_core());
     MonitorPolicy::init(&**core, handle);
+    ExternalAnimation::init(&**core, handle);
     LOG(Log::INFO, "hypr2d M0: C++ -> Rust -> C++: 41 -> {}", hypr2d::spike_round_trip(41));
     for (const auto &[name, fn] : std::vector<std::pair<std::string, PLUGIN_LUA_FN>>{{"move", moveLua},
                                                                                      {"carry", carryLua},
@@ -512,6 +516,7 @@ APICALL EXPORT void PLUGIN_EXIT() {
     extensionSource = nullptr;
     if (core)
         (*core)->extension_stop();
+    ExternalAnimation::shutdown();
     Doctor::shutdown();
     OverviewUI::shutdown();
     MonitorPolicy::shutdown();

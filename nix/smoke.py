@@ -94,6 +94,20 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         slot = first["slot"]
         command("goto", "0", "0", str(mid))
         assert cell(mid)["workspace"] == slot + 1
+        # External focus must choose the axis BEFORE native animation setup.
+        assert ctl("eval",'hl.config({animations={enabled=true}})')=="ok"
+        external_animations=[]
+        for source,target,style,axis,positive in [((0,0),(0,1),"slidevert bottom",1,True),((0,1),(0,0),"slidevert top",1,False),((0,0),(1,0),"slide right",0,True),((1,0),(0,0),"slide left",0,False),((0,7),(0,0),"slidevert bottom",1,True),((7,0),(0,0),"slide right",0,True)]:
+            command("goto",str(target[0]),str(target[1]))
+            command("goto",str(source[0]),str(source[1]))
+            destination=10*(target[1]*8+target[0])+slot+1
+            lua(f'hl.dsp.focus({{workspace={destination}}})')
+            animation=json.loads(ctl("hypr2d","animation-state"))
+            assert animation["style"]==style,animation
+            assert animation["in"][1-axis]==0 and (animation["in"][axis]>0)==positive and animation["in"][axis]!=0,animation
+            external_animations.append(animation)
+        command("goto","0","0")
+        print("PASS external animation: focus workspace up/down/left/right and wrapped edges",external_animations,flush=True)
         # socket2 is connected before the move: no missed initial event.
         events = socket.socket(socket.AF_UNIX)
         events.settimeout(5)
@@ -149,6 +163,12 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         assert any(w["app_id"] == "hypr2d-test" for w in carried["windows"])
         assert ctl("hypr2d", "goto", "8", "0", check=False).startswith("error:")
         assert cell(mid)["workspace"] == 81 + slot
+        # Focus a client in the next row without a hypr2d dispatcher.
+        command("goto","0","0")
+        browser=test_windows()[0]["address"]
+        lua(f'hl.dsp.focus({{window=assert(hl.get_window("address:{browser}"))}})')
+        external=json.loads(ctl("hypr2d","animation-state"))
+        assert external["style"]=="slidevert bottom" and external["in"][1]>0,external
         assert ctl("-j", "animations") == animations_before
         print("PASS M1: exact numbering/wrap, Lua, IPC/events, axes, 57 rapid moves, two-monitor all/focus, no-wrap, carry")
         def gesture():

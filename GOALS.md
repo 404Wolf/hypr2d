@@ -93,4 +93,6 @@ changed; flag anything that blocks you at the bottom under "Questions".
 
 - [x] Translucent configurable tile fills and adjacent-panel row/column drag guides; unequal-resolution multi-output VM screenshots
 
+- [x] Native external workspace activation/focus animation follows grid axes and shortest wrapping; Rust and VM regressions
+
 ## Questions
