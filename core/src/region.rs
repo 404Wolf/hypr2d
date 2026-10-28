@@ -294,6 +294,98 @@ impl Core {
     }
 }
 
+impl Core {
+    /// Move the occupied contents, plus the current viewport, as one operation.
+    pub fn translate_prepare(
+        &self,
+        direction: &str,
+        windows: &[ffi::UIWindow],
+        monitors: &[ffi::Monitor],
+    ) -> ffi::RegionBatch {
+        guarded(|| {
+            let result = (|| {
+                let direction = crate::grid::Direction::parse(direction)?;
+                let monitor = monitors
+                    .iter()
+                    .find(|m| m.focused)
+                    .ok_or("no focused display")?;
+                let grid = self.slot_grid(monitor.slot, &monitor.name);
+                let current = grid
+                    .cell(monitor.workspace, monitor.slot)
+                    .ok_or("current workspace is outside grid")?;
+                let (dx, dy) = direction.delta();
+                let step = |c: Cell| -> Result<u32, String> {
+                    let x = i64::from(c.x) + dx;
+                    let y = i64::from(c.y) + dy;
+                    if !grid.wrap
+                        && (x < 0
+                            || y < 0
+                            || x >= i64::from(grid.columns)
+                            || y >= i64::from(grid.rows))
+                    {
+                        return Err("translation would move content outside grid".into());
+                    }
+                    grid.id(
+                        Cell {
+                            x: x.rem_euclid(i64::from(grid.columns)) as u32,
+                            y: y.rem_euclid(i64::from(grid.rows)) as u32,
+                        },
+                        monitor.slot,
+                    )
+                };
+                let next = step(current)?;
+                let mut moves = vec![];
+                let mut targets = BTreeMap::new();
+                targets.insert(monitor.workspace, monitor.id);
+                targets.insert(next, monitor.id);
+                for w in windows {
+                    let Some(from) = w.workspace.parse::<u32>().ok() else {
+                        continue;
+                    };
+                    let Some(cell) = grid.cell(from, monitor.slot) else {
+                        continue;
+                    };
+                    let to = step(cell)?;
+                    if from == to {
+                        continue;
+                    }
+                    if w.monitor != monitor.id {
+                        return Err("grid contents have not settled on their display".into());
+                    }
+                    targets.insert(from, monitor.id);
+                    targets.insert(to, monitor.id);
+                    moves.push(Move {
+                        address: w.id.clone(),
+                        from: from.to_string(),
+                        to: to.to_string(),
+                        monitor: monitor.id,
+                        old_monitor: monitor.id,
+                        x: w.x,
+                        y: w.y,
+                        old_x: w.x,
+                        old_y: w.y,
+                        floating: w.floating,
+                    });
+                }
+                let follow = |id: u32| {
+                    format!("dispatch(hl.dsp.focus({{monitor=monitor_by_id({})}})); dispatch(hl.dsp.focus({{workspace={id}}})); ",monitor.id)
+                };
+                Ok(ffi::RegionBatch {
+                    script: script(&moves, false) + &follow(next),
+                    undo_script: script(&moves, true) + &follow(monitor.workspace),
+                    workspaces: targets.keys().map(u32::to_string).collect(),
+                    targets: targets.into_iter().map(|(w, m)| placement(w, m)).collect(),
+                    error: String::new(),
+                })
+            })();
+            result.unwrap_or_else(|error: String| ffi::RegionBatch {
+                error,
+                ..Default::default()
+            })
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +433,68 @@ mod tests {
             },
         );
         assert!(c.region_map(&p).is_err());
+    }
+}
+
+#[cfg(test)]
+mod translate_tests {
+    use super::*;
+    #[test]
+    fn translation_is_bounded_sparse_wraps_and_records_following_view_inverse() {
+        let mut c = Core::default();
+        let m = ffi::Monitor {
+            id: 0,
+            slot: 0,
+            name: "eDP-1".into(),
+            workspace: 1,
+            focused: true,
+            offset_x: 0.,
+            offset_y: 0.,
+            width: 2256.,
+            height: 1504.,
+        };
+        let w = ffi::UIWindow {
+            id: "0x123".into(),
+            workspace: "71".into(),
+            monitor: 0,
+            x: 100.,
+            y: 200.,
+            width: 300.,
+            height: 200.,
+            floating: true,
+            title: "kitty".into(),
+            group_size: 3,
+        };
+        let batch = c.translate_prepare("right", &[w], &[m]);
+        assert!(batch.error.is_empty());
+        assert!(batch.targets.len() <= 4);
+        assert!(batch.script.contains("address:0x123"));
+        assert!(batch.script.ends_with(
+            "dispatch(hl.dsp.focus({monitor=monitor_by_id(0)})); dispatch(hl.dsp.focus({workspace=11})); "
+        ));
+        assert!(batch.undo_script.ends_with(
+            "dispatch(hl.dsp.focus({monitor=monitor_by_id(0)})); dispatch(hl.dsp.focus({workspace=1})); "
+        ));
+        c.region_record(&batch);
+        assert_eq!(c.region_inverse().script, batch.undo_script);
+        c.grids.insert(
+            "0".into(),
+            crate::grid::Grid {
+                wrap: false,
+                ..Default::default()
+            },
+        );
+        let m = ffi::Monitor {
+            id: 0,
+            slot: 0,
+            name: "eDP-1".into(),
+            workspace: 71,
+            focused: true,
+            offset_x: 0.,
+            offset_y: 0.,
+            width: 2256.,
+            height: 1504.,
+        };
+        assert!(!c.translate_prepare("right", &[], &[m]).error.is_empty());
     }
 }

@@ -78,6 +78,16 @@ in {
         wrap = mkOption { type = types.bool; default = true; description = "Wrap directional movement at edges."; };
       }; });
     };
+    namedGrids = mkOption {
+      default = {};
+      description = "First-class named grids, independent of outputs. Names are protected from runtime rename/deletion. Existing native grids cannot be resized while they have workspaces.";
+      type = types.attrsOf (types.submodule { options = {
+        columns = mkOption {type=types.ints.between 1 64;default=8;description="Columns.";};
+        rows = mkOption {type=types.ints.between 1 64;default=8;description="Rows.";};
+        wrap = mkOption {type=types.bool;default=true;description="Wrap at edges.";};
+      }; });
+    };
+    initialBindings = mkOption {type=types.attrsOf types.str;default={};description="Output name/identity alias to grid name or ID. Seeds only a previously unseen output; persisted runtime choices win on restart.";};
     overview = {
       accent = colour "#9CBEFF";
       supersample = mkOption { type = types.number; default = 2.0; description = "Workspace capture resolution multiplier (1..4), bounded by memoryBudgetMiB."; };
@@ -155,7 +165,7 @@ in {
       plugins = [ cfg.package ];
       extraConfig = lib.mkAfter lua;
     };
-    xdg.configFile."hypr/hypr2d.json".text = builtins.toJSON { version = 1; inherit theme; specials = cfg.specials; monitors = cfg.monitors; gridRestore = cfg.gridRestore; monitorSlots = cfg.monitorSlots; grid = { inherit (cfg.grid) stride; monitors = cfg.grids; }; gestures = cfg.gestures; pinch = cfg.pinch; };
+    xdg.configFile."hypr/hypr2d.json".text = builtins.toJSON { version = 1; inherit theme; namedGrids = cfg.namedGrids; initialBindings = cfg.initialBindings; specials = cfg.specials; monitors = cfg.monitors; gridRestore = cfg.gridRestore; monitorSlots = cfg.monitorSlots; grid = { inherit (cfg.grid) stride; monitors = cfg.grids; }; gestures = cfg.gestures; pinch = cfg.pinch; };
     programs.waybar = mkIf cfg.waybar.enable {
       enable = lib.mkDefault true;
       settings.${cfg.waybar.bar} = {

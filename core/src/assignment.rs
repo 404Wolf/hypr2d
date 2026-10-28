@@ -34,6 +34,19 @@ impl Assignment {
         a.restore_keep = keep;
         Ok(a)
     }
+    pub(crate) fn has_host(&self, host: u32) -> bool {
+        self.preferred.contains_key(&host)
+    }
+    pub(crate) fn seed_initial(&mut self, host: u32, grid: u32) -> Result<(), String> {
+        let before = self.clone();
+        self.preferred.insert(host, grid);
+        self.last.insert(host, grid);
+        if let Err(e) = self.save() {
+            *self = before;
+            return Err(e);
+        }
+        Ok(())
+    }
     pub(crate) fn seed_default(&mut self, host: u32, grid: u32) -> Result<(), String> {
         if let std::collections::btree_map::Entry::Vacant(e) = self.preferred.entry(host) {
             e.insert(grid);

@@ -26,6 +26,8 @@ pub struct Monitor {
     pub name: String,
     #[serde(default)]
     pub label: String,
+    #[serde(default)]
+    pub grid_name: String,
     pub focused: bool,
     pub workspace: u32,
     pub grid: Grid,
@@ -290,6 +292,9 @@ pub fn render_view(snapshot: &Snapshot, view: &View<'_>) -> Record {
         current.y,
         m.workspace
     );
+    if !m.grid_name.is_empty() {
+        tooltip.push_str(&format!("\nGrid: {}", escape(&m.grid_name)));
+    }
     if let Some(parked) = snapshot.parked.as_array() {
         for grid in parked {
             tooltip.push_str(&format!(

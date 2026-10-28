@@ -41,6 +41,12 @@ impl Core {
                 self.grids.insert(name.clone(), grid);
             }
         }
+        self.named_grids =
+            serde_json::from_value(config.get("namedGrids").cloned().unwrap_or(json!({})))
+                .map_err(|e| e.to_string())?;
+        self.initial_bindings =
+            serde_json::from_value(config.get("initialBindings").cloned().unwrap_or(json!({})))
+                .map_err(|e| e.to_string())?;
         Ok(())
     }
     pub fn catalog_workspaces(&mut self, ids: &[u32]) {
@@ -79,6 +85,9 @@ impl Core {
     }
     pub(crate) fn catalog_rename(&mut self, source: &str, name: &str) -> Result<(), String> {
         let id = self.resolve_grid(source)?;
+        if self.named_grids.contains_key(&self.grid_name(id)) {
+            return Err("grid name is configured".into());
+        }
         if self
             .known_grids()
             .iter()
@@ -257,6 +266,9 @@ impl Core {
             ("rename", [source, name]) => self.catalog_rename(source, name)?,
             ("delete", [source]) => {
                 let id = self.resolve_grid(source)?;
+                if self.named_grids.contains_key(&self.grid_name(id)) {
+                    return Err("grid is configured; remove its config before deletion".into());
+                }
                 let grid = self.slot_grid(id, "");
                 if self.connected_slots.values().any(|s| *s == id)
                     || monitors
@@ -299,6 +311,133 @@ impl Core {
         for slot in self.slots.known() {
             if self.assignments.known(slot) {
                 self.ensure_output_grid(slot)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Core {
+    pub fn grid_host_prepare(
+        &self,
+        monitors: &[ffi::Monitor],
+        direction: &str,
+    ) -> ffi::GridHostPlan {
+        crate::guarded(|| {
+            let result = (|| {
+                let (dx, dy) = crate::grid::Direction::parse(direction)?.delta();
+                if dx != 0 && dy != 0 {
+                    return Err("grid host direction must be cardinal".to_owned());
+                }
+                let from = monitors
+                    .iter()
+                    .find(|m| m.focused)
+                    .ok_or("no focused display")?;
+                let &(x, y) = self
+                    .origins
+                    .get(&from.id)
+                    .ok_or("display position unavailable")?;
+                let cx = x + from.width / 2.;
+                let cy = y + from.height / 2.;
+                let target = monitors
+                    .iter()
+                    .filter(|m| m.id != from.id)
+                    .filter_map(|m| {
+                        let &(x, y) = self.origins.get(&m.id)?;
+                        let vx = x + m.width / 2. - cx;
+                        let vy = y + m.height / 2. - cy;
+                        let along = vx * dx as f64 + vy * dy as f64;
+                        if along <= 0. {
+                            return None;
+                        }
+                        let across = if dx != 0 { vy.abs() } else { vx.abs() };
+                        Some((m, along + across * 2.))
+                    })
+                    .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.id.cmp(&b.0.id)))
+                    .map(|(m, _)| m)
+                    .ok_or("no display in that direction")?;
+                Ok(ffi::GridHostPlan {
+                    command: crate::grid_args(
+                        "swap-grids",
+                        &from.id.to_string(),
+                        &target.id.to_string(),
+                    ),
+                    focus: target.id,
+                    error: String::new(),
+                })
+            })();
+            result.unwrap_or_else(|error: String| ffi::GridHostPlan {
+                command: String::new(),
+                focus: 0,
+                error,
+            })
+        })
+    }
+}
+
+impl Core {
+    pub(crate) fn ensure_named_grids(&mut self) -> Result<(), String> {
+        for (name, mut grid) in self.named_grids.clone() {
+            grid.stride = self.stride;
+            if let Ok(id) = self.resolve_grid(&name) {
+                grid.validate(id)?;
+                let old = self.slot_grid(id, "");
+                if (old.columns != grid.columns || old.rows != grid.rows)
+                    && self
+                        .known_workspaces
+                        .iter()
+                        .any(|w| old.cell(*w, id).is_some())
+                {
+                    return Err(format!(
+                        "cannot resize grid {name} with native workspaces; move its windows first"
+                    ));
+                }
+                if self.catalog.entries.get(&id).and_then(|e| e.config) != Some(grid) {
+                    let before = self.catalog.clone();
+                    self.catalog
+                        .entries
+                        .get_mut(&id)
+                        .ok_or("grid metadata missing")?
+                        .config = Some(grid);
+                    if let Err(e) = self.catalog.save() {
+                        self.catalog = before;
+                        return Err(e);
+                    }
+                }
+            } else {
+                let legacy = self.legacy_grids();
+                let ids = self.known_workspaces.iter().copied().collect::<Vec<_>>();
+                let before = self.catalog_checkpoint();
+                let id = self.catalog.create(&name, grid, &legacy, &ids)?;
+                let origin = grid.id(Cell { x: 0, y: 0 }, id)?;
+                self.assignments.cells.insert(id, origin);
+                self.remembered_cells.insert(id, origin);
+                self.catalog_save_cells(before)?;
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn seed_grid_bindings(
+        &mut self,
+        physical: &std::collections::BTreeMap<String, u32>,
+        old_hosts: &BTreeSet<u32>,
+    ) -> Result<(), String> {
+        let mut used = BTreeSet::new();
+        for (name, host) in physical {
+            if old_hosts.contains(host) {
+                continue;
+            }
+            let binding = self.initial_bindings.get(name).or_else(|| {
+                self.slots
+                    .aliases(*host)
+                    .find_map(|n| self.initial_bindings.get(n))
+            });
+            if let Some(binding) = binding {
+                let id = self.resolve_grid(binding)?;
+                if !used.insert(id) {
+                    return Err("initial bindings assign one grid twice".into());
+                }
+                self.assignments.seed_initial(*host, id)?;
             }
         }
         Ok(())
@@ -509,5 +648,67 @@ mod tests {
             before
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod fluid_tests {
+    use super::*;
+    fn monitor(id: u32, x: f64, y: f64) -> (ffi::Monitor, ffi::MonitorIdentity) {
+        (
+            ffi::Monitor {
+                id,
+                slot: id,
+                name: format!("M{id}"),
+                workspace: id + 1,
+                focused: id == 0,
+                offset_x: 0.,
+                offset_y: 0.,
+                width: 2256.,
+                height: 1504.,
+            },
+            ffi::MonitorIdentity {
+                id,
+                name: format!("M{id}"),
+                make: String::new(),
+                model: String::new(),
+                serial: String::new(),
+                x,
+                y,
+            },
+        )
+    }
+    #[test]
+    fn directional_host_moves_use_real_geometry_and_refuse_missing_neighbours() {
+        let mut c = Core::default();
+        let (a, ia) = monitor(0, 8934., 6682.);
+        let (b, ib) = monitor(1, 11190., 6682.);
+        let (d, id) = monitor(2, 8934., 5178.);
+        assert!(c.slots_update(&[ia, ib, id]).is_empty());
+        let ms = [a, b, d];
+        assert_eq!(c.grid_host_prepare(&ms, "right").focus, 1);
+        assert_eq!(c.grid_host_prepare(&ms, "up").focus, 2);
+        assert!(!c.grid_host_prepare(&ms, "left").error.is_empty());
+        assert!(!c.grid_host_prepare(&ms, "up-left").error.is_empty());
+    }
+    #[test]
+    fn configured_named_grids_seed_once_and_protect_names() {
+        let mut c = Core::default();
+        c.load_grid_config(
+            &json!({"namedGrids":{"work":{"columns":9,"rows":9}},"initialBindings":{"M0":"work"}}),
+        )
+        .unwrap();
+        let (_, identity) = monitor(0, 8934., 6682.);
+        assert!(c.slots_update(&[identity]).is_empty());
+        let work = c.resolve_grid("work").unwrap();
+        assert_eq!(c.connected_slots["M0"], work);
+        assert!(c.catalog_rename("work", "other").is_err());
+        let host = c.physical_slots["M0"];
+        let default = c.catalog.defaults[&host];
+        c.assignments.seed_initial(host, default).unwrap();
+        c.connected_slots.clear();
+        let (_, identity) = monitor(0, 8934., 6682.);
+        assert!(c.slots_update(&[identity]).is_empty());
+        assert_eq!(c.connected_slots["M0"], default);
     }
 }

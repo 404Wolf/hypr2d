@@ -95,6 +95,11 @@ mod ffi {
         carry: bool,
         all: bool,
     }
+    struct GridHostPlan {
+        command: String,
+        focus: u32,
+        error: String,
+    }
     struct Reply {
         moves: Vec<Move>,
         output: String,
@@ -321,6 +326,12 @@ mod ffi {
         fn region_record(self: &mut Core, batch: &RegionBatch);
         fn region_inverse(self: &Core) -> RegionBatch;
         fn region_forget(self: &mut Core, all: bool);
+        fn translate_prepare(
+            self: &Core,
+            direction: &str,
+            windows: &[UIWindow],
+            monitors: &[Monitor],
+        ) -> RegionBatch;
         fn region_prepare(
             self: &Core,
             input: &str,
@@ -330,6 +341,7 @@ mod ffi {
         fn grid_animation(self: &Core, monitor: &Monitor, target: u32) -> String;
         fn grid_checkpoint(self: &Core) -> String;
         fn grid_rollback(self: &mut Core, snapshot: &str) -> String;
+        fn grid_host_prepare(self: &Core, monitors: &[Monitor], direction: &str) -> GridHostPlan;
         fn grid_change(self: &mut Core, monitors: &[Monitor], input: &str) -> Reply;
         fn slots_init(self: &mut Core) -> String;
         fn catalog_workspaces(self: &mut Core, ids: &[u32]);
@@ -441,6 +453,9 @@ pub struct Core {
     ui_header_widths: HashMap<String, f64>,
     labels: labels::Labels,
     positions: HashMap<u32, (usize, usize)>,
+    origins: HashMap<u32, (f64, f64)>,
+    named_grids: std::collections::BTreeMap<String, Grid>,
+    initial_bindings: std::collections::BTreeMap<String, String>,
     special_apps: std::collections::BTreeMap<String, Vec<String>>,
     catalog: catalog::Catalog,
     known_workspaces: std::collections::BTreeSet<u32>,
@@ -473,6 +488,9 @@ impl Default for Core {
             ui_header_widths: HashMap::new(),
             labels: labels::Labels::default(),
             positions: HashMap::new(),
+            origins: HashMap::new(),
+            named_grids: Default::default(),
+            initial_bindings: Default::default(),
             special_apps: Default::default(),
             catalog: catalog::Catalog::default(),
             known_workspaces: Default::default(),
@@ -676,7 +694,7 @@ impl Core {
         if matches!(args.as_slice(), ["state"] | ["state", "-j"]) {
             reply.output = json!({"grids":self.catalog_snapshot(monitors,windows),"pinch_config":{"cancel_scale":self.pinch_cancel_scale},"version":1,"special_names":self.labels.names(),"specials":self.special_labels(),"parked":self.parked_snapshot(windows),"extensions":self.extensions.snapshot(),"swipe_enabled":self.swipe_enabled,"overview_config":self.theme,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
                 let g = self.grid(m);
-                json!({"id":m.id,"slot":m.slot,"name":m.name,"label":self.monitor_label(&m.name),"workspace":m.workspace,"focused":m.focused,"grid":g,"cell":g.cell(m.workspace,m.slot),"offset":[m.offset_x,m.offset_y],
+                json!({"id":m.id,"slot":m.slot,"name":m.name,"label":self.monitor_label(&m.name),"grid_name":self.grid_name(m.slot),"workspace":m.workspace,"focused":m.focused,"grid":g,"cell":g.cell(m.workspace,m.slot),"offset":[m.offset_x,m.offset_y],
                     "cells":(0..g.rows).flat_map(|y|(0..g.columns).map(move |x|Cell{x,y})).filter_map(|c|g.id(c,m.slot).ok().map(|id|json!({"x":c.x,"y":c.y,"workspace":id,"windows":windows.iter().filter(|w|w.workspace==id).map(|w|json!({"address":w.address,"title":w.title,"app_id":w.app_id,"urgent":w.urgent})).collect::<Vec<_>>()}))).collect::<Vec<_>>()})
             }).collect::<Vec<_>>()}).to_string();
             return Ok(reply);
@@ -1091,6 +1109,16 @@ pub fn grid_args(operation: &str, a: &str, b: &str) -> String {
             }
         )
     })
+}
+
+impl Default for ffi::GridHostPlan {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+            focus: 0,
+            error: "grid host planning failed".into(),
+        }
+    }
 }
 
 #[cfg(test)]

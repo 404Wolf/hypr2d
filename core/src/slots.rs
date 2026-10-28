@@ -289,6 +289,7 @@ impl crate::Core {
     }
     pub fn slots_update(&mut self, monitors: &[crate::ffi::MonitorIdentity]) -> String {
         crate::guarded(|| {
+            self.origins = monitors.iter().map(|m| (m.id, (m.x, m.y))).collect();
             let mut connected = std::collections::HashMap::new();
             let mut live = Vec::new();
             // Retain known live identities before considering serial fallbacks.
@@ -312,6 +313,11 @@ impl crate::Core {
                     Err(e) => return e,
                 }
             }
+            let old_hosts = connected
+                .values()
+                .copied()
+                .filter(|h| self.assignments.has_host(*h))
+                .collect();
             let physical = connected.iter().map(|(n, s)| (n.clone(), *s)).collect();
             for slot in connected.values() {
                 if let Err(e) = self.ensure_output_grid(*slot) {
@@ -357,6 +363,12 @@ impl crate::Core {
                 ) {
                     return e;
                 }
+            }
+            if let Err(e) = self
+                .ensure_named_grids()
+                .and_then(|()| self.seed_grid_bindings(&physical, &old_hosts))
+            {
+                return e;
             }
             let old = self.connected_slots.clone();
             match self

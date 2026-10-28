@@ -14,6 +14,8 @@ let
   enabled = evaluate {
     enable = true;
     grids = { "WAYLAND-1" = { rows = 9; wrap = false; }; "HEADLESS-1" = {}; };
+    namedGrids.work = {columns=9;rows=9;};
+    initialBindings."eDP-1"="work";
     monitorSlots = { "eDP-1" = 0; "HEADLESS-1" = 2; };
     overview.bind = true;
     pinch.cancelScale = 0.12;
@@ -42,6 +44,8 @@ let
   c = enabled.config;
   lua = pkgs.writeText "hypr2d-hm-generated.lua" c.wayland.windowManager.hyprland.extraConfig;
   valid = assert c.programs.hypr2d.enable;
+    assert (builtins.fromJSON c.xdg.configFile."hypr/hypr2d.json".text).namedGrids.work.columns == 9;
+    assert (builtins.fromJSON c.xdg.configFile."hypr/hypr2d.json".text).initialBindings."eDP-1" == "work";
     assert lib.all (a: a.assertion) c.assertions;
     assert lib.hasInfix ''hl.unbind("SUPER + TAB")'' c.wayland.windowManager.hyprland.extraConfig;
     assert c.wayland.windowManager.hyprland.configType == "lua";

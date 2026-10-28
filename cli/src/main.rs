@@ -7,7 +7,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const USAGE:&str="hypr2d [--instance SIGNATURE] state\nhypr2d [--instance SIGNATURE] move DIR [all] [--monitor NAME]\nhypr2d [--instance SIGNATURE] adopt GRID [MONITOR]\nhypr2d [--instance SIGNATURE] swap-grids A B\nhypr2d [--instance SIGNATURE] grid list|create NAME [JSON]|rename GRID NAME|delete GRID\nhypr2d [--instance SIGNATURE] carry DIR\nhypr2d [--instance SIGNATURE] goto X Y [MONITOR]\nhypr2d [--instance SIGNATURE] waybar [--monitor NAME] [--columns full|centered] [--rows full|centered] [--radius-x 0..4] [--radius-y 0..4] [--current-color #RRGGBB] [--occupied-color #RRGGBB] [--empty-color #RRGGBB] [--urgent-color #RRGGBB]";
+const USAGE:&str="hypr2d [--instance SIGNATURE] state\nhypr2d [--instance SIGNATURE] move DIR [all] [--monitor NAME]\nhypr2d [--instance SIGNATURE] adopt GRID [MONITOR]\nhypr2d [--instance SIGNATURE] swap-grids A B\nhypr2d [--instance SIGNATURE] grid list|create NAME [JSON]|rename GRID NAME|delete GRID\nhypr2d [--instance SIGNATURE] translate-grid DIR\nhypr2d [--instance SIGNATURE] move-grid DIR\nhypr2d [--instance SIGNATURE] carry DIR\nhypr2d [--instance SIGNATURE] goto X Y [MONITOR]\nhypr2d [--instance SIGNATURE] waybar [--monitor NAME] [--columns full|centered] [--rows full|centered] [--radius-x 0..4] [--radius-y 0..4] [--current-color #RRGGBB] [--occupied-color #RRGGBB] [--empty-color #RRGGBB] [--urgent-color #RRGGBB]";
 #[derive(Default)]
 struct Args {
     instance: Option<String>,
@@ -133,6 +133,12 @@ impl Args {
             }
             ["swap-grids", a, b] if self.monitor.is_none() => {
                 format!("swap-grids {}", serde_json::json!([a, b]))
+            }
+            ["translate-grid", d] | ["move-grid", d] if self.monitor.is_none() => {
+                if !matches!(*d, "left" | "right" | "up" | "down") {
+                    return Err("grid direction must be cardinal".into());
+                }
+                format!("{} {d}", self.words[0])
             }
             ["carry", d] if self.monitor.is_none() => format!("carry {d}"),
             ["goto", x, y] => format!(
