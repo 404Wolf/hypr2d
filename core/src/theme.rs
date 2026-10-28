@@ -5,6 +5,7 @@ pub struct Theme {
     pub supersample: f64,
     pub memory_budget_mib: u32,
     pub background_darken: f64,
+    pub background_tint: f64,
     pub fit: bool,
     pub gap: u32,
     pub accent: String,
@@ -26,6 +27,7 @@ impl Default for Theme {
             supersample: 2.0,
             memory_budget_mib: 128,
             background_darken: 0.35,
+            background_tint: 0.12,
             fit: true,
             gap: 0,
             accent: "#9CBEFF".into(),
@@ -70,11 +72,13 @@ impl Theme {
         if !t.supersample.is_finite()
             || !(1.0..=4.0).contains(&t.supersample)
             || !(16..=512).contains(&t.memory_budget_mib)
+            || !t.background_tint.is_finite()
+            || !(0.0..=1.0).contains(&t.background_tint)
             || !t.background_darken.is_finite()
             || !(0.0..=1.0).contains(&t.background_darken)
         {
             return Err(
-                "supersample must be 1..4, memory_budget_mib 16..512, background_darken 0..1"
+                "supersample must be 1..4, memory_budget_mib 16..512, background_darken/background_tint 0..1"
                     .into(),
             );
         }
@@ -96,6 +100,19 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn backdrop_tint_has_a_bounded_neutral_default() {
+        assert_eq!(Theme::parse("{}").unwrap().background_tint, 0.12);
+        assert_eq!(
+            Theme::parse(r#"{"background_tint":0}"#)
+                .unwrap()
+                .background_tint,
+            0.
+        );
+        for value in [-0.01, 1.01] {
+            assert!(Theme::parse(&format!(r#"{{"background_tint":{value}}}"#)).is_err());
+        }
+    }
     #[test]
     fn translucent_tile_colour_is_validated() {
         assert_eq!(Theme::parse("{}").unwrap().tile, "#FFFFFF1A");

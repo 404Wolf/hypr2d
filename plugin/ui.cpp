@@ -295,8 +295,7 @@ static SP<Render::ITexture> text(const std::string &str, int fontSize, int width
         textCache[key] = g_pHyprRenderer->renderText(str, color(labelColor, 1), fontSize, false, std::string(core->ui_style().font), width);
     return textCache[key];
 }
-// The ghost samples a cropped region of an existing thumbnail; no extra
-// capture.
+// The ghost samples a cropped region of an existing thumbnail; no extra capture.
 class GhostPass final : public IPassElement {
     SP<Render::ITexture> texture;
     CBox box;
@@ -358,6 +357,7 @@ class Pass final : public IPassElement {
                 makeUnique<CTexPassElement>(CTexPassElement::SRenderData{.tex = bg->second->getTexture(),
                                                                          .box = {0, 0, size.x, size.y},
                                                                          .a = float((1.0 - style.background_darken) * frame.alpha)}));
+        rect({0, 0, size.x, size.y}, color(0x808080, style.background_tint * frame.alpha));
         // Rust provides exact matching row/column endpoints. Use orthogonal
         // elbow segments for unequal resolutions, one physical pixel per scale.
         for (const auto &guide : frame.guides) {
@@ -398,7 +398,7 @@ class Pass final : public IPassElement {
             }
         // Layered translucent rounded rectangles form a cheap, bounded soft shadow.
         for (auto &c : frame.cells) {
-            if (!c.occupied && !c.shown)
+            if (c.dimmed || (!c.occupied && !c.shown))
                 continue;
             for (int spread = 6; spread >= 1; --spread) {
                 const double d = spread * outputScale;
@@ -410,10 +410,10 @@ class Pass final : public IPassElement {
         for (auto &c : frame.cells) {
             CBox box{std::round(c.rect.x), std::round(c.rect.y), std::ceil(c.rect.width), std::ceil(c.rect.height)};
             const auto borderColor = std::string(c.key) == std::string(frame.target) ? color(style.target, frame.alpha)
-                                     : c.shown                                       ? color(style.accent, frame.alpha)
+                                     : c.shown && !c.dimmed                          ? color(style.accent, frame.alpha)
                                      : c.selected                                    ? color(style.current, frame.alpha)
                                      : c.hovered                                     ? color(style.hover, frame.alpha)
-                                                 : color(c.colour ? c.colour : style.border, frame.alpha);
+                                                 : color(c.colour ? c.colour : style.border, frame.alpha * (c.dimmed ? .45 : 1.));
             const bool empty = !c.occupied;
             if (empty && outlinedPanels.contains(c.monitor) && !std::string(c.key).starts_with("special:") && !c.shown && !c.selected &&
                 !c.hovered && std::string(c.key) != std::string(frame.target) && c.label.empty() && !c.colour)
@@ -429,7 +429,7 @@ class Pass final : public IPassElement {
                                                                                          .round = static_cast<int>(style.rounding)}));
             // One physical pixel, drawn inside the cell: zero-gap tiles share
             // edges without the old expanded two-pixel halos.
-            const double line = c.shown ? 2. * outputScale : 1.;
+            const double line = c.shown && !c.dimmed ? 2. * outputScale : 1.;
             rect({box.x, box.y, box.w, line}, borderColor);
             rect({box.x, box.y + box.h - line, box.w, line}, borderColor);
             rect({box.x, box.y, line, box.h}, borderColor);
@@ -457,8 +457,12 @@ class Pass final : public IPassElement {
         }
         for (auto &l : frame.labels) {
             CBox b{l.rect.x, l.rect.y, l.rect.width, l.rect.height};
-            if (l.band)
-                rect(b, color(style.cell, frame.alpha));
+            if (l.band) {
+                if (auto metrics = text(std::string(l.text), static_cast<int>(style.font_size * outputScale),
+                                        std::clamp(static_cast<int>(b.w), 1, 1000), style.label))
+                    b.w = std::min(b.w, metrics->m_size.x + 8 * outputScale);
+                rect(b, color(style.background, .8 * frame.alpha));
+            }
             label(std::string(l.text), b, l.band ? 1.f : .85f, l.colour);
         }
         for (const auto &r : frame.region_rects) {
@@ -535,20 +539,17 @@ static void applyDrop(const hypr2d::UIDrop &drop) {
         return;
     if (!Doctor::healthy()) {
         (*ui)->overview_refuse(drop.window, now());
-        LOG(Log::ERR, "hypr2d: drop refused on inconsistent layout; run hyprctl "
-                      "hypr2d doctor");
+        LOG(Log::ERR, "hypr2d: drop refused on inconsistent layout; run hyprctl hypr2d doctor");
         damage();
         return;
     }
-    const auto sourceWorkspace = w->m_workspace; // Keep its monitor/space alive through both silent swap
-                                                 // moves.
+    const auto sourceWorkspace = w->m_workspace; // Keep its monitor/space alive through both silent swap moves.
     auto source = key(sourceWorkspace);
     auto other = findWindow(std::string(drop.stack.empty() ? drop.swap : drop.stack));
     if ((!drop.stack.empty() || !drop.swap.empty()) &&
         (!other || other == w || !other->m_workspace || key(other->m_workspace) != std::string(drop.workspace)))
         return;
-    { // Do not retain native groups across detach dispatchers: an empty group
-        // must expire.
+    { // Do not retain native groups across detach dispatchers: an empty group must expire.
         const auto oldGroup = w->grouping().group();
         const auto targetGroup = other ? other->grouping().group() : nullptr;
         const bool groupOperation = oldGroup || !drop.stack.empty() || targetGroup;
@@ -913,10 +914,8 @@ void init(hypr2d::Core *c) {
                     const auto &cap = *planned;
                     try {
                         if (!cache[k] || cache[k]->m_size != Vector2D{double(cap.capture_width), double(cap.capture_height)})
-                            LOG(Log::INFO,
-                                "hypr2d capture {} framebuffer={}x{} drawn={}x{} physical "
-                                "pixels",
-                                k, cap.capture_width, cap.capture_height, cap.width, cap.height);
+                            LOG(Log::INFO, "hypr2d capture {} framebuffer={}x{} drawn={}x{} physical pixels", k, cap.capture_width,
+                                cap.capture_height, cap.width, cap.height);
                         double t = now();
                         cache[k] = OverviewProbe::capture(cap, cache[k], profileCaptures);
                         const auto cost = now() - t;
@@ -1141,8 +1140,7 @@ std::string command(const std::string &input) {
     if (input == "overview cursor") {
         auto m = Desktop::focusState()->monitor();
         const auto &image = Pointer::mgr()->currentCursorImage();
-        return std::format("{{\"overview_open\":{},\"should_render\":{},\"texture\":{},\"image_"
-                           "width\":{},\"image_height\":{},\"software_"
+        return std::format("{{\"overview_open\":{},\"should_render\":{},\"texture\":{},\"image_width\":{},\"image_height\":{},\"software_"
                            "locked\":{},\"hardware_visible\":{}}}",
                            active(), g_pHyprRenderer->shouldRenderCursor(), bool(Pointer::mgr()->getCurrentCursorTexture()), image.size.x,
                            image.size.y, m && Pointer::mgr()->softwareLockedFor(m), m && Pointer::mgr()->hasVisibleHWCursor(m));
@@ -1162,8 +1160,7 @@ std::string command(const std::string &input) {
                                                       m ? m->m_scale : 1.0, now());
             auto cell = std::ranges::find_if(frame.cells, [&](const auto &c) { return std::string(c.key) == key; });
             const auto drawn = cell == frame.cells.end() ? Vector2D{} : Vector2D{std::ceil(cell->rect.width), std::ceil(cell->rect.height)};
-            images += std::format("{{\"key\":\"{}\",\"width\":{},\"height\":{},\"drawn_width\":{},"
-                                  "\"drawn_height\":{},\"direct\":true}}",
+            images += std::format("{{\"key\":\"{}\",\"width\":{},\"height\":{},\"drawn_width\":{},\"drawn_height\":{},\"direct\":true}}",
                                   escapeJSONStrings(key), fb->m_size.x, fb->m_size.y, drawn.x, drawn.y);
         }
         images += "]";
@@ -1180,12 +1177,9 @@ std::string command(const std::string &input) {
             bytes += fb->m_size.x * fb->m_size.y * 4. * 4. / 3.;
         for (auto &[id, fb] : backdrops)
             bytes += fb->m_size.x * fb->m_size.y * 4. * 4. / 3.;
-        return std::format("{{\"opening_dispatch_ms\":{},\"first_frame_ms\":{},\"first_frame_"
-                           "capture_ms\":{},\"max_frame_ms\":{},\"opening_"
-                           "max_frame_gap_ms\":{},\"completed_gpu\":{},\"gpu_rgba_bytes\":{},"
-                           "\"gpu_bytes_"
-                           "bound\":{},\"backdrop_captures\":{},\"max_capture_ms\":{},\"max_"
-                           "refresh_ms\":{},\"ui\":{},"
+        return std::format("{{\"opening_dispatch_ms\":{},\"first_frame_ms\":{},\"first_frame_capture_ms\":{},\"max_frame_ms\":{},\"opening_"
+                           "max_frame_gap_ms\":{},\"completed_gpu\":{},\"gpu_rgba_bytes\":{},\"gpu_bytes_"
+                           "bound\":{},\"backdrop_captures\":{},\"max_capture_ms\":{},\"max_refresh_ms\":{},\"ui\":{},"
                            "\"captures\":{},\"capture_ms\":{},\"pending\":{},\"images\":{}}}",
                            openingDispatchMs, firstFrameMs, firstFrameCaptureMs, maxFrameMs, maxFrameGapMs, profileCaptures, payload, bytes,
                            backdropCaptures, maxCaptureMs, maxRefreshMs,

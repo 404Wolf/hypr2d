@@ -59,6 +59,7 @@ let
     assert colored.programs.hypr2d.theme.current == "#82AAFF";
     assert (builtins.fromJSON colored.xdg.configFile."hypr/hypr2d.json".text).theme.gap == 4;
     assert c.programs.hypr2d.overview.gap == 0;
+    assert c.programs.hypr2d.overview.backgroundTint == 0.12;
     assert (builtins.fromJSON colored.xdg.configFile."hypr/hypr2d.json".text).specials.names."3" == "chatting";
     assert (builtins.fromJSON colored.xdg.configFile."hypr/hypr2d.json".text).monitors.labels."eDP-1" == "main";
     assert (builtins.fromJSON colored.xdg.configFile."hypr/hypr2d.json".text).monitors.autoLabel == "position";

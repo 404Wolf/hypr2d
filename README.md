@@ -266,6 +266,10 @@ cannot be overwritten from the editor. Labels appear in panel/card headers,
 adoption targets and the minimap tooltip. Duplicate monitor labels require an
 output name or ID in CLI commands.
 
+The shared wallpaper backdrop also accepts `overview.backgroundTint` (default
+0.12): a neutral grey overlay that softens the image without extra captures.
+Set it to zero to retain only `overview.backgroundDarken`.
+
 ## Extension clients
 
 The plugin serves a versioned, connection-scoped JSON-lines protocol at

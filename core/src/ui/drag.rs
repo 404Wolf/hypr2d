@@ -357,16 +357,18 @@ mod tests {
     #[test]
     fn swap_badges_keep_original_grid_identity_and_expire_after_reconcile() {
         let mut ui = model();
+        ui.grid_names = vec!["source grid".into(), "target grid".into()];
         ui.mapping.clock(1000.);
         assert_eq!(ui.mapping_command(0, 1), "@swap-grids 0 1");
         let mut replacement = model();
         replacement.group_slots.reverse();
+        replacement.grid_names = vec!["target grid".into(), "source grid".into()];
         ui.overview_reconcile(replacement);
         let frame = ui.overview_frame(1000., 700., 1000.);
         let start = frame
             .labels
             .iter()
-            .find(|l| l.text == "grid 0")
+            .find(|l| l.text == "source grid")
             .unwrap()
             .rect
             .x;
@@ -376,7 +378,7 @@ mod tests {
             frame
                 .labels
                 .iter()
-                .find(|l| l.text == "grid 0")
+                .find(|l| l.text == "source grid")
                 .unwrap()
                 .rect
                 .x
@@ -387,7 +389,7 @@ mod tests {
             .overview_frame(1000., 700., 1180.)
             .labels
             .iter()
-            .any(|l| l.text.starts_with("grid ")));
+            .any(|l| l.text == "source grid" || l.text == "target grid"));
     }
     #[test]
     fn region_keyboard_cross_panel_alt_swap_and_escape_cancel() {

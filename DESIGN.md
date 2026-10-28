@@ -1338,8 +1338,8 @@ Rust direction/wrap tests and the VM smoke suite passed: external workspace
 focus in all four cardinal directions, wrapped row/column edges, and real
 external window focus one row down. Incoming offsets match the chosen axis
 and sign; unload/reload and unchanged animation configuration also passed.
-The broader overview suite exposed a separate Alt modifier-device regression;
-that pending fix does not affect these activation checks.
+Merged input-device modifier state now covers Alt/Shift transitions, with
+group-of-three pointer regressions in the full VM suite.
 
 ## Grid assignment and region extension
 
@@ -1404,3 +1404,75 @@ socket2 events. The rename editor consumes navigation until Enter/Esc and never
 dispatches window actions. Rust covers precedence, atomic persistence, renamed
 dock descriptions, input quoting and refresh retention; the VM covers actual
 text input, tooltip labels, configured precedence and restart persistence.
+
+## Overview UI audit — laptop and multi-output layouts
+
+Synthetic VM fixtures cover 2256×1504 at scale 1, including the non-zero laptop
+origin, a full 9×9 grid and five specials. Multi-output scenes use the laptop
+beside 1920×1080 and 1600×1200 outputs, then unplug the right output. No live
+screenshots or personal window contents are included in these artifacts.
+
+- [x] **Backdrop contrast:** darkening alone left saturated wallpaper dominating
+  the tiles. A shared neutral #808080 overlay defaults to 12%, configurable with
+  `overview.backgroundTint`; zero disables it. Empty cells remain continuous
+  translucent windows onto that backdrop. No new framebuffer or capture is
+  needed. [Before](docs/audit/before-wallpaper-2256.png) ·
+  [after](docs/audit/after-labels-open-2256.png).
+- [x] **Parked emphasis:** remembered-current rings made empty parked cards look
+  active. Suppress their glow/current ring and dim ordinary outlines, retaining
+  a visible keyboard-selection ring.
+  [Before](docs/audit/before-parked-outlines-2256.png) ·
+  [cards](docs/audit/after-two-parked-cards-2256.png) ·
+  [keyboard focus](docs/audit/after-parked-keyboard-focus-2256.png).
+- [x] **Footer weight and overlap:** the full-width grey drag band was too heavy.
+  Use a natural-width 80%-black scrim in the reserved bottom margin; the grid,
+  specials and cards fit above it. The modifier table matches actual behavior.
+  [Before](docs/audit/before-stack-hint-1280.png) ·
+  [after](docs/audit/after-stack-ghost-2256.png).
+- [x] **Typography:** headers share a physical text height and 8px baseline gap;
+  long app labels ellipsize inside their tiles. Explicit special names survive
+  window refreshes, with the app in a smaller dim caption. Rename feedback uses
+  a compact scrim; Esc cancels editing before closing.
+  [Labels](docs/audit/after-labels-open-2256.png) ·
+  [editor](docs/audit/after-rename-2256.png).
+- [x] **Region states:** blue source outlines, gold destination cells and a
+  translucent block ghost distinguish selection/pickup; invalid bounds flash
+  red. Keyboard and pointer plans agree, including wrapped edges. Esc removes
+  the selection/ghost without applying it; Ctrl+Z reverses the entire transfer.
+  [Selection](docs/audit/after-region-select-2256.png) ·
+  [pickup](docs/audit/after-region-ghost-2256.png).
+- [x] **Arrangement and guides:** one, two and three panels retain source aspect
+  ratios and physical arrangement, with aligned headers and no strip/footer
+  overflow. Empty and occupied grids use the same layout. Guides connect only
+  neighbouring panels; unequal resolutions retain the correct row/column map.
+  [Three outputs](docs/audit/after-three-open-2256.png) ·
+  [expanded parked grid](docs/audit/after-two-expanded-2256.png).
+- [x] **State wording and navigation:** an adopted-away grid whose physical owner
+  remains connected says parked, rather than disconnected. Highlight the active
+  live/parked tab in the configured current colour. Rust state checks and the native VM assertion passed; updated screenshots
+  confirm both states.
+- [x] **Mapping feedback:** show grid names in the drag badge; preserve the
+  original names through a swap and expire the animation after 180ms. Rust
+  clock/reconciliation tests and the updated VM image confirm this.
+  [Header swap](docs/audit/after-three-swap-2256.png).
+- [x] **Z-order and resources:** software cursor remains above tiles/ghosts;
+  captions stay on scrims, the ghost may transiently cover a header while
+  crossing it, and closed-overview screenshots match their baselines. Sixty
+  open/close cycles retain bounded RSS, stable file descriptors and deleted GL
+  objects. Hover, Shift ghost transitions and mapping feedback reuse captures.
+
+The final `nix flake check --builders '' -L` passed all x86_64 checks. The VM
+finished in 621.60s, including region/stack interactions, empty parked targets,
+native two/three-monitor swaps, auto/keep restart/reconnect policies, labels and
+every minimap latency path (11–27ms). Rust passes 64 core tests, 16 CLI tests,
+one reconnect integration test and two client tests; formatting and Clippy
+with warnings denied pass. The single-laptop visual fixture still captures
+eight occupied workspaces/specials plus one backdrop, with no first-frame
+thumbnail capture. No live-session or Home Manager checkout changes occurred.
+
+Additional reviewed states: [hover](docs/audit/after-hover-2256.png),
+[three-member ghost](docs/audit/after-stack-three-1280.png),
+[bounds refusal](docs/audit/after-region-refused-1280.png),
+[empty parked target](docs/audit/after-empty-parked-target-1280.png),
+[card adoption](docs/audit/after-card-adoption-1280.png) and
+[parked-to-live ghost](docs/audit/after-parked-ghost-2256.png).

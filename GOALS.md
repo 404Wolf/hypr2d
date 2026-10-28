@@ -102,7 +102,7 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Region marquee/keyboard selection, merge/swap block transfers, wrap/bounds refusal, ghost/targets and undo through deferred public dispatchers
 - [x] Bidirectional single/region drops into parked and live grids, including empty parked targets
 - [x] HM and persisted runtime special/monitor labels, description fallback, positional names, CLI resolution and rename UI
-- [ ] Overview UI audit checklist with before/after screenshots at laptop resolutions, all new states, and configurable neutral backdrop tint
+- [x] Overview UI audit checklist with before/after screenshots at laptop resolutions, all new states, and configurable neutral backdrop tint
 
 ## Multiple grids, fluidly assigned to monitors
 - [ ] Grids are first-class and independent of monitors: any number of named grids (persisted), each shown on at most one monitor at a time; monitors pick which grid they show, unassigned grids stay parked. Swapping which monitor shows which grid is instant and keeps every grid's windows and current cell

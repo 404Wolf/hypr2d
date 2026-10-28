@@ -80,6 +80,9 @@ pub struct Overview {
     secondary: std::collections::BTreeMap<String, String>,
     special_titles: std::collections::BTreeMap<String, String>,
     focused_panel: usize,
+    current_colour: u32,
+    grid_names: Vec<String>,
+    parked_attached: BTreeSet<usize>,
     group_slots: Vec<u32>,
     grid_specs: Vec<crate::grid::Grid>,
     refused: String,
@@ -127,6 +130,22 @@ impl Core {
         guarded(|| {
             let mut ui = Overview {
                 focused_panel: outputs.iter().position(|o| o.focused).unwrap_or(0),
+                current_colour: parse_colour(&self.theme.current),
+                grid_names: outputs
+                    .iter()
+                    .map(|o| {
+                        self.slot_label(
+                            o.slot,
+                            self.slots.aliases(o.slot).next().unwrap_or(&o.name),
+                        )
+                    })
+                    .collect(),
+                parked_attached: outputs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, o)| o.parked && self.physical_slots.values().any(|s| *s == o.slot))
+                    .map(|(i, _)| i)
+                    .collect(),
                 group_slots: outputs.iter().map(|o| o.slot).collect(),
                 grid_specs: outputs
                     .iter()
@@ -391,7 +410,15 @@ impl Overview {
             }
             let p = &inset;
             self.headers[g].1 = if self.parked.contains(&g) {
-                format!("{} · disconnected", self.panel_names[g])
+                format!(
+                    "{} · {}",
+                    self.panel_names[g],
+                    if self.parked_attached.contains(&g) {
+                        "parked"
+                    } else {
+                        "disconnected"
+                    }
+                )
             } else {
                 self.panel_names[g].clone()
             };
@@ -962,13 +989,13 @@ impl Overview {
                             ffi::UILabel {
                                 rect: convert(self.live_tab),
                                 text: "live".into(),
-                                colour: 0,
+                                colour: if self.expanded.is_none(){self.current_colour}else{0},
                                 band: true,
                             },
                             ffi::UILabel {
                                 rect: convert(self.parked_tab),
                                 text: "parked".into(),
-                                colour: 0,
+                                colour: if self.expanded.is_some(){self.current_colour}else{0},
                                 band: true,
                             },
                         ]
@@ -1486,6 +1513,65 @@ mod tests {
             workspace: id + 1,
             focused: id == 0,
         }
+    }
+    #[test]
+    fn parked_status_tabs_and_mapping_badges_follow_names_and_frame_clock() {
+        let mut core = Core::default();
+        core.physical_slots.insert("eDP-1".into(), 0);
+        core.slots
+            .resolve("DP-1", "Vendor", "Panel", "serial", &[])
+            .unwrap();
+        core.labels.rename("monitor:0", "main", &[]).unwrap();
+        core.labels.rename("monitor:1", "desk", &[]).unwrap();
+        let mut live = output(0, 8934., 6682.);
+        live.name = "eDP-1".into();
+        live.slot = 1;
+        live.workspace = 2;
+        let mut parked = output(0x80000000, 8934., 6682.);
+        parked.name = "eDP-1".into();
+        parked.slot = 0;
+        parked.parked = true;
+        parked.backing = 0;
+        parked.workspace = 1;
+        let outputs = [live, parked];
+        let mut ui = core.overview_new(&outputs, &[], &[], 0.);
+        ui.overview_parked();
+        let frame = ui.overview_frame(2256., 1504., 200.);
+        assert!(frame.labels.iter().any(|l| l.text == "main · parked"));
+        assert_eq!(
+            frame
+                .labels
+                .iter()
+                .find(|l| l.text == "parked")
+                .unwrap()
+                .colour,
+            parse_colour(&core.theme.current)
+        );
+        assert_eq!(ui.mapping_command(1, 0), "@adopt 0 0");
+        let pulse = ui.mapping_labels(|r| ffi::UIRect {
+            x: r.x,
+            y: r.y,
+            width: r.w,
+            height: r.h,
+        });
+        assert!(pulse.iter().any(|l| l.text == "main") && pulse.iter().any(|l| l.text == "desk"));
+        ui.overview_hover_clock(200.);
+        assert!(ui
+            .mapping_labels(|r| ffi::UIRect {
+                x: r.x,
+                y: r.y,
+                width: r.w,
+                height: r.h
+            })
+            .is_empty());
+        core.physical_slots.clear();
+        let mut detached = core.overview_new(&outputs, &[], &[], 0.);
+        detached.overview_parked();
+        assert!(detached
+            .overview_frame(2256., 1504., 200.)
+            .labels
+            .iter()
+            .any(|l| l.text == "main · disconnected"));
     }
     #[test]
     fn laptop_supersampling_is_visible_only_budgeted_and_animation_independent() {

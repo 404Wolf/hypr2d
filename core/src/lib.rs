@@ -190,6 +190,7 @@ mod ffi {
     struct UIStyle {
         accent: u32,
         background_darken: f64,
+        background_tint: f64,
         memory_budget_mib: u32,
         background: u32,
         cell: u32,
@@ -957,6 +958,7 @@ impl Core {
             ffi::UIStyle {
                 accent: c(&t.accent),
                 background_darken: t.background_darken,
+                background_tint: t.background_tint,
                 memory_budget_mib: t.memory_budget_mib,
                 background: c(&t.background),
                 cell: c(&t.cell),
@@ -980,6 +982,7 @@ impl Default for ffi::UIStyle {
         Self {
             accent: 0x9CBEFF,
             background_darken: 0.35,
+            background_tint: 0.12,
             memory_budget_mib: 128,
             background: 0,
             cell: 0x303030,

@@ -269,7 +269,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         empty=next(c for c in fitted["cells"] if not c["occupied"] and not c["selected"] and not c["shown"] and not c["key"].startswith("special:"))
         x,y,w,h=empty["rect"]
         empty_image=Image.open(artifacts / "ui-fit-default-0.png").convert("RGB")
-        assert all(abs(c-26)<=2 for c in empty_image.getpixel((round(x+w/2),round(y+h/2)))),"empty background must show translucent tile fill"
+        assert all(abs(c-40)<=2 for c in empty_image.getpixel((round(x+w/2),round(y+h/2)))),"empty background must show translucent tile fill"
         empty_edges=[c["rect"] for c in fitted["cells"] if not c["occupied"] and not c["shown"] and not c["selected"] and not c["key"].startswith("special:")]
         assert any(empty_image.getpixel((round(cx)+offset,round(cy+ch/2)))==(53,53,53) for cx,cy,cw,ch in empty_edges for offset in (-1,0,1)),"unshadowed empty outlines must be base02"
         # Real mapped fixtures exercise short reverse-DNS class labels and +N.
@@ -954,7 +954,9 @@ with (artifacts / "compositor.log").open("w+") as log:
         assert monitors()[0]["activeWorkspace"]["id"]==remembered
         assert real_window(keeper)["workspace"]["id"]==1+dock["slot"]
         open_ui();screenshot("ui-adopted-parked-grid")
-        begin_drag(keeper);drag_tab("parked");move_drag(cell_point(str(1+live["slot"]),.01,.01));screenshot("ui-empty-parked-target");finish_drag()
+        begin_drag(keeper);drag_tab("parked")
+        assert any(l["text"]==live["name"]+" · parked" for l in ui_state()["ui"]["labels"]),"connected owner is parked, not disconnected"
+        move_drag(cell_point(str(1+live["slot"]),.01,.01));screenshot("ui-empty-parked-target");finish_drag()
         begin_drag(keeper);drag_tab("live");move_drag(cell_point(str(1+dock["slot"]),.01,.01));finish_drag()
         select_block(1+dock["slot"],11+dock["slot"])
         pointer_to(cell_point(str(1+dock["slot"])));pointer_command("down");drag_tab("parked",True)
@@ -1292,7 +1294,7 @@ with (artifacts / "compositor.log").open("w+") as log:
             x,y,w,h=empty["rect"]
             px,py=round(x+w*.25),round(y+h*.25)
             colour=(64,96,128) if px<1128 and py<752 else (128,80,64) if py<752 else (64,96,80) if px<1128 else (96,64,128)
-            assert all(abs(a-(b*.65*(1-26/255)+26))<5 for a,b in zip(image.getpixel((px,py)),colour)),"empty cells must show continuous screen wallpaper"
+            assert all(abs(a-((b*.65*.88+128*.12)*(1-26/255)+26))<5 for a,b in zip(image.getpixel((px,py)),colour)),"empty cells must show continuous screen wallpaper"
             if not full_grid and not completed_gpu:
                 target=next(c for c in state["ui"]["cells"] if c["occupied"] and not c["shown"])
                 x,y,w,h=target["rect"]

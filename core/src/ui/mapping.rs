@@ -10,6 +10,7 @@ pub(super) struct State {
     pub until: f64,
     now: f64,
     pulse: Option<(usize, usize, u32, u32)>,
+    pulse_names: std::collections::BTreeMap<u32, String>,
 }
 impl State {
     pub(super) fn now(&self) -> f64 {
@@ -58,6 +59,11 @@ impl Overview {
     pub(super) fn mapping_command(&mut self, source: usize, target: usize) -> String {
         if source == target || self.parked.contains(&target) {
             return String::new();
+        }
+        for g in [source, target] {
+            self.mapping
+                .pulse_names
+                .insert(self.group_slots[g], self.grid_names[g].clone());
         }
         self.mapping.until = self.mapping.now + 180.;
         self.mapping.pulse = Some((
@@ -169,7 +175,7 @@ impl Overview {
         if self.mapping.active {
             if let Some(g) = self.mapping.pressed {
                 labels.push(ffi::UILabel {
-                    text: format!("grid {}", self.group_slots[g]),
+                    text: self.grid_names[g].clone(),
                     rect: convert(Rect {
                         x: self.pointer.0 + 4.,
                         y: self.pointer.1 + 4.,
@@ -189,7 +195,12 @@ impl Overview {
                         (self.headers.get(source), self.headers.get(target))
                     {
                         labels.push(ffi::UILabel {
-                            text: format!("grid {slot}"),
+                            text: self
+                                .mapping
+                                .pulse_names
+                                .get(&slot)
+                                .cloned()
+                                .unwrap_or_else(|| format!("grid {slot}")),
                             rect: convert(Rect {
                                 x: from.x + (to.x - from.x) * t,
                                 y: from.y + (to.y - from.y) * t,
