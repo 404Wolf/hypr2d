@@ -98,9 +98,21 @@ All monitor grids appear together in their physical arrangement on each output.
 Specials are labelled; empty ones are dim and currently shown ones highlighted.
 
 Drag window content to another cell, another monitor's grid, or a special.
-Drop on another window to stack it in a Hyprland group, making the dragged
-window its active member. Hold Shift while dropping to exchange the windows between their cells
-(or swap native layout slots within the same cell).
+Plain drop moves only the visible member of a stack; the remaining members stay
+in their workspace and the next member becomes current. Drop onto another window
+to stack the moved window onto it as the active member.
+
+| Modifier | Single-window drag | Region drag |
+| --- | --- | --- |
+| Plain | Move the visible member; stack onto a window target | Move every window in the block; merge occupied cells |
+| Shift | Move the whole stack intact | Move the whole block, unchanged |
+| Alt | Swap the visible source and target windows | Swap the two blocks |
+| Shift + Alt | Swap whole stacks | Swap the two blocks |
+| Esc | Cancel the pending drag | Cancel pickup/selection before closing |
+
+Modifiers update while dragging. Shift takes the whole stack; combining it with
+Alt exchanges whole stacks. Region drags always include every window in the
+selected cells, so Shift does not change their contents.
 Drop on empty space or a cell's top caption edge for a plain move. A dragged
 group member leaves its former group; group locks refuse the drop with a red
 flash. Empty source grid cells update immediately and a special tile disappears
@@ -108,6 +120,17 @@ when its last window leaves. Floating windows retain
 the grabbed point at the pointer's destination, including near output edges.
 A translucent ghost and gold cell or window outline show the pending drop;
 window outlines are labelled stack or swap.
+A Ctrl-drag anywhere, or a drag starting in an empty cell, selects a rectangle
+of cells. Drag the selected block to move it, preserving cell offsets. Occupied
+destinations merge; Alt swaps disjoint blocks. Overlapping swaps are refused.
+Wrapping applies per axis; non-wrapping grids refuse blocks that do not fit.
+Keyboard: `v` begins selection, hjkl extends it, `m` picks it up, hjkl moves it,
+Tab changes the destination grid, and Enter drops it. Ctrl+Z undoes the last
+region transfer as one operation, including floating positions. Regions include
+whole groups; pre-existing destination windows are left alone on undo. History
+holds up to 20 operations in memory and is cleared by single-window drops,
+client closure, output removal or grid reassignment. Esc cancels selection first.
+
 Esc cancels a drag first; a second Esc closes the overview. Releasing a cancelled
 drag does nothing. Fullscreen swaps preserve each window's fullscreen mode.
 

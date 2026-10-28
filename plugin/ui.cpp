@@ -1,5 +1,6 @@
 #include "ui.hpp"
 #include "doctor.hpp"
+#include "monitors.hpp"
 #include "overview.hpp"
 #include <chrono>
 #include <deque>
@@ -21,6 +22,7 @@
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
+#include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/pointer/PointerManager.hpp>
 #include <hyprland/src/pointer/cursor/CursorShapeOverrideController.hpp>
 #include <hyprland/src/protocols/core/Compositor.hpp>
@@ -74,6 +76,8 @@ static void damage() {
     }
 }
 bool active() { return ui.has_value(); }
+static void runUIAction(const std::string &);
+static void queueUIAction(const std::string &);
 static std::string key(PHLWORKSPACE w) { return w->numberedID() ? std::to_string(*w->numberedID()) : w->addressableName(); }
 static std::vector<hypr2d::UIWindow> windows(bool includeHidden = false) {
     std::vector<hypr2d::UIWindow> result;
@@ -85,7 +89,8 @@ static std::vector<hypr2d::UIWindow> windows(bool includeHidden = false) {
         auto size = w->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
         auto m = w->m_monitor.lock();
         result.push_back({std::format("0x{:x}", reinterpret_cast<uintptr_t>(w.get())), key(w->m_workspace), static_cast<uint32_t>(m->m_id),
-                          pos.x - m->m_position.x, pos.y - m->m_position.y, size.x, size.y, w->isFloating(), w->metadata().appID()});
+                          pos.x - m->m_position.x, pos.y - m->m_position.y, size.x, size.y, w->isFloating(), w->metadata().appID(),
+                          w->grouping().group() ? static_cast<uint32_t>(w->grouping().group()->size()) : 1u});
     }
     return result;
 }
@@ -235,6 +240,10 @@ static void release() {
     damage();
 }
 static void activate(const std::string &target) {
+    if (target.starts_with("@")) {
+        queueUIAction(target);
+        return;
+    }
     if (target.empty())
         return;
     auto frame = (*ui)->overview_frame(1000, 700, now());
@@ -353,7 +362,7 @@ class Pass final : public IPassElement {
         for (const auto &guide : frame.guides) {
             const double x1 = guide.start.x, y1 = guide.start.y, x2 = guide.end.x, y2 = guide.end.y;
             const double line = outputScale;
-            const auto ink = color(style.border, frame.alpha * (frame.ghost.visible ? .8 : .5));
+            const auto ink = color(style.border, frame.alpha * ((frame.ghost.visible || frame.region_drag) ? .8 : .5));
             auto horizontal = [&](double a, double b, double y) {
                 rect({std::min(a, b), y - line / 2, std::max(line, std::abs(b - a)), line}, ink);
             };
@@ -441,6 +450,26 @@ class Pass final : public IPassElement {
                 rect(b, color(style.cell, frame.alpha));
             label(std::string(l.text), b, l.band ? 1.f : .85f, l.colour);
         }
+        for (const auto &r : frame.region_rects) {
+            const auto ink = r.kind == 3 ? 0xF07178 : r.kind == 2 ? style.target : style.accent;
+            rect({r.rect.x, r.rect.y, r.rect.width, r.rect.height}, color(ink, .12 * frame.alpha));
+            const double line = 2 * outputScale;
+            rect({r.rect.x, r.rect.y, r.rect.width, line}, color(ink, frame.alpha));
+            rect({r.rect.x, r.rect.y + r.rect.height - line, r.rect.width, line}, color(ink, frame.alpha));
+            rect({r.rect.x, r.rect.y, line, r.rect.height}, color(ink, frame.alpha));
+            rect({r.rect.x + r.rect.width - line, r.rect.y, line, r.rect.height}, color(ink, frame.alpha));
+        }
+        for (const auto &ghost : frame.region_ghosts)
+            if (auto it = cache.find(std::string(ghost.key)); it != cache.end())
+                items.push_back(makeUnique<GhostPass>(it->second->getTexture(), ghost, float(.55 * frame.alpha)));
+        if (frame.ghost.visible && frame.ghost_count > 1) {
+            for (int n = std::min<uint32_t>(2, frame.ghost_count - 1); n >= 1; --n) {
+                auto r = frame.ghost.rect;
+                const auto d = 4 * n * outputScale;
+                rect({r.x + d, r.y - d, r.width, r.height}, color(style.cell, .8 * frame.alpha));
+                rect({r.x + d, r.y - d, r.width, outputScale}, color(style.accent, frame.alpha));
+            }
+        }
         if (frame.ghost.visible) {
             if (auto it = cache.find(std::string(frame.ghost.key)); it != cache.end())
                 items.push_back(makeUnique<GhostPass>(it->second->getTexture(), frame.ghost, float(0.72 * frame.alpha)));
@@ -480,6 +509,10 @@ static PHLWINDOW findWindow(const std::string &id) {
     return nullptr;
 }
 static void applyDrop(const hypr2d::UIDrop &drop) {
+    if (!drop.operation.empty()) {
+        runUIAction(std::string(drop.operation));
+        return;
+    }
     if (!drop.activate.empty()) {
         activate(std::string(drop.activate));
         return;
@@ -557,8 +590,102 @@ static void applyDrop(const hypr2d::UIDrop &drop) {
         LOG(Log::ERR, "hypr2d drop dispatcher: {}", *error);
         return;
     }
+    core->region_forget(true);
     core->extension_event("drop", drop.workspace, drop.window);
     committed = true;
+}
+static bool applyingRegion = false;
+static void runUIAction(const std::string &input) {
+    if (!ui || !core)
+        return;
+    if (input.starts_with("@adopt ") || input.starts_with("@swap-grids ")) {
+        MonitorPolicy::command(input.substr(1));
+        return;
+    }
+    if (!Doctor::healthy() || Desktop::windowState()->groupsLocked()) {
+        (*ui)->overview_refuse("region", now());
+        damage();
+        return;
+    }
+    const bool undo = input == "@undo";
+    if (!undo && !input.starts_with("@region:"))
+        return;
+    auto all = windows(true);
+    auto ms = MonitorPolicy::snapshot();
+    auto batch = undo ? core->region_inverse() : core->region_prepare(input.substr(8), {all.data(), all.size()}, {ms.data(), ms.size()});
+    if (!batch.error.empty()) {
+        LOG(Log::WARN, "hypr2d region: {}", std::string(batch.error));
+        (*ui)->overview_refuse("region", now());
+        damage();
+        return;
+    }
+    if (batch.script.empty())
+        return;
+    std::vector<PHLWORKSPACE> spaces;
+    // Preflight all destinations before creating or moving workspace hosts.
+    for (const auto &t : batch.targets)
+        if (!std::ranges::any_of(State::monitorState()->monitors(), [&](const auto &m) { return m->m_id == t.monitor; })) {
+            (*ui)->overview_refuse("region", now());
+            damage();
+            return;
+        }
+    for (const auto &t : batch.targets) {
+        PHLMONITOR output;
+        for (auto &m : State::monitorState()->monitors())
+            if (m->m_id == t.monitor)
+                output = m;
+        PHLWORKSPACE ws;
+        for (auto &w : State::Workspace::state()->workspaces())
+            if (w->numberedID() && *w->numberedID() == t.workspace)
+                ws = w.lock();
+        if (!ws)
+            ws = State::Workspace::state()->createNumbered(Workspace::SWorkspaceNumberedID{t.workspace}, output);
+        if (ws->m_monitor != output && !Config::Actions::moveToMonitor(ws, output)) {
+            (*ui)->overview_refuse("region", now());
+            damage();
+            return;
+        }
+        spaces.push_back(ws);
+    }
+    for (auto &m : State::monitorState()->monitors()) {
+        if (m->m_activeWorkspace)
+            spaces.push_back(m->m_activeWorkspace);
+        if (m->m_activeSpecialWorkspace)
+            spaces.push_back(m->m_activeSpecialWorkspace);
+    }
+    auto lua = dynamicPointerCast<Config::Lua::CConfigManager>(WP<Config::IConfigManager>(Config::mgr()));
+    if (!lua)
+        return;
+    applyingRegion = true;
+    Hyprutils::Utils::CScopeGuard finish([] { applyingRegion = false; });
+    if (auto error = lua->eval(std::string(batch.script))) {
+        LOG(Log::ERR, "hypr2d region dispatcher: {}", *error);
+        (*ui)->overview_refuse("region", now());
+        damage();
+        return;
+    }
+    if (undo)
+        core->region_forget(false);
+    else
+        core->region_record(batch);
+    for (auto &key : batch.workspaces)
+        mark(std::string(key));
+    rebuild = true;
+    damage();
+    IPC::Socket2::sock()->postEvent({"hypr2d", "region"});
+}
+static void queueUIAction(const std::string &input) {
+    pendingDrops.push_back(g_pEventLoopManager->doLater([input] {
+        if (!ui || g_pHyprRenderer->m_renderData.currentFB)
+            return;
+        try {
+            runUIAction(input);
+        } catch (const std::exception &e) {
+            LOG(Log::ERR, "hypr2d deferred UI action: {}", e.what());
+        } catch (...) {
+            LOG(Log::ERR, "hypr2d deferred UI action failed");
+        }
+    }));
 }
 std::string place(const hypr2d::ExtensionAction &action) {
     if (!Doctor::healthy())
@@ -593,6 +720,13 @@ std::string place(const hypr2d::ExtensionAction &action) {
     IPC::Socket2::sock()->postEvent({"hypr2d", std::format("drop>>{},{}", std::string(action.window), std::string(action.workspace))});
     return "";
 }
+static void syncModifiers() {
+    if (!ui)
+        return;
+    const auto mods = g_pInputManager->getModsFromAllKBs();
+    (*ui)->overview_input_modifiers(bool(mods & Input::HL_MODIFIER_SHIFT), bool(mods & Input::HL_MODIFIER_ALT),
+                                    bool(mods & Input::HL_MODIFIER_CTRL));
+}
 // phase 0=motion, 1=press, 2=release; Rust owns the drag state machine.
 static void movePointer(Vector2D global, int phase) {
     if (!ui)
@@ -602,10 +736,7 @@ static void movePointer(Vector2D global, int phase) {
     // geometry. Ignore pointer selection until settled; Esc/pinch still cancel.
     if (!(*ui)->overview_interactive(now()))
         return;
-    if (auto kb = g_pSeatManager->m_keyboard.lock())
-        (*ui)->overview_modifiers(xkb_state_mod_name_is_active(kb->m_xkbState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) > 0);
-    else
-        (*ui)->overview_modifiers(false);
+    syncModifiers();
     for (auto &m : State::monitorState()->monitors())
         if (CBox{m->m_position, m->m_size}.containsPoint(global)) {
             auto p = global - m->m_position;
@@ -640,6 +771,8 @@ void init(hypr2d::Core *c) {
     listeners.push_back(e.render.pre.listen([](PHLMONITOR output) {
         if (!ui || capturing)
             return;
+        syncModifiers();
+        (*ui)->overview_hover_clock(now());
         const auto frameNow = now();
         frameOutput = output;
         frameStarts[output->m_id] = frameNow;
@@ -676,6 +809,10 @@ void init(hypr2d::Core *c) {
                 mark(k);
             }
         }
+        if (frame.ghost.visible)
+            visible.insert(std::string(frame.ghost.key));
+        for (const auto &g : frame.region_ghosts)
+            visible.insert(std::string(g.key));
         std::erase_if(cache, [&](const auto &entry) { return !visible.contains(entry.first); });
         const double start = now();
         capturing = true;
@@ -841,8 +978,21 @@ void init(hypr2d::Core *c) {
             info.cancelled = true;
     }));
     listeners.push_back(e.input.keyboard.key.listen([](IKeyboard::SKeyEvent event, Event::SCallbackInfo &info) {
-        if (ui && (event.keycode == 42 || event.keycode == 54)) {
-            (*ui)->overview_modifiers(event.state == WL_KEYBOARD_KEY_STATE_PRESSED);
+        if (ui) {
+            if (auto kb = g_pSeatManager->m_keyboard.lock()) {
+                const auto mods = g_pInputManager->getModsFromAllKBs();
+                bool shift = bool(mods & Input::HL_MODIFIER_SHIFT);
+                bool alt = bool(mods & Input::HL_MODIFIER_ALT);
+                bool ctrl = bool(mods & Input::HL_MODIFIER_CTRL);
+                const bool pressed = event.state == WL_KEYBOARD_KEY_STATE_PRESSED;
+                if (event.keycode == 42 || event.keycode == 54)
+                    shift = pressed;
+                if (event.keycode == 56 || event.keycode == 100)
+                    alt = pressed;
+                if (event.keycode == 29 || event.keycode == 97)
+                    ctrl = pressed;
+                (*ui)->overview_input_modifiers(shift, alt, ctrl);
+            }
             damage();
         }
         if (event.state == WL_KEYBOARD_KEY_STATE_RELEASED) {
@@ -884,10 +1034,16 @@ void init(hypr2d::Core *c) {
     listeners.push_back(e.layer.opened.listen(layerChanged));
     listeners.push_back(e.layer.closed.listen(layerChanged));
     listeners.push_back(e.window.open.listen([changed](PHLWINDOW) { changed(); }));
-    listeners.push_back(e.window.close.listen([changed](PHLWINDOW) { changed(); }));
+    listeners.push_back(e.window.close.listen([changed](PHLWINDOW) {
+        if (core && !applyingRegion)
+            core->region_forget(true);
+        changed();
+    }));
     listeners.push_back(e.window.moveToWorkspace.listen([changed](PHLWINDOW, PHLWORKSPACE) { changed(); }));
     listeners.push_back(e.window.title.listen([changed](PHLWINDOW) { changed(); }));
     listeners.push_back(e.monitor.preRemoved.listen([](PHLMONITOR) {
+        if (core)
+            core->region_forget(true);
         if (ui)
             release();
     }));
@@ -903,15 +1059,10 @@ void shutdown() {
     core = nullptr;
 }
 std::string command(const std::string &input) {
-    if (input == "overview refresh") {
-        textCache.clear();
-        if (ui) {
-            rebuild = true;
-            damage();
-        }
+    if (input == "overview undo") {
+        queueUIAction("@undo");
         return "ok";
     }
-
     if (input == "overview refresh") {
         textCache.clear();
         if (ui) {
@@ -967,6 +1118,9 @@ std::string command(const std::string &input) {
                            image.size.y, m && Pointer::mgr()->softwareLockedFor(m), m && Pointer::mgr()->hasVisibleHWCursor(m));
     }
     if (input == "overview state") {
+        syncModifiers();
+        if (ui)
+            (*ui)->overview_hover_clock(now());
         if (!ui)
             return deletedObjects ? "{\"open\":false,\"deleted_gl_objects\":true}" : "{\"open\":false,\"deleted_gl_objects\":false}";
         auto m = Desktop::focusState()->monitor();

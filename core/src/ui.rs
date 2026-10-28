@@ -3,6 +3,8 @@ use crate::{ffi, grid::Cell, guarded, Core};
 use std::collections::BTreeSet;
 mod drag;
 mod guides;
+mod mapping;
+mod region;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Rect {
@@ -24,6 +26,7 @@ struct Window {
     rect: Rect,
     floating: bool,
     title: String,
+    group_size: u32,
 }
 fn window_snapshot(windows: &[ffi::UIWindow]) -> Vec<Window> {
     windows
@@ -40,6 +43,7 @@ fn window_snapshot(windows: &[ffi::UIWindow]) -> Vec<Window> {
             },
             floating: w.floating,
             title: w.title.clone(),
+            group_size: w.group_size,
         })
         .collect()
 }
@@ -66,6 +70,13 @@ pub struct Overview {
     hover_motion: std::collections::BTreeMap<usize, crate::visual::HoverMotion>,
     fit: bool,
     shift: bool,
+    alt: bool,
+    control: bool,
+    region: region::State,
+    mapping: mapping::State,
+    focused_panel: usize,
+    group_slots: Vec<u32>,
+    grid_specs: Vec<crate::grid::Grid>,
     refused: String,
     refused_until: f64,
     refused_pending: bool,
@@ -110,6 +121,12 @@ impl Core {
     ) -> Box<Overview> {
         guarded(|| {
             let mut ui = Overview {
+                focused_panel: outputs.iter().position(|o| o.focused).unwrap_or(0),
+                group_slots: outputs.iter().map(|o| o.slot).collect(),
+                grid_specs: outputs
+                    .iter()
+                    .map(|o| self.slot_grid(o.slot, &o.name))
+                    .collect(),
                 supersample: self.theme.supersample,
                 memory_budget_mib: self.theme.memory_budget_mib,
                 fit: self.theme.fit,
@@ -482,9 +499,6 @@ impl Overview {
                 .filter(|(_, c)| c.group == *g && c.occupied)
                 .map(|(i, _)| i)
                 .collect();
-            if occupied.is_empty() {
-                continue;
-            }
             let card = Rect {
                 x: special_right + 8. + index as f64 * (card_width + 8.),
                 y: bottom + 2. * header + self.header_gap,
@@ -492,6 +506,16 @@ impl Overview {
                 h: 110.,
             };
             self.cards.insert(*g, card);
+            let occupied: Vec<_> = if occupied.is_empty() {
+                self.cells
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| c.group == *g && c.x < 3 && c.y < 3)
+                    .map(|(i, _)| i)
+                    .collect()
+            } else {
+                occupied
+            };
             let nx = (occupied.len() as f64).sqrt().ceil().clamp(1., 4.);
             let ny = (occupied.len() as f64 / nx).ceil();
             let ratio = self.outputs[*g].2 / self.outputs[*g].1;
@@ -637,6 +661,12 @@ impl Overview {
         guarded(|| {
             replacement.fit = self.fit;
             replacement.shift = self.shift;
+            replacement.mapping = self.mapping.clone();
+            replacement.alt = self.alt;
+            replacement.control = self.control;
+            if self.group_slots == replacement.group_slots {
+                replacement.region = self.region.clone();
+            }
             replacement.refused = self.refused.clone();
             replacement.refused_until = self.refused_until;
             replacement.refused_pending = self.refused_pending;
@@ -646,9 +676,9 @@ impl Overview {
                 .expanded
                 .and_then(|g| {
                     replacement
-                        .panel_names
+                        .group_slots
                         .iter()
-                        .position(|n| n == &self.panel_names[g])
+                        .position(|slot| *slot == self.group_slots[g])
                 })
                 .filter(|g| replacement.parked.contains(g));
             replacement.reflow();
@@ -733,7 +763,7 @@ impl Overview {
         guarded(|| {
             let f = self.frame(width, height, now);
             let (s, ox, oy) = self.transform(width, height);
-            serde_json::json!({"guides":f.guides.iter().map(|g|serde_json::json!({"from":g.from_monitor,"to":g.to_monitor,"index":g.index,"vertical":g.vertical,"start":[g.start.x,g.start.y],"end":[g.end.x,g.end.y]})).collect::<Vec<_>>(),"expanded_parked":self.expanded.map(|g|self.panel_names[g].clone()),"cards":self.cards.iter().map(|(g,r)|serde_json::json!({"name":self.panel_names[*g],"rect":[r.x*s+ox,r.y*s+oy,r.w*s,r.h*s]})).collect::<Vec<_>>(),"labels":f.labels.iter().map(|l|serde_json::json!({"text":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>(),"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"drop_mode":f.drop_mode,"refused":f.refused,"last_refused":self.refused,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":f.labels.iter().take(self.headers.iter().enumerate().filter(|(g,_)|self.header_visible(*g)).count()).map(|l|serde_json::json!({"label":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>()}).to_string()
+            serde_json::json!({"region_mode":self.region.mode,"region_cells":f.region_rects.iter().map(|r|serde_json::json!({"key":r.key,"kind":r.kind,"rect":[r.rect.x,r.rect.y,r.rect.width,r.rect.height]})).collect::<Vec<_>>(),"guides":f.guides.iter().map(|g|serde_json::json!({"from":g.from_monitor,"to":g.to_monitor,"index":g.index,"vertical":g.vertical,"start":[g.start.x,g.start.y],"end":[g.end.x,g.end.y]})).collect::<Vec<_>>(),"expanded_parked":self.expanded.map(|g|self.panel_names[g].clone()),"cards":self.cards.iter().map(|(g,r)|serde_json::json!({"name":self.panel_names[*g],"rect":[r.x*s+ox,r.y*s+oy,r.w*s,r.h*s]})).collect::<Vec<_>>(),"labels":f.labels.iter().map(|l|serde_json::json!({"text":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>(),"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"ghost_count":f.ghost_count,"drop_mode":f.drop_mode,"refused":f.refused,"last_refused":self.refused,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":f.labels.iter().take(self.headers.iter().enumerate().filter(|(g,_)|self.header_visible(*g)).count()).map(|l|serde_json::json!({"label":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>()}).to_string()
         })
     }
     pub fn overview_frame(&self, width: f64, height: f64, now: f64) -> ffi::UIFrame {
@@ -783,7 +813,18 @@ impl Overview {
                 bounds.w = right - bounds.x;
                 bounds.h = bottom - bounds.y;
             }
+            let (mut region_rects, region_ghosts) = self.region_frame(convert);
+            region_rects.extend(self.mapping_rects(convert));
             ffi::UIFrame {
+                region_rects,
+                region_ghosts,
+                region_drag: self.region.mode == 3,
+                ghost_count: self
+                    .drag
+                    .as_ref()
+                    .filter(|d| d.active && self.shift)
+                    .map(|d| d.window.group_size)
+                    .unwrap_or(1),
                 guides: self.guides(convert),
                 backdrops: backgrounds
                     .into_iter()
@@ -796,8 +837,10 @@ impl Overview {
                     .collect(),
                 ghost,
                 drop_mode: if windows.iter().any(|w| w.target) {
-                    if self.shift {
+                    if self.alt {
                         "swap"
+                    } else if self.shift {
+                        "group"
                     } else {
                         "stack"
                     }
@@ -815,7 +858,8 @@ impl Overview {
                 alive: self.closing.is_none() || progress > 0.0,
                 animating: progress > 0.0 && progress < 1.0
                     || now < self.refused_until
-                    || self.hover_motion.values().any(|m| m.active(now)),
+                    || self.hover_motion.values().any(|m| m.active(now))
+                    || now < self.mapping.until,
                 alpha: progress,
                 cells: self
                     .cells
@@ -906,6 +950,12 @@ impl Overview {
                         band: false,
                     }))
                     .chain(self.annotation_labels(convert))
+                    .chain(self.mapping_labels(convert))
+                    .chain((self.drag.as_ref().is_some_and(|d|d.active) || self.region.mode != 0).then_some(ffi::UILabel {
+                        text: "Plain: window / stack · Shift: whole stack · Alt: swap · Ctrl: region · Esc: cancel".into(),
+                        rect: ffi::UIRect { x: 16., y: height - self.font_height - 4., width: (width - 32.).max(1.), height: self.font_height },
+                        colour: 0, band: true,
+                    }))
                     .collect(),
             }
         })
@@ -1049,7 +1099,8 @@ impl Overview {
         }
         let w = (right - left).max(1.);
         let h = (bottom - top).max(1.);
-        let s = ((width - 24.).max(1.) / w).min((height - 24.).max(1.) / h);
+        let vertical_margin = 2. * (self.font_height + 12.).max(36.);
+        let s = ((width - 24.).max(1.) / w).min((height - vertical_margin).max(1.) / h);
         (
             s,
             (width - w * s) / 2. - left * s,
@@ -1072,7 +1123,9 @@ impl Overview {
             let (s, ox, oy) = self.transform(width, height);
             self.pointer = ((x - ox) / s, (y - oy) / s);
             self.drag_motion(s);
-            if !self.parked.is_empty() && (click || self.drag.as_ref().is_some_and(|d| d.active)) {
+            if !self.parked.is_empty()
+                && (click || self.drag.as_ref().is_some_and(|d| d.active) || self.region.mode == 3)
+            {
                 if self.live_tab.contains(self.pointer.0, self.pointer.1) {
                     self.expanded = None;
                     self.reflow();
@@ -1088,6 +1141,8 @@ impl Overview {
                 .cells
                 .iter()
                 .position(|c| c.visible && c.rect.contains((x - ox) / s, (y - oy) / s));
+            self.region_motion();
+            self.mapping_motion();
             if click {
                 if let Some(i) = self.hover {
                     self.selected = i;
@@ -1110,6 +1165,12 @@ impl Overview {
             }
             if self.drag.is_some() && key != 0xff1b {
                 return String::new();
+            }
+            if let Some(action) = self.mapping_key(key, now) {
+                return action;
+            }
+            if let Some(action) = self.region_key(key) {
+                return action;
             }
             match key {
                 97 => {
@@ -1134,7 +1195,7 @@ impl Overview {
                     order.retain(|g| {
                         self.cells
                             .iter()
-                            .any(|c| c.group == *g && (c.occupied || !self.parked.contains(g)))
+                            .any(|c| c.group == *g && (c.visible || !self.parked.contains(g)))
                     });
                     let current = self.cells[self.selected].group;
                     let at = order.iter().position(|g| *g == current).unwrap_or(0);
@@ -1144,7 +1205,7 @@ impl Overview {
                         (at + 1) % order.len()
                     };
                     if let Some(i) = self.cells.iter().position(|c| {
-                        c.group == order[next] && (c.occupied || !self.parked.contains(&c.group))
+                        c.group == order[next] && (c.visible || !self.parked.contains(&c.group))
                     }) {
                         self.selected = i;
                     }
@@ -1223,6 +1284,7 @@ impl Overview {
     }
     pub fn overview_hover_clock(&mut self, now: f64) {
         guarded(|| {
+            self.mapping.clock(now);
             self.hover_motion
                 .retain(|i, m| Some(*i) == self.hover || m.value(now) > 0.);
             for (i, m) in &mut self.hover_motion {
@@ -1265,6 +1327,10 @@ impl Default for ffi::UIFrame {
     fn default() -> Self {
         Self {
             guides: vec![],
+            region_rects: vec![],
+            region_ghosts: vec![],
+            region_drag: false,
+            ghost_count: 1,
             backdrops: vec![],
             ghost: ffi::UIGhost::default(),
             windows: vec![],
@@ -1387,6 +1453,7 @@ mod tests {
         let windows: Vec<_> = [0, 1, 9, 10]
             .into_iter()
             .map(|i| ffi::UIWindow {
+                group_size: 1,
                 id: i.to_string(),
                 workspace: (10 * i + 1).to_string(),
                 monitor: 0,
@@ -1550,6 +1617,7 @@ mod tests {
         parked.name = "Dock".into();
         parked.workspace = 2;
         let window = ffi::UIWindow {
+            group_size: 1,
             id: "parked-window".into(),
             workspace: "2".into(),
             monitor: 0,
@@ -1674,6 +1742,7 @@ mod tests {
         output.width = 2256.;
         output.height = 1504.;
         let windows = [ffi::UIWindow {
+            group_size: 1,
             id: "group-current".into(),
             workspace: "1".into(),
             monitor: 0,
@@ -1822,6 +1891,21 @@ mod tests {
             assert!((header.rect.y - bottom - 8. * scale).abs() < 0.01);
             assert!((top - header.rect.y - header.rect.height - 8. * scale).abs() < 0.01);
             assert!((f.cells[0].rect.width / f.cells[0].rect.height - 1.5).abs() < 1e-6);
+            let mut help = (*ui).clone();
+            help.region.mode = 2;
+            let frame = help.overview_frame_scaled(2256., 1504., scale, 1000.);
+            let hint = frame
+                .labels
+                .iter()
+                .find(|l| l.text.starts_with("Plain:"))
+                .unwrap();
+            assert!(
+                frame
+                    .cells
+                    .iter()
+                    .all(|c| c.rect.y + c.rect.height <= hint.rect.y - 8. + 1e-6),
+                "help must not overlap cells or specials"
+            );
         }
     }
     #[test]
@@ -1832,6 +1916,7 @@ mod tests {
         laptop.height = 1504.;
         let windows: Vec<_> = (0..64)
             .map(|i| ffi::UIWindow {
+                group_size: 1,
                 id: i.to_string(),
                 workspace: (10 * i + 1).to_string(),
                 monitor: 0,

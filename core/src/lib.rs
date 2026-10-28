@@ -178,6 +178,7 @@ mod ffi {
         height: f64,
         floating: bool,
         title: String,
+        group_size: u32,
     }
     struct UIStyle {
         accent: u32,
@@ -226,7 +227,14 @@ mod ffi {
         colour: u32,
         band: bool,
     }
+    struct UIRegionRect {
+        key: String,
+        rect: UIRect,
+        kind: u8,
+    }
     struct UIDrop {
+        operation: String,
+        whole_group: bool,
         window: String,
         swap: String,
         stack: String,
@@ -274,6 +282,10 @@ mod ffi {
     }
     struct UIFrame {
         guides: Vec<UIGuide>,
+        region_rects: Vec<UIRegionRect>,
+        region_ghosts: Vec<UIGhost>,
+        region_drag: bool,
+        ghost_count: u32,
         backdrops: Vec<UIBackdropPanel>,
         ghost: UIGhost,
         windows: Vec<UIWindowView>,
@@ -325,6 +337,7 @@ mod ffi {
         fn backdrop_size(self: &Core, width: f64, height: f64, total_area: f64) -> UIRect;
         fn overview_hover_clock(self: &mut Overview, now: f64);
         fn overview_modifiers(self: &mut Overview, shift: bool);
+        fn overview_input_modifiers(self: &mut Overview, shift: bool, alt: bool, control: bool);
         fn overview_interactive(self: &Overview, now: f64) -> bool;
         fn overview_presented(self: &mut Overview, now: f64);
         fn overview_refuse(self: &mut Overview, window: &str, now: f64);
@@ -430,10 +443,10 @@ pub struct Core {
 impl Default for Core {
     fn default() -> Self {
         Self {
-            region_history: Vec::new(),
             extensions: extension::Extensions::default(),
             extension_grids: HashMap::new(),
             extension_slots: HashMap::new(),
+            region_history: Vec::new(),
             ui_font_height: None,
             ui_header_widths: HashMap::new(),
             slots: slots::Slots::default(),

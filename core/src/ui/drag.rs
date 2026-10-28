@@ -2,10 +2,12 @@
 use super::*;
 #[derive(Clone)]
 pub(super) struct Drag {
-    window: Window,
+    pub(super) window: Window,
     origin: (f64, f64),
     grab: (f64, f64),
     pub(super) active: bool,
+    rect: Rect,
+    cell: Rect,
 }
 impl Overview {
     fn output_size(&self, monitor: u32) -> Option<(f64, f64)> {
@@ -109,6 +111,12 @@ impl Overview {
                 self.reflow();
                 return;
             }
+            if self.mapping_press() {
+                return;
+            }
+            if self.region_press() {
+                return;
+            }
             self.pressed = self.hover;
             self.pressed_card = self.card_at();
             self.drag = self.hit_window(None).cloned().and_then(|w| {
@@ -119,6 +127,8 @@ impl Overview {
                     (self.pointer.1 - c.rect.y) / c.rect.h * size_y - w.rect.y,
                 );
                 Some(Drag {
+                    rect: self.visible_window_rect(&w)?,
+                    cell: c.rect,
                     window: w,
                     origin: self.pointer,
                     grab,
@@ -130,6 +140,12 @@ impl Overview {
     pub fn overview_release(&mut self, width: f64, height: f64, x: f64, y: f64) -> ffi::UIDrop {
         guarded(|| {
             self.overview_pointer(width, height, x, y, false);
+            if let Some(drop) = self.mapping_release() {
+                return drop;
+            }
+            if let Some(drop) = self.region_release() {
+                return drop;
+            }
             let pressed = self.pressed.take();
             let drag = self.drag.take();
             if self.cancelled_release || self.closing.is_some() {
@@ -148,13 +164,15 @@ impl Overview {
                     .map(|w| w.id.clone())
                     .unwrap_or_default();
                 return ffi::UIDrop {
+                    operation: String::new(),
                     window: d.window.id,
-                    stack: if self.shift {
+                    stack: if self.alt || self.shift {
                         String::new()
                     } else {
                         swap.clone()
                     },
-                    swap: if self.shift { swap } else { String::new() },
+                    swap: if self.alt { swap } else { String::new() },
+                    whole_group: self.shift,
                     workspace: c.key.clone(),
                     monitor: c.monitor,
                     x: ((self.pointer.0 - c.rect.x) / c.rect.w * size_x - d.grab.0),
@@ -198,7 +216,7 @@ impl Overview {
         let hovered = self
             .hit_window(dragged.map(|d| d.window.id.as_str()))
             .map(|w| w.id.as_str());
-        if dragged.is_some() && hovered.is_some() {
+        if dragged.is_some() && hovered.is_some() && (!self.shift || self.alt) {
             target.clear();
         }
         let windows = self
@@ -210,19 +228,22 @@ impl Overview {
                     workspace: w.workspace.clone(),
                     rect: convert(r),
                     floating: w.floating,
-                    target: dragged.is_some() && hovered == Some(w.id.as_str()),
+                    target: dragged.is_some()
+                        && (!self.shift || self.alt)
+                        && hovered == Some(w.id.as_str()),
                 })
             })
             .collect();
         let ghost = dragged
-            .and_then(|d| {
-                let r = self.visible_window_rect(&d.window)?;
-                let c = &self
+            .map(|d| {
+                let r = self.visible_window_rect(&d.window).unwrap_or(d.rect);
+                let c = self
                     .cells
                     .iter()
-                    .find(|c| c.key == d.window.workspace)?
-                    .rect;
-                Some(ffi::UIGhost {
+                    .find(|c| c.visible && c.key == d.window.workspace)
+                    .map(|c| &c.rect)
+                    .unwrap_or(&d.cell);
+                ffi::UIGhost {
                     visible: true,
                     key: d.window.workspace.clone(),
                     rect: convert(Rect {
@@ -236,7 +257,7 @@ impl Overview {
                         width: r.w / c.w,
                         height: r.h / c.h,
                     },
-                })
+                }
             })
             .unwrap_or_default();
         (ghost, windows, target)
@@ -245,6 +266,8 @@ impl Overview {
 impl Default for ffi::UIDrop {
     fn default() -> Self {
         Self {
+            operation: String::new(),
+            whole_group: false,
             window: String::new(),
             swap: String::new(),
             stack: String::new(),
@@ -288,6 +311,7 @@ mod tests {
     }
     fn window(id: &str, workspace: &str, monitor: u32) -> ffi::UIWindow {
         ffi::UIWindow {
+            group_size: 1,
             id: id.into(),
             workspace: workspace.into(),
             monitor,
@@ -325,6 +349,72 @@ mod tests {
         ui.overview_press(1000.0, 700.0, x, y);
     }
     #[test]
+    fn swap_badges_keep_original_grid_identity_and_expire_after_reconcile() {
+        let mut ui = model();
+        ui.mapping.clock(1000.);
+        assert_eq!(ui.mapping_command(0, 1), "@swap-grids 0 1");
+        let mut replacement = model();
+        replacement.group_slots.reverse();
+        ui.overview_reconcile(replacement);
+        let frame = ui.overview_frame(1000., 700., 1000.);
+        let start = frame
+            .labels
+            .iter()
+            .find(|l| l.text == "grid 0")
+            .unwrap()
+            .rect
+            .x;
+        ui.overview_hover_clock(1090.);
+        let frame = ui.overview_frame(1000., 700., 1090.);
+        assert!(
+            frame
+                .labels
+                .iter()
+                .find(|l| l.text == "grid 0")
+                .unwrap()
+                .rect
+                .x
+                > start
+        );
+        ui.overview_hover_clock(1180.);
+        assert!(!ui
+            .overview_frame(1000., 700., 1180.)
+            .labels
+            .iter()
+            .any(|l| l.text.starts_with("grid ")));
+    }
+    #[test]
+    fn region_keyboard_cross_panel_alt_swap_and_escape_cancel() {
+        let mut ui = model();
+        assert!(ui.overview_key(118, false, 101.).is_empty());
+        assert_eq!(ui.region.mode, 2);
+        ui.overview_key(108, false, 101.);
+        ui.overview_key(106, false, 101.);
+        ui.overview_key(109, false, 101.);
+        assert_eq!(ui.region.mode, 3);
+        ui.overview_key(0xff09, false, 101.);
+        ui.overview_input_modifiers(false, true, false);
+        let action = ui.overview_key(0xff0d, false, 101.);
+        let request: crate::region::Request =
+            serde_json::from_str(action.strip_prefix("@region:").unwrap()).unwrap();
+        assert_eq!(
+            (
+                request.width,
+                request.height,
+                request.source_slot,
+                request.target_slot
+            ),
+            (2, 2, 0, 1)
+        );
+        assert!(request.swap);
+        assert_eq!(ui.region.mode, 0);
+        ui.overview_input_modifiers(false, false, false);
+        ui.overview_key(118, false, 101.);
+        ui.overview_key(0xff1b, false, 101.);
+        assert_eq!(ui.region.mode, 0);
+        assert!(ui.closing.is_none());
+    }
+    #[test]
     fn stack_and_ghost_use_window_hit_geometry() {
         let mut ui = model();
         press(&mut ui);
@@ -349,10 +439,10 @@ mod tests {
         );
     }
     #[test]
-    fn shift_drop_swaps_and_refusal_flash_expires() {
+    fn alt_drop_swaps_and_refusal_flash_expires() {
         let mut ui = model();
         press(&mut ui);
-        ui.overview_modifiers(true);
+        ui.overview_input_modifiers(false, true, false);
         let f = ui.overview_frame(1000., 700., 101.);
         let r = &f.windows[1].rect;
         let x = r.x + r.width / 2.;
@@ -372,6 +462,28 @@ mod tests {
         assert_eq!(ui.overview_frame(1000., 700., 529.).refused, "b");
         assert!(ui.overview_frame(1000., 700., 529.).animating);
         assert!(ui.overview_frame(1000., 700., 530.).refused.is_empty());
+    }
+    #[test]
+    fn shift_changes_three_member_ghost_live_and_moves_whole_group() {
+        let mut ui = model();
+        ui.windows[0].group_size = 3;
+        press(&mut ui);
+        let f = ui.overview_frame(1000., 700., 101.);
+        let r = &f.windows[1].rect;
+        let (x, y) = (r.x + r.width / 2., r.y + r.height / 2.);
+        ui.overview_pointer(1000., 700., x, y, false);
+        assert_eq!(ui.overview_frame(1000., 700., 101.).ghost_count, 1);
+        ui.overview_input_modifiers(true, false, false);
+        let f = ui.overview_frame(1000., 700., 101.);
+        assert_eq!(f.ghost_count, 3);
+        assert!(!f.target.is_empty());
+        assert!(!f.windows.iter().any(|w| w.target));
+        ui.overview_input_modifiers(false, false, false);
+        assert_eq!(ui.overview_frame(1000., 700., 101.).ghost_count, 1);
+        ui.overview_input_modifiers(true, false, false);
+        let d = ui.overview_release(1000., 700., x, y);
+        assert!(d.whole_group);
+        assert!(d.stack.is_empty() && d.swap.is_empty());
     }
     #[test]
     fn floating_drop_retains_grab_offset_on_other_monitor_and_special() {

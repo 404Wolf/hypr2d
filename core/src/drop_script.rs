@@ -15,6 +15,9 @@ pub(crate) fn quote(value: &str) -> String {
 }
 pub fn script(drop: &ffi::UIDrop, source: &str, x: f64, y: f64) -> String {
     guarded(|| {
+        if drop.whole_group {
+            return whole_group_script(drop, source, x, y);
+        }
         let target = if drop.stack.is_empty() {
             &drop.swap
         } else {
@@ -35,14 +38,12 @@ pub fn script(drop: &ffi::UIDrop, source: &str, x: f64, y: f64) -> String {
             drop.monitor
         ));
         code.push_str(
-            "local function detach(win) if win.group then dispatch(hl.dsp.window.move({window=win,out_of_group=true})) end end; local function move(win,ws) dispatch(hl.dsp.window.move({window=win,workspace=ws,follow=false})); detach(win) end; detach(w); ",
+            "local function detach(win) local g=win.group; if not g then return end; local successor=nil; if g.current==win then local members=g.members; for i,member in ipairs(members) do if member==win and #members>1 then successor=members[i % #members+1]; break end end end; dispatch(hl.dsp.window.move({window=win,out_of_group=true})); if successor and successor.group and successor.group.size>1 and successor.group.current~=successor then for i,member in ipairs(successor.group.members) do if member==successor then dispatch(hl.dsp.group.active({window=successor,index=i})); break end end end end; local function move(win,ws) dispatch(hl.dsp.window.move({window=win,workspace=ws,follow=false})); detach(win) end; detach(w); ",
         );
         if !drop.stack.is_empty() {
             code.push_str(&format!("dispatch(hl.dsp.window.move({{window=w,workspace={dest},follow=false}})); if not t.group then dispatch(hl.dsp.group.toggle({{window=t}})) end; assert(t.group,'target group unavailable'); t.group:add(w); dispatch(hl.dsp.group.active({{window=w,index=t.group.current_index}})); "));
         } else if !drop.swap.is_empty() {
-            code.push_str(
-                "if t.group then dispatch(hl.dsp.window.move({window=t,out_of_group=true})) end; ",
-            );
+            code.push_str("detach(t); ");
             if source == drop.workspace {
                 code.push_str("local wi,wc,ti,tc=w.fullscreen,w.fullscreen_client,t.fullscreen,t.fullscreen_client; dispatch(hl.dsp.window.fullscreen_state({window=w,internal=0,client=0})); dispatch(hl.dsp.window.fullscreen_state({window=t,internal=0,client=0})); dispatch(hl.dsp.window.swap({window=w,target=t})); dispatch(hl.dsp.window.fullscreen_state({window=w,internal=wi,client=wc})); dispatch(hl.dsp.window.fullscreen_state({window=t,internal=ti,client=tc})); ");
             } else {
@@ -60,9 +61,58 @@ pub fn script(drop: &ffi::UIDrop, source: &str, x: f64, y: f64) -> String {
         code
     })
 }
+fn whole_group_script(drop: &ffi::UIDrop, source: &str, x: f64, y: f64) -> String {
+    let w = quote(&format!("address:{}", drop.window));
+    let dest = quote(&drop.workspace);
+    let src = quote(source);
+    let mut s=format!("local function dispatch(d) local r=hl.dispatch(d); assert(r.ok,r.error) end; local w=assert(hl.get_window({w}),'source missing'); assert(w.mapped,'source unmapped'); ");
+    if !drop.swap.is_empty() {
+        s+=&format!("local t=assert(hl.get_window({}),'target missing'); assert(t.mapped,'target unmapped'); ",quote(&format!("address:{}",drop.swap)));
+    }
+    s+="local saved={};local focused=hl.get_active_monitor(); for _,m in ipairs(hl.get_monitors()) do saved[#saved+1]={monitor=m,workspace=m.active_workspace,special=m.active_special_workspace} end; local success,failure=pcall(function() dispatch(hl.dsp.group.lock({action='set'})); ";
+    s += &format!("dispatch(hl.dsp.focus({{monitor={}}})); ", drop.monitor);
+    if !drop.swap.is_empty() && source == drop.workspace {
+        s += "dispatch(hl.dsp.window.swap({window=w,target=t})); ";
+    } else {
+        s += &format!("dispatch(hl.dsp.window.move({{window=w,workspace={dest},follow=false}})); ");
+        if !drop.swap.is_empty() {
+            s += &format!(
+                "dispatch(hl.dsp.window.move({{window=t,workspace={src},follow=false}})); "
+            );
+        }
+    }
+    if drop.floating {
+        s += &format!("dispatch(hl.dsp.window.move({{window=w,x={x},y={y},relative=false}})); ");
+    }
+    s+="end); dispatch(hl.dsp.group.lock({action='unset'})); for _,s in ipairs(saved) do local m=s.monitor; if m and m.enabled then dispatch(hl.dsp.focus({monitor=m})); if s.workspace then dispatch(hl.dsp.focus({workspace=s.workspace})) end; local wanted=s.special;if wanted and wanted.is_empty then wanted=nil end;if m.active_special_workspace~=wanted then if m.active_special_workspace then dispatch(hl.dsp.workspace.toggle_special(m.active_special_workspace.addressable_name:sub(9))) end;if wanted then dispatch(hl.dsp.workspace.toggle_special(wanted.addressable_name:sub(9))) end end end end; if focused then dispatch(hl.dsp.focus({monitor=focused})) end; if not success then error(failure) end; ";
+    s
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shift_preserves_group_and_alt_remains_an_exchange() {
+        let mut d = ffi::UIDrop {
+            window: "0xa".into(),
+            workspace: "21".into(),
+            whole_group: true,
+            ..Default::default()
+        };
+        let s = script(&d, "11", 0., 0.);
+        assert!(s.contains("assert(hl.get_window(\"address:0xa\")"));
+        assert!(!s.contains("out_of_group"));
+        assert!(s.contains("group.lock({action='set'})"));
+        assert!(s.contains("group.lock({action='unset'})"));
+        assert_eq!(s.matches("window.move({window=w,workspace=").count(), 1);
+        d.swap = "0xb".into();
+        let s = script(&d, "11", 0., 0.);
+        assert!(s.contains("assert(hl.get_window(\"address:0xb\")"));
+        assert!(s.contains("window.move({window=t,workspace=\"11\""));
+        assert!(!s.contains("out_of_group"));
+        d.whole_group = false;
+        let s = script(&d, "11", 0., 0.);
+        assert!(s.contains("out_of_group=true"));
+    }
     #[test]
     fn special_swap_uses_two_silent_dispatches_and_quotes_names() {
         let d = ffi::UIDrop {
@@ -77,6 +127,11 @@ mod tests {
         assert!(s.contains("assert(hl.get_window(\"address:0xa\")"));
         assert!(s.contains("assert(hl.get_window(\"address:0xb\")"));
         assert!(!s.contains("window=nil"));
+        assert!(
+            s.contains("successor.group.size>1"),
+            "singleton selection is already current and its dispatcher rejects it"
+        );
+        assert!(s.contains("detach(t)"));
         assert!(s.contains("special:a\\\"\\\\\\010"));
         assert_eq!(quote("λ"), "\"λ\"");
     }

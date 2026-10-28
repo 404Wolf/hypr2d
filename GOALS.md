@@ -33,7 +33,7 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Keyboard (hjkl/arrows, tab between monitors, Enter, Esc) and mouse (click a cell to go there)
 
 ## M5 — Drag & drop in the overview
-- [x] Drag a window between cells, between monitors' grids, and into/out of special workspaces; drop on a window to stack (Shift-drop swaps); floating windows placed at the drop point
+- [x] Drag a window between cells, between monitors' grids, and into/out of special workspaces; drop on a window to stack (Alt-drop swaps); floating windows placed at the drop point
 - [x] Ghost thumbnail + target highlight; Esc cancels
 
 ## Overview polish (after M5)
@@ -72,7 +72,7 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Stable persisted monitor slots, parked workspace lifecycle, parked overview cards/expansion, minimap tooltip and hotplug VM regressions
 
 - [x] Text-sized, physically aligned panel/special headers with consistent scaled 8px gaps; Rust and laptop VM screenshot regression
-- [x] Drop-on-window stacks, Shift-drop swaps, locked-group refusal and immediate empty-special cleanup; VM regressions
+- [x] Drop-on-window stacks, Alt-drop swaps, locked-group refusal and immediate empty-special cleanup; VM regressions
 
 - [x] Deferred public-dispatcher overview drops, cross-special/group accounting regressions and read-only doctor diagnostics
 - [x] Eight-way tracked swipe: sector hysteresis, 2D tracking/projection/spring, diagonal commands, HM tunables and VM/unit tests
@@ -94,5 +94,14 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Translucent configurable tile fills and adjacent-panel row/column drag guides; unequal-resolution multi-output VM screenshots
 
 - [x] Native external workspace activation/focus animation follows grid axes and shortest wrapping; Rust and VM regressions
+
+- [x] Visible-member/Shift-whole-stack/Alt-swap drag modifiers, live ghost and group-of-three VM regressions
+
+## Grid assignment, regions and UI audit
+- [ ] Persisted grid adoption and live-monitor swaps, restore auto/keep, CLI/Lua and overview actions; VM two/three-output checks
+- [x] Region marquee/keyboard selection, merge/swap block transfers, wrap/bounds refusal, ghost/targets and undo through deferred public dispatchers
+- [ ] Bidirectional single/region drops into parked and live grids, including empty parked targets
+- [ ] HM and persisted runtime special/monitor labels, description fallback, positional names, CLI resolution and rename UI
+- [ ] Overview UI audit checklist with before/after screenshots at laptop resolutions, all new states, and configurable neutral backdrop tint
 
 ## Questions
