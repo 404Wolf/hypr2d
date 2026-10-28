@@ -98,13 +98,19 @@ impl Args {
             }
             ["move", d, "all"] if self.monitor.is_none() => format!("move {d} all"),
             ["adopt", slot] => format!(
-                "adopt {slot}{}",
-                self.monitor
-                    .as_ref()
-                    .map_or(String::new(), |m| format!(" {m}"))
+                "adopt {}",
+                if let Some(m) = &self.monitor {
+                    serde_json::json!([slot, m])
+                } else {
+                    serde_json::json!([slot])
+                }
             ),
-            ["adopt", slot, m] if self.monitor.is_none() => format!("adopt {slot} {m}"),
-            ["swap-grids", a, b] if self.monitor.is_none() => format!("swap-grids {a} {b}"),
+            ["adopt", slot, m] if self.monitor.is_none() => {
+                format!("adopt {}", serde_json::json!([slot, m]))
+            }
+            ["swap-grids", a, b] if self.monitor.is_none() => {
+                format!("swap-grids {}", serde_json::json!([a, b]))
+            }
             ["carry", d] if self.monitor.is_none() => format!("carry {d}"),
             ["goto", x, y] => format!(
                 "goto {x} {y}{}",

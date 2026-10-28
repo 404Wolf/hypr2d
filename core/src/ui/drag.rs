@@ -96,6 +96,9 @@ impl Overview {
     }
     pub fn overview_press(&mut self, width: f64, height: f64, x: f64, y: f64) {
         guarded(|| {
+            if self.rename.is_some() {
+                return;
+            }
             self.overview_pointer(width, height, x, y, false);
             if self.closing.is_some() {
                 return;
@@ -139,6 +142,9 @@ impl Overview {
     }
     pub fn overview_release(&mut self, width: f64, height: f64, x: f64, y: f64) -> ffi::UIDrop {
         guarded(|| {
+            if self.rename.is_some() {
+                return ffi::UIDrop::default();
+            }
             self.overview_pointer(width, height, x, y, false);
             if let Some(drop) = self.mapping_release() {
                 return drop;

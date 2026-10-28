@@ -68,10 +68,13 @@ impl Updates {
             .flat_map(|c| &c.windows)
             .map(|w| (w.address.clone(), w.clone()))
             .collect();
+        // Only each client's final destination contributes to occupancy.
+        let moves: std::collections::BTreeMap<_, _> =
+            self.moves.iter().map(|(a, t)| (a, t)).collect();
         // Validate the whole burst before changing the cached snapshot.
         let mut destinations = Vec::new();
-        for (address, target) in &self.moves {
-            if !known.contains_key(address) {
+        for (address, target) in &moves {
+            if !known.contains_key(*address) {
                 return false;
             }
             if target.starts_with("special:") {
@@ -91,14 +94,46 @@ impl Updates {
             };
             destinations.push(Some(destination));
         }
-        for ((address, _), destination) in self.moves.iter().zip(destinations) {
+        for ((address, target), destination) in moves.iter().zip(destinations) {
             for cell in state.monitors.iter_mut().flat_map(|m| &mut m.cells) {
-                cell.windows.retain(|w| &w.address != address);
+                cell.windows.retain(|w| &w.address != *address);
             }
             if let Some((mi, ci)) = destination {
                 state.monitors[mi].cells[ci]
                     .windows
-                    .push(known[address].clone());
+                    .push(known[*address].clone());
+            } else {
+                if !state.specials.is_array() {
+                    state.specials = serde_json::json!([]);
+                }
+                let entries = state
+                    .specials
+                    .as_array_mut()
+                    .expect("special array initialized");
+                if let Some(entry) = entries
+                    .iter_mut()
+                    .find(|s| s["name"].as_str() == Some(target.as_str()))
+                {
+                    entry["windows"] =
+                        serde_json::json!(entry["windows"].as_u64().unwrap_or(0) + 1);
+                } else {
+                    let app = &known[*address].app_id;
+                    let name = target.strip_prefix("special:").unwrap_or(target);
+                    let label = state
+                        .special_names
+                        .get(name)
+                        .map(String::as_str)
+                        .unwrap_or_else(|| {
+                            if app.is_empty() {
+                                name
+                            } else {
+                                app.rsplit('.').next().unwrap_or(app)
+                            }
+                        });
+                    entries.push(
+                        serde_json::json!({"name":target,"label":label,"app":app,"windows":1}),
+                    );
+                }
             }
         }
         true

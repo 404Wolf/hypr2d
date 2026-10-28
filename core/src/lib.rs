@@ -4,6 +4,7 @@ mod doctor;
 mod drop_script;
 mod extension;
 pub mod grid;
+mod labels;
 mod overview;
 mod region;
 mod slots;
@@ -27,6 +28,8 @@ mod ffi {
         make: String,
         model: String,
         serial: String,
+        x: f64,
+        y: f64,
     }
     struct Monitor {
         id: u32,
@@ -43,6 +46,10 @@ mod ffi {
         focus: u32,
         workspaces: Vec<Move>,
         notification: String,
+    }
+    struct SpecialInfo {
+        name: String,
+        app: String,
     }
     struct Window {
         workspace: u32,
@@ -210,6 +217,7 @@ mod ffi {
         actions: Vec<ExtensionAction>,
     }
     struct UICell {
+        secondary: String,
         key: String,
         monitor: u32,
         rect: UIRect,
@@ -321,6 +329,9 @@ mod ffi {
         fn grid_rollback(self: &mut Core, snapshot: &str) -> String;
         fn grid_change(self: &mut Core, monitors: &[Monitor], input: &str) -> Reply;
         fn slots_init(self: &mut Core) -> String;
+        fn rename(self: &mut Core, input: &str) -> String;
+        fn ui_output_label(self: &Core, output: &UIOutput) -> String;
+        fn specials_observe(self: &mut Core, windows: &[SpecialInfo]);
         fn slots_update(self: &mut Core, monitors: &[MonitorIdentity]) -> String;
         fn monitor_slot(self: &Core, name: &str) -> u32;
         fn monitor_observe(self: &mut Core, monitors: &[Monitor]);
@@ -413,6 +424,7 @@ mod ffi {
         fn pinch_active(self: &Core) -> bool;
         fn swipe(self: &mut Core, monitors: &[Monitor], input: SwipeInput) -> SwipeFrame;
         fn texture_bytes(width: u32, height: u32, mipmaps: bool) -> u64;
+        fn grid_args(operation: &str, a: &str, b: &str) -> String;
         fn spike_round_trip(value: u32) -> u32;
         fn command(self: &mut Core, monitors: &[Monitor], windows: &[Window], input: &str)
             -> Reply;
@@ -422,6 +434,9 @@ pub struct Core {
     region_history: Vec<region::Undo>,
     ui_font_height: Option<f64>,
     ui_header_widths: HashMap<String, f64>,
+    labels: labels::Labels,
+    positions: HashMap<u32, (usize, usize)>,
+    special_apps: std::collections::BTreeMap<String, Vec<String>>,
     slots: slots::Slots,
     assignments: assignment::Assignment,
     physical_slots: HashMap<String, u32>,
@@ -449,6 +464,9 @@ impl Default for Core {
             region_history: Vec::new(),
             ui_font_height: None,
             ui_header_widths: HashMap::new(),
+            labels: labels::Labels::default(),
+            positions: HashMap::new(),
+            special_apps: Default::default(),
             slots: slots::Slots::default(),
             assignments: assignment::Assignment::default(),
             physical_slots: HashMap::new(),
@@ -625,9 +643,9 @@ impl Core {
             error: String::new(),
         };
         if matches!(args.as_slice(), ["state"] | ["state", "-j"]) {
-            reply.output = json!({"pinch_config":{"cancel_scale":self.pinch_cancel_scale},"version":1,"parked":self.parked_snapshot(windows),"extensions":self.extensions.snapshot(),"swipe_enabled":self.swipe_enabled,"overview_config":self.theme,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
+            reply.output = json!({"pinch_config":{"cancel_scale":self.pinch_cancel_scale},"version":1,"special_names":self.labels.names(),"specials":self.special_labels(),"parked":self.parked_snapshot(windows),"extensions":self.extensions.snapshot(),"swipe_enabled":self.swipe_enabled,"overview_config":self.theme,"swipe":self.gesture.as_ref().map(|g|g.status()),"swipe_config":self.swipe_config,"monitors":monitors.iter().map(|m| {
                 let g = self.grid(m);
-                json!({"id":m.id,"slot":m.slot,"name":m.name,"workspace":m.workspace,"focused":m.focused,"grid":g,"cell":g.cell(m.workspace,m.slot),"offset":[m.offset_x,m.offset_y],
+                json!({"id":m.id,"slot":m.slot,"name":m.name,"label":self.monitor_label(&m.name),"workspace":m.workspace,"focused":m.focused,"grid":g,"cell":g.cell(m.workspace,m.slot),"offset":[m.offset_x,m.offset_y],
                     "cells":(0..g.rows).flat_map(|y|(0..g.columns).map(move |x|Cell{x,y})).filter_map(|c|g.id(c,m.slot).ok().map(|id|json!({"x":c.x,"y":c.y,"workspace":id,"windows":windows.iter().filter(|w|w.workspace==id).map(|w|json!({"address":w.address,"title":w.title,"app_id":w.app_id,"urgent":w.urgent})).collect::<Vec<_>>()}))).collect::<Vec<_>>()})
             }).collect::<Vec<_>>()}).to_string();
             return Ok(reply);
@@ -978,6 +996,19 @@ impl Default for ffi::UIStyle {
             gap: 0,
         }
     }
+}
+
+pub fn grid_args(operation: &str, a: &str, b: &str) -> String {
+    guarded(|| {
+        format!(
+            "{operation} {}",
+            if b.is_empty() {
+                json!([a])
+            } else {
+                json!([a, b])
+            }
+        )
+    })
 }
 
 #[cfg(test)]

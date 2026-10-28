@@ -1317,6 +1317,40 @@ with (artifacts / "compositor.log").open("w+") as log:
             assert ui_state()["deleted_gl_objects"],"backdrop and mipmap resources deleted"
             assert invariants()==visual_before,"wallpaper/supersampling preserve focus/group/workspace state"
         (artifacts/"visual-cost.json").write_text(json.dumps(visual_metrics,indent=2))
+        # Laptop-sized interaction audit and persisted, safe text editing.
+        mons=monitors()
+        ptr=subprocess.Popen(["hypr2d-test-pointer"],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,start_new_session=True)
+        clients.append(ptr);pointer_ack(b"ready")
+        open_ui()
+        panel=ui_state()["ui"]["panels"][0]["rect"]
+        pointer_to((panel[0]+10,panel[1]+panel[3]/2));keypress("r")
+        subprocess.run(["wtype","-M","ctrl","-k","a","-m","ctrl","main laptop"],env=env,check=True)
+        screenshot("audit-rename-2256")
+        keypress("Return")
+        wait(lambda:any(l["text"]=="main laptop" for l in ui_state()["ui"]["labels"]),"runtime monitor label")
+        chosen=next(c for c in ui_state()["ui"]["cells"] if c["key"].startswith("special:") and c["occupied"])
+        label_special=chosen["key"]
+        pointer_to(cell_point(label_special));keypress("r")
+        subprocess.run(["wtype","-M","ctrl","-k","a","-m","ctrl","chatting"],env=env,check=True)
+        keypress("Return")
+        wait(lambda:any(c["key"]==label_special and c["label"]=="chatting" for c in ui_state()["ui"]["cells"]),"runtime special label")
+        screenshot("audit-labels-open-2256")
+        active=next(w["id"] for w in ui_state()["ui"]["windows"] if not w["workspace"].startswith("special:"))
+        begin_drag(active);point=cell_point("21");move_drag(point)
+        modifier=subprocess.Popen(["wtype","-M","shift","-s","1000","-m","shift"],env=env,stdout=log,stderr=log,start_new_session=True)
+        clients.append(modifier);time.sleep(.15);screenshot("audit-stack-ghost-2256")
+        keypress("Escape");pointer_command("up");modifier.wait(timeout=10)
+        select_block(1,11);screenshot("audit-region-select-2256")
+        pointer_to(cell_point("1"));pointer_command("down");pointer_to(cell_point("91"));screenshot("audit-region-ghost-2256")
+        keypress("Escape");pointer_command("up")
+        keypress("Escape");wait(lambda:not ui_state().get("open",False),"audit region close")
+        # Multi-word labels survive CLI argument encoding and persisted state.
+        response=subprocess.run([cli,"--instance",instance.name,"adopt","0","main laptop"],env=env,capture_output=True,text=True,check=True)
+        assert response.stdout.strip()=="ok",response.stdout
+        minimap=subprocess.Popen([cli,"--instance",instance.name,"waybar"],env=env,stdout=subprocess.PIPE,stderr=log,start_new_session=True);clients.append(minimap)
+        labelled=first_minimap(minimap);minimap.terminate();minimap.wait(timeout=10)
+        assert "main laptop" in labelled["tooltip"] and "chatting" in labelled["tooltip"],labelled
+        ptr.stdin.write(b"quit\n");ptr.stdin.flush();ptr.wait(timeout=10)
         # Four headless outputs: three equal neighbours and an unequal fourth.
         # Check horizontal-only and then vertical adjacency, including drag ink.
         assert not ui_state().get("open",False)
@@ -1383,6 +1417,49 @@ with (artifacts / "compositor.log").open("w+") as log:
             ok("hypr2d","swap-grids",a["name"],b["name"])
             original_slots[a["name"]],original_slots[b["name"]]=original_slots[b["name"]],original_slots[a["name"]]
             wait(lambda:all(m["slot"]==original_slots[m["name"]] for m in monitors() if m["name"] in original_slots),"three-output restore")
+        # Review the new states at the actual laptop resolution, with unequal
+        # neighbours, then an unplugged grid. All screenshots are VM-owned.
+        ok("output","remove","GUIDE-EXTRA")
+        for name,position,mode in [("eDP-1","0x0","2256x1504@60"),("GUIDE-MIDDLE","2256x0","1920x1080@60"),("GUIDE-RIGHT","4176x0","1600x1200@60")]:
+            ok("eval",f'hl.monitor({{output="{name}",mode="{mode}",position="{position}",scale=1}})')
+        mons=monitors();time.sleep(.3)
+        audit_dock=next(m for m in mons if m["name"]=="GUIDE-RIGHT")
+        audit_window=hot_fixture("audit-parked",audit_dock,0,0)
+        lua('hl.dsp.focus({monitor="eDP-1"})')
+        open_ui()
+        # Use human display labels in the visual audit, as on the user's desk.
+        for index,label in [(1,"middle"),(2,"right")]:
+            r=ui_state()["ui"]["panels"][index]["rect"]
+            lua(f'hl.dsp.cursor.move({{x={mons[0]["x"]+r[0]+10},y={mons[0]["y"]+r[1]+r[3]/2}}})')
+            keypress("r")
+            subprocess.run(["wtype","-M","ctrl","-k","a","-m","ctrl",label],env=env,check=True)
+            keypress("Return")
+            wait(lambda:any(l["text"]==label for l in ui_state()["ui"]["labels"]),"audit human monitor label")
+        screenshot("audit-three-open-2256")
+        ptr=subprocess.Popen(["hypr2d-test-pointer"],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,start_new_session=True)
+        clients.append(ptr);pointer_ack(b"ready")
+        panels=ui_state()["ui"]["panels"]
+        p0,p1=panels[0]["rect"],panels[1]["rect"]
+        pointer_to((p0[0]+10,p0[1]+p0[3]/2));pointer_command("down")
+        pointer_to((p1[0]+10,p1[1]+p1[3]/2));screenshot("audit-three-swap-2256")
+        keypress("Escape");pointer_command("up")
+        keypress("Escape");wait(lambda:not ui_state().get("open",False),"three-output audit close")
+        ok("output","remove","GUIDE-RIGHT")
+        mons=monitors();wait(lambda:len(monitors())==2,"audit parks right grid")
+        open_ui();screenshot("audit-two-parked-cards-2256")
+        for _ in range(12):
+            if next(c for c in ui_state()["ui"]["cells"] if c["selected"])["monitor"]==(0x80000000|audit_dock["slot"]):break
+            keypress("Tab")
+        assert next(c for c in ui_state()["ui"]["cells"] if c["selected"])["monitor"]==(0x80000000|audit_dock["slot"])
+        screenshot("audit-parked-keyboard-focus-2256")
+        card=next(c for c in ui_state()["ui"]["cards"] if c["name"]=="right")["rect"]
+        pointer_to((card[0]+card[2]/2,card[1]+card[3]/2));pointer_command("down");pointer_command("up")
+        wait(lambda:ui_state()["ui"]["expanded_parked"]=="right","audit expands named parked grid")
+        screenshot("audit-two-expanded-2256")
+        begin_drag(audit_window);drag_tab("live");move_drag(cell_point("11",.01,.01));screenshot("audit-parked-ghost-2256")
+        keypress("Escape");pointer_command("up")
+        keypress("Escape");wait(lambda:not ui_state().get("open",False),"parked audit closes")
+        ptr.stdin.write(b"quit\n");ptr.stdin.flush();ptr.wait(timeout=10)
         paper.terminate();paper.wait(timeout=5)
         clients.remove(paper)
         print("PASS visual: wallpaper background/empty desktops, budgeted 2x supersampling, fit/full 9x9 screenshots and completed-GPU timing",visual_metrics,flush=True)
@@ -1399,6 +1476,8 @@ with (artifacts / "compositor.log").open("w+") as log:
         ok("plugin", "unload", plugin)
         time.sleep(0.5)
         ok("plugin", "load", plugin)
+        state_after_reload=json.loads(ctl("hypr2d","state","-j"))
+        assert next(m for m in state_after_reload["monitors"] if m["name"]=="eDP-1")["label"]=="main laptop","runtime monitor label persisted"
         # Startup/reconnect restore policies are tested against persisted divergent
         # preferences and fallback assignments, not merely the Rust planner.
         state_root=Path(env.get("XDG_STATE_HOME",str(Path.home()/".local/state")))/"hypr2d"
@@ -1415,12 +1494,13 @@ with (artifacts / "compositor.log").open("w+") as log:
             (config_root/"hypr2d.json").write_text(json.dumps({"gridRestore":policy,"monitors":{"labels":{"GUIDE-MIDDLE":"centre configured"},"autoLabel":"position"},"specials":{"names":{"visual-0":"configured special"}}}))
             ok("plugin","load",plugin)
             wait(lambda:next(m for m in monitors() if m["name"]=="eDP-1")["slot"]==expected,"persisted restore "+policy)
+            assert next(m for m in json.loads(ctl("hypr2d","state","-j"))["monitors"] if m["name"]=="GUIDE-MIDDLE")["label"]=="centre configured"
             ok("output","remove","eDP-1")
             wait(lambda:all(m["name"]!="eDP-1" for m in monitors()),"restore policy unplug")
             ok("output","create","headless","eDP-1")
             wait(lambda:any(m["name"]=="eDP-1" and m["slot"]==expected for m in monitors()),"reconnect restore "+policy)
             assert json.loads(ctl("hypr2d","doctor"))["ok"]
-        print("PASS assignment persistence: native restart/reconnect auto/keep, three live swaps",flush=True)
+        print("PASS assignment persistence: native restart/reconnect auto/keep, configured labels and three live swaps",flush=True)
         results = {"instance":instance.name,"small":small,"runs":runs,"screenshot_changed_pixels":diffs,"ui_cycles":ui_runs,"final_memory":process_memory()}
         (artifacts / "results.json").write_text(json.dumps(results, indent=2))
         ctl("dispatch","hl.dsp.exit()")

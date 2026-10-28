@@ -20,7 +20,7 @@ impl State {
     }
 }
 impl Overview {
-    fn header_at(&self) -> Option<usize> {
+    pub(super) fn header_at(&self) -> Option<usize> {
         self.headers
             .iter()
             .take(self.panels.len())

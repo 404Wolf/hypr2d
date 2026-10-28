@@ -21,7 +21,7 @@ static hypr2d::Core *core;
 static HANDLE handle;
 static bool applying = false;
 static std::vector<uint64_t> deferred;
-static CHyprSignalListener added, removed, before, active;
+static CHyprSignalListener added, removed, before, active, layout;
 static std::optional<hypr2d::UnplugPlan> pending;
 static std::map<std::string, std::array<std::string, 3>> testIdentities;
 std::vector<hypr2d::Monitor> snapshot() {
@@ -40,7 +40,8 @@ static void update() {
             auto identity = std::array<std::string, 3>{m->m_output->make, m->m_output->model, m->m_output->serial};
             if (auto test = testIdentities.find(m->m_name); test != testIdentities.end())
                 identity = test->second;
-            identities.push_back({static_cast<uint32_t>(m->m_id), m->m_name, identity[0], identity[1], identity[2]});
+            identities.push_back(
+                {static_cast<uint32_t>(m->m_id), m->m_name, identity[0], identity[1], identity[2], m->m_position.x, m->m_position.y});
         }
     auto error = core->slots_update({identities.data(), identities.size()});
     if (!error.empty())
@@ -91,6 +92,13 @@ void init(hypr2d::Core *c, HANDLE h) {
     // Normalize only outputs whose active workspace is outside their own slot.
     for (auto &m : State::monitorState()->monitors())
         restore(m);
+    layout = Event::bus()->m_events.monitor.layoutChanged.listen([] {
+        if (!applying) {
+            update();
+            OverviewUI::command("overview refresh");
+            IPC::Socket2::sock()->postEvent({"hypr2d", "monitors"});
+        }
+    });
     active = Event::bus()->m_events.workspace.active.listen([](PHLWORKSPACE) {
         if (applying)
             return;
@@ -212,6 +220,7 @@ void shutdown() {
         g_pEventLoopManager->removeDoLater(id);
     deferred.clear();
     active.reset();
+    layout.reset();
     added.reset();
     before.reset();
     removed.reset();

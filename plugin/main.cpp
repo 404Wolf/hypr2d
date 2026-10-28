@@ -57,13 +57,17 @@ static std::vector<hypr2d::Monitor> monitors() {
 }
 static std::vector<hypr2d::Window> windows() {
     std::vector<hypr2d::Window> result;
+    std::vector<hypr2d::SpecialInfo> specials;
     for (const auto &w : Desktop::windowState()->windows()) {
         if (!w->mapped() || !w->m_workspace || !w->m_monitor)
             continue;
+        if (!w->m_workspace->numberedID())
+            specials.push_back({w->m_workspace->addressableName(), w->metadata().appID()});
         result.push_back({w->m_workspace->numberedID() ? *w->m_workspace->numberedID() : 0, static_cast<uint32_t>(w->m_monitor->m_id),
                           std::format("0x{:x}", reinterpret_cast<uintptr_t>(w.get())), w->metadata().title(), w->metadata().appID(),
                           bool(w->m_hints & Desktop::View::WINDOW_HINT_URGENT)});
     }
+    (*core)->specials_observe({specials.data(), specials.size()});
     return result;
 }
 static PHLMONITOR monitor(uint32_t id) {
@@ -312,13 +316,12 @@ static int moveLua(lua_State *L) {
     return dispatcher(L, cmd);
 }
 static int adoptLua(lua_State *L) {
-    std::string cmd = "adopt " + std::to_string(luaL_checkinteger(L, 1));
-    if (!lua_isnoneornil(L, 2))
-        cmd += " " + std::string(luaL_checkstring(L, 2));
-    return dispatcher(L, cmd);
+    const auto slot = std::to_string(luaL_checkinteger(L, 1));
+    const std::string mon = lua_isnoneornil(L, 2) ? "" : luaL_checkstring(L, 2);
+    return dispatcher(L, std::string(hypr2d::grid_args("adopt", slot, mon)));
 }
 static int swapGridsLua(lua_State *L) {
-    return dispatcher(L, "swap-grids " + std::string(luaL_checkstring(L, 1)) + " " + std::string(luaL_checkstring(L, 2)));
+    return dispatcher(L, std::string(hypr2d::grid_args("swap-grids", luaL_checkstring(L, 1), luaL_checkstring(L, 2))));
 }
 static int parkedLua(lua_State *L) { return dispatcher(L, "overview parked"); }
 static int overviewLua(lua_State *L) { return dispatcher(L, "overview"); }

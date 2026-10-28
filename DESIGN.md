@@ -1385,3 +1385,22 @@ before any dispatcher runs. All mutations remain deferred public dispatchers.
 Native VM coverage includes live two/three-output assignments, parked and empty
 parked targets in both directions, keyboard/wrapped regions, whole-operation
 undo, and persisted restart/reconnect restore policies.
+
+## Configured and runtime display labels
+
+Output identities and grid numbering remain independent of presentation names.
+Configured output names take precedence over alias/description matches, runtime
+names and optional positional defaults. Description aliases are retained across
+serial-matched port renames; disconnected outputs retain their last positional
+name. Runtime monitor/special names persist atomically in labels.json; HM names
+cannot be overwritten by the editor. CLI grid commands encode arguments as JSON
+arrays so multi-word/quoted labels cannot be split into unintended arguments.
+Ambiguous labels require an output name or numeric ID.
+
+Explicit special titles survive ordinary window refreshes; their app fallback
+remains a smaller dim caption. The minimap renders the same primary name and
+app information, including cached completed-drop updates. Label changes emit
+socket2 events. The rename editor consumes navigation until Enter/Esc and never
+dispatches window actions. Rust covers precedence, atomic persistence, renamed
+dock descriptions, input quoting and refresh retention; the VM covers actual
+text input, tooltip labels, configured precedence and restart persistence.

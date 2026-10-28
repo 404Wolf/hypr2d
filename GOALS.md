@@ -101,7 +101,7 @@ changed; flag anything that blocks you at the bottom under "Questions".
 - [x] Persisted grid adoption and live-monitor swaps, restore auto/keep, CLI/Lua and overview actions; VM two/three-output checks
 - [x] Region marquee/keyboard selection, merge/swap block transfers, wrap/bounds refusal, ghost/targets and undo through deferred public dispatchers
 - [x] Bidirectional single/region drops into parked and live grids, including empty parked targets
-- [ ] HM and persisted runtime special/monitor labels, description fallback, positional names, CLI resolution and rename UI
+- [x] HM and persisted runtime special/monitor labels, description fallback, positional names, CLI resolution and rename UI
 - [ ] Overview UI audit checklist with before/after screenshots at laptop resolutions, all new states, and configurable neutral backdrop tint
 
 ## Multiple grids, fluidly assigned to monitors

@@ -35,7 +35,7 @@ let
   invalidSensitivity = evaluate { enable = true; gestures.sensitivity = 0; };
   invalidSpring = evaluate { enable = true; gestures.springStiffness = 0; };
   invalid = evaluate { enable = true; gestures.axisLock = 1000; };
-  colored = (evaluate { enable = true; overview.gap = 4; waybar = { enable = true; colors = {
+  colored = (evaluate { enable = true; specials.names."3" = "chatting"; monitors.labels."eDP-1" = "main"; monitors.autoLabel = "position"; overview.gap = 4; waybar = { enable = true; colors = {
     current = "#9CBEFF"; occupied = "#A8A8A8"; empty = "#123456"; urgent = "#654321";
   }; }; }).config;
   invalidColor = evaluate { enable = true; waybar.colors.current = "#xyz123"; };
@@ -59,6 +59,9 @@ let
     assert colored.programs.hypr2d.theme.current == "#82AAFF";
     assert (builtins.fromJSON colored.xdg.configFile."hypr/hypr2d.json".text).theme.gap == 4;
     assert c.programs.hypr2d.overview.gap == 0;
+    assert (builtins.fromJSON colored.xdg.configFile."hypr/hypr2d.json".text).specials.names."3" == "chatting";
+    assert (builtins.fromJSON colored.xdg.configFile."hypr/hypr2d.json".text).monitors.labels."eDP-1" == "main";
+    assert (builtins.fromJSON colored.xdg.configFile."hypr/hypr2d.json".text).monitors.autoLabel == "position";
     assert c.programs.hypr2d.overview.supersample == 2.0 && c.programs.hypr2d.overview.memoryBudgetMiB == 128 && c.programs.hypr2d.overview.backgroundDarken == 0.35;
     assert colored.programs.hypr2d.pinch.cancelScale == 0.08;
     assert lib.hasInfix "pinch-config 0.12" c.wayland.windowManager.hyprland.extraConfig;

@@ -10,6 +10,8 @@ struct Entry {
     slot: u32,
     names: BTreeSet<String>,
     identity: String,
+    #[serde(default)]
+    description_keys: Vec<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Slots {
@@ -26,6 +28,7 @@ impl Default for Slots {
                 slot: 0,
                 names: BTreeSet::from(["eDP-1".into()]),
                 identity: String::new(),
+                description_keys: vec![],
             }],
             path: None,
         }
@@ -88,6 +91,7 @@ impl Slots {
                     slot: *slot,
                     names: BTreeSet::from([name.clone()]),
                     identity: String::new(),
+                    description_keys: vec![],
                 });
             }
         }
@@ -121,6 +125,26 @@ impl Slots {
             let _ = std::fs::remove_file(tmp);
         }
         result
+    }
+    pub(crate) fn label_keys(&self, slot: u32, current: &str) -> Vec<String> {
+        let mut keys = vec![current.to_owned()];
+        if let Some(entry) = self.entries.iter().find(|e| e.slot == slot) {
+            keys.extend(entry.names.iter().cloned());
+            for desc in &entry.description_keys {
+                keys.push(format!("desc:{desc}"));
+                keys.push(desc.clone());
+            }
+            if let Ok((make, model, serial)) =
+                serde_json::from_str::<(String, String, String)>(&entry.identity)
+            {
+                keys.extend([
+                    format!("{make} {model} {serial}"),
+                    format!("{make} {model}"),
+                    format!("{make}-{model}"),
+                ]);
+            }
+        }
+        keys
     }
     pub fn known(&self) -> BTreeSet<u32> {
         self.entries.iter().map(|e| e.slot).collect()
@@ -175,11 +199,24 @@ impl Slots {
                 slot,
                 names: BTreeSet::new(),
                 identity: String::new(),
+                description_keys: vec![],
             });
             self.entries.len() - 1
         };
         let entry = &mut self.entries[index];
-        let changed = entry.names.insert(name.into()) || entry.identity != identity;
+        let descriptions = [
+            format!("{make} {model} {serial}"),
+            format!("{make} {model}"),
+            format!("{make}-{model}"),
+        ]
+        .into_iter()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty() && s != "-")
+        .collect::<Vec<_>>();
+        let changed = entry.names.insert(name.into())
+            || entry.identity != identity
+            || entry.description_keys != descriptions;
+        entry.description_keys = descriptions;
         if !identity.is_empty() {
             entry.identity = identity
         }
@@ -224,6 +261,8 @@ impl crate::Core {
                         .ok()
                         .and_then(|b| serde_json::from_slice(&b).ok())
                         .unwrap_or_default();
+                self.labels =
+                    crate::labels::Labels::open(state.join("hypr2d/labels.json"), &config_value)?;
                 let keep = match config_value
                     .get("gridRestore")
                     .and_then(|v| v.as_str())
@@ -280,6 +319,29 @@ impl crate::Core {
                 Ok(mapping) => self.connected_slots = mapping,
                 Err(e) => return e,
             }
+            let mut ordered: Vec<_> = monitors.iter().collect();
+            ordered.sort_by(|a, b| {
+                a.x.total_cmp(&b.x)
+                    .then(a.y.total_cmp(&b.y))
+                    .then(a.name.cmp(&b.name))
+            });
+            self.positions = ordered
+                .iter()
+                .enumerate()
+                .filter_map(|(i, m)| {
+                    connected
+                        .get(&m.name)
+                        .map(|slot| (*slot, (i, ordered.len())))
+                })
+                .collect();
+            let positions: Vec<_> = self
+                .positions
+                .iter()
+                .map(|(s, (i, n))| (*s, *i, *n))
+                .collect();
+            if let Err(e) = self.labels.remember_position(&positions) {
+                return e;
+            }
             self.physical_slots = connected;
             String::new()
         })
@@ -307,7 +369,7 @@ impl crate::Core {
             let grid=self.parked_grid(slot,&name);
             let occupied:Vec<_>=windows.iter().filter(|w|grid.cell(w.workspace,slot).is_some()).collect();
             if occupied.is_empty(){return None}
-            Some(serde_json::json!({"slot":slot,"name":name,"windows":occupied.len(),"workspaces":occupied.iter().map(|w|w.workspace).collect::<BTreeSet<_>>()}))
+            Some(serde_json::json!({"slot":slot,"name":self.slot_label(slot,&name),"windows":occupied.len(),"workspaces":occupied.iter().map(|w|w.workspace).collect::<BTreeSet<_>>()}))
         }).collect())
     }
     pub fn parked_panels(

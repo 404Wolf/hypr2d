@@ -5,6 +5,7 @@ mod drag;
 mod guides;
 mod mapping;
 mod region;
+mod rename;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Rect {
@@ -74,6 +75,10 @@ pub struct Overview {
     control: bool,
     region: region::State,
     mapping: mapping::State,
+    rename: Option<(String, String)>,
+    panel_targets: Vec<String>,
+    secondary: std::collections::BTreeMap<String, String>,
+    special_titles: std::collections::BTreeMap<String, String>,
     focused_panel: usize,
     group_slots: Vec<u32>,
     grid_specs: Vec<crate::grid::Grid>,
@@ -144,7 +149,20 @@ impl Core {
                     .filter(|(_, o)| o.parked)
                     .map(|(i, _)| i)
                     .collect(),
-                panel_names: outputs.iter().map(|o| o.name.clone()).collect(),
+                panel_names: outputs.iter().map(|o| self.ui_output_label(o)).collect(),
+                panel_targets: outputs
+                    .iter()
+                    .map(|o| {
+                        format!(
+                            "monitor:{}",
+                            if o.parked {
+                                o.slot
+                            } else {
+                                *self.physical_slots.get(&o.name).unwrap_or(&o.slot)
+                            }
+                        )
+                    })
+                    .collect(),
                 panel_counts: outputs
                     .iter()
                     .map(|o| self.parked_counts.get(&o.slot).copied().unwrap_or(0))
@@ -230,7 +248,11 @@ impl Core {
                     key: s.name.clone(),
                     monitor: s.monitor,
                     rect: Rect::default(),
-                    label: special_label(&s.name, cell_label(windows, &s.name)),
+                    label: self
+                        .labels
+                        .special(&s.name)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| special_label(&s.name, cell_label(windows, &s.name))),
                     group: outputs.len(),
                     x: i as u32,
                     y: 0,
@@ -239,6 +261,14 @@ impl Core {
                     visible: true,
                     annotated: false,
                 });
+            }
+            for special in specials {
+                if let Some(label) = self.labels.special(&special.name) {
+                    ui.special_titles
+                        .insert(special.name.clone(), label.to_owned());
+                    ui.secondary
+                        .insert(special.name.clone(), cell_label(windows, &special.name));
+                }
             }
             for c in &mut ui.cells {
                 let target = if c.key.starts_with("special:") {
@@ -647,7 +677,10 @@ impl Overview {
             for c in &mut self.cells {
                 c.occupied = self.windows.iter().any(|w| w.workspace == c.key);
                 let app = owned_label(&self.windows, &c.key);
-                c.label = if c.key.starts_with("special:") {
+                c.label = if let Some(title) = self.special_titles.get(&c.key) {
+                    self.secondary.insert(c.key.clone(), app);
+                    title.clone()
+                } else if c.key.starts_with("special:") {
                     special_label(&c.key, app)
                 } else {
                     app
@@ -662,6 +695,7 @@ impl Overview {
             replacement.fit = self.fit;
             replacement.shift = self.shift;
             replacement.mapping = self.mapping.clone();
+            replacement.rename = self.rename.clone();
             replacement.alt = self.alt;
             replacement.control = self.control;
             if self.group_slots == replacement.group_slots {
@@ -867,6 +901,7 @@ impl Overview {
                     .enumerate()
                     .filter(|(_, c)| c.visible)
                     .map(|(i, c)| ffi::UICell {
+                        secondary: self.secondary.get(&c.key).cloned().unwrap_or_default(),
                         key: c.key.clone(),
                         monitor: c.monitor,
                         rect: {
@@ -951,6 +986,12 @@ impl Overview {
                     }))
                     .chain(self.annotation_labels(convert))
                     .chain(self.mapping_labels(convert))
+                    .chain(self.rename_labels(width,height))
+                    .chain((self.refused == "label" && now < self.refused_until).then_some(ffi::UILabel {
+                        text:"Label unchanged: configured name or state could not be saved".into(),
+                        rect:ffi::UIRect{x:width*0.15,y:height*0.45,width:width*0.7,height:self.font_height+8.},colour:0xFFCB6B,band:true,
+                    }))
+
                     .chain((self.drag.as_ref().is_some_and(|d|d.active) || self.region.mode != 0).then_some(ffi::UILabel {
                         text: "Plain: window / stack · Shift: whole stack · Alt: swap · Ctrl: region · Esc: cancel".into(),
                         rect: ffi::UIRect { x: 16., y: height - self.font_height - 4., width: (width - 32.).max(1.), height: self.font_height },
@@ -1157,6 +1198,9 @@ impl Overview {
             if self.closing.is_some() {
                 return String::new();
             }
+            if let Some(action) = self.rename_key(key) {
+                return action;
+            }
             if self.cells.is_empty() {
                 if key == 0xff1b {
                     self.begin_close(now);
@@ -1346,7 +1390,7 @@ impl Default for ffi::UIFrame {
     }
 }
 
-fn short_app(class: &str) -> String {
+pub(crate) fn short_app(class: &str) -> String {
     let name = class
         .trim()
         .strip_suffix(".desktop")
@@ -1363,7 +1407,7 @@ fn short_app(class: &str) -> String {
     }
 }
 // Numeric special identifiers are key bindings, not useful display names.
-fn special_label(key: &str, app: String) -> String {
+pub(crate) fn special_label(key: &str, app: String) -> String {
     let name = key.strip_prefix("special:").unwrap_or(key);
     if !name.is_empty() && name.parse::<u32>().is_err() {
         name.into()

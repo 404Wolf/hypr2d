@@ -416,9 +416,9 @@ with open(Path(config).parent / "compositor.log", "w+") as output:
         lua(f'hl.dsp.focus({{monitor="{first["name"]}"}})')
         # Move into/out of special changes occupancy in the grid tooltip.
         latency.expect("window-to-special", lambda:lua(f'hl.dsp.window.move({{window="address:{address}",workspace="special:latency",follow=false}})'),
-            lambda r:"hypr2d-test" not in r["tooltip"], event="movewindowv2")
+            lambda r:"Special: latency" in r["tooltip"] and "workspace "+str(91+slot) not in r["tooltip"], event="movewindowv2")
         latency.expect("window-from-special", lambda:lua(f'hl.dsp.window.move({{window="address:{address}",workspace={81+slot},follow=false}})'),
-            lambda r:"hypr2d-test" in r["tooltip"], event="movewindowv2")
+            lambda r:"Special: latency" not in r["tooltip"] and "workspace "+str(81+slot) in r["tooltip"], event="movewindowv2")
         # A new client is assigned to a different cell before mapping.
         ok_rule=ctl("eval",f'hl.window_rule({{match={{class="^hypr2d-latency-open$"}},workspace="{31+slot} silent"}})')
         assert ok_rule=="ok",ok_rule

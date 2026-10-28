@@ -227,7 +227,9 @@ cursor, including a hidden image, when it closes.
 A grid keeps its slot, workspace numbers, windows and current cell independently
 of the output displaying it. `hypr2d adopt SLOT [MONITOR]` assigns a parked grid
 to an output (the focused output by default), parking its previous grid.
-`hypr2d swap-grids A B` exchanges two live assignments. Output names and numeric monitor IDs are accepted. Lua binds use `hl.plugin.hypr2d.adopt(slot, monitor)` and
+`hypr2d swap-grids A B` exchanges two live assignments. Output names, numeric
+monitor IDs and unique display labels are accepted, including quoted labels
+with spaces. Lua binds use `hl.plugin.hypr2d.adopt(slot, monitor)` and
 `hl.plugin.hypr2d.swap_grids(monitorA, monitorB)` dispatcher constructors.
 
 Drag a parked card's header onto a live panel header to adopt it; drag between
@@ -242,6 +244,27 @@ Assignments and each grid's current cell persist in
 (default) prefers the output's remembered assignment on reconnect if free;
 `"keep"` prefers its last fallback. Neither policy steals a live grid. Workspace
 numbers never change on adoption or swap. Output identity remains in slots.json.
+
+## Display labels
+
+`programs.hypr2d.specials.names = { "3" = "chatting"; "1" = "agent"; };`
+sets special-workspace captions; `special:3` is also accepted as a key. Explicit
+labels take precedence over the app fallback, which remains a smaller dim
+caption. `programs.hypr2d.monitors.labels = { "eDP-1" = "main";
+"Vendor Model Serial" = "right"; };` accepts output names and monitor
+descriptions (with optional `desc:`), make/model or make-model. Output-name
+matches have precedence. Description keys survive port renames.
+`monitors.autoLabel = "position"` names unlabelled connected outputs by x order:
+left/middle/right (main for one output). Parked grids retain their last position
+name. The default is `"none"`.
+
+In the overview, point at a panel header or special tile and press `r` to edit
+its label. Enter saves, Esc cancels, Ctrl+A clears the editor. Saving an empty
+name removes a runtime override. Names persist atomically in
+`$XDG_STATE_HOME/hypr2d/labels.json`; HM-configured names take precedence and
+cannot be overwritten from the editor. Labels appear in panel/card headers,
+adoption targets and the minimap tooltip. Duplicate monitor labels require an
+output name or ID in CLI commands.
 
 ## Extension clients
 

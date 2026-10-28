@@ -14,12 +14,18 @@ pub struct Snapshot {
     pub extensions: serde_json::Value,
     #[serde(default)]
     pub overview_config: serde_json::Value,
+    #[serde(default)]
+    pub specials: serde_json::Value,
+    #[serde(default)]
+    pub special_names: std::collections::BTreeMap<String, String>,
     pub monitors: Vec<Monitor>,
 }
 #[derive(Deserialize)]
 pub struct Monitor {
     pub id: u32,
     pub name: String,
+    #[serde(default)]
+    pub label: String,
     pub focused: bool,
     pub workspace: u32,
     pub grid: Grid,
@@ -139,7 +145,7 @@ pub fn render_view(snapshot: &Snapshot, view: &View<'_>) -> Record {
         Some(name) => snapshot
             .monitors
             .iter()
-            .find(|m| m.name == name || m.id.to_string() == name),
+            .find(|m| m.name == name || m.label == name || m.id.to_string() == name),
         None => snapshot
             .monitors
             .iter()
@@ -154,7 +160,11 @@ pub fn render_view(snapshot: &Snapshot, view: &View<'_>) -> Record {
             text: "?".into(),
             tooltip: format!(
                 "{}: workspace {} is outside its grid; use hypr2d goto",
-                escape(&m.name),
+                escape(if m.label.is_empty() {
+                    &m.name
+                } else {
+                    &m.label
+                }),
                 m.workspace
             ),
             alt: "outside-grid".into(),
@@ -271,7 +281,11 @@ pub fn render_view(snapshot: &Snapshot, view: &View<'_>) -> Record {
     text.push_str("</span>");
     let mut tooltip = format!(
         "<b>{}</b> · ({}, {}) · workspace {}\n● current · ● occupied · ● empty · ● urgent",
-        escape(&m.name),
+        escape(if m.label.is_empty() {
+            &m.name
+        } else {
+            &m.label
+        }),
         current.x,
         current.y,
         m.workspace
@@ -282,6 +296,16 @@ pub fn render_view(snapshot: &Snapshot, view: &View<'_>) -> Record {
                 "\nParked: {} · {} windows (SUPER+ALT+Tab)",
                 escape(grid["name"].as_str().unwrap_or("monitor")),
                 grid["windows"]
+            ));
+        }
+    }
+    if let Some(specials) = snapshot.specials.as_array() {
+        for s in specials {
+            tooltip.push_str(&format!(
+                "\nSpecial: {} · {} · {} windows",
+                escape(s["label"].as_str().unwrap_or("special")),
+                escape(s["app"].as_str().unwrap_or("")),
+                s["windows"]
             ));
         }
     }
@@ -630,11 +654,17 @@ mod tests {
         assert!(change.apply(&mut base));
         assert_eq!(base.monitors[0].cells[0].windows[0].address, "0xabc");
         assert_eq!(base.monitors[0].cells[1].windows[0].address, "0xdef");
+        base.special_names
+            .insert("chat".into(), "chatting & tools".into());
         let mut special = updates::Updates::default();
         special.observe("movewindowv2", "abc,-99,special:chat");
         special.observe("hypr2d", "drop>>0xabc,special:chat");
         assert!(special.apply(&mut base));
         assert!(base.monitors[0].cells[0].windows.is_empty());
+        assert_eq!(base.specials[0]["label"], "chatting & tools");
+        assert_eq!(base.specials[0]["windows"], 1);
+        let rendered = render_view(&base, &View::new(None, 4, 1, &Colors::default()));
+        assert!(rendered.tooltip.contains("chatting &amp; tools"));
         for event in [
             "workspacev2",
             "focusedmon",

@@ -172,8 +172,8 @@ static void build() {
                 {static_cast<uint32_t>(w->m_monitor->m_id), w->addressableName(), w->m_monitor->m_activeSpecialWorkspace == w});
         }
     for (const auto &output : outputs)
-        if (auto metrics = text(std::string(output.name), static_cast<int>(style.font_size), 1000, style.label))
-            core->ui_header_width(output.name, metrics->m_size.x);
+        if (auto metrics = text(std::string(core->ui_output_label(output)), static_cast<int>(style.font_size), 1000, style.label))
+            core->ui_header_width(core->ui_output_label(output), metrics->m_size.x);
     if (auto metrics = text("Special workspaces", static_cast<int>(style.font_size), 1000, style.label))
         core->ui_header_width("Special workspaces", metrics->m_size.x);
     auto wins = windows();
@@ -295,7 +295,8 @@ static SP<Render::ITexture> text(const std::string &str, int fontSize, int width
         textCache[key] = g_pHyprRenderer->renderText(str, color(labelColor, 1), fontSize, false, std::string(core->ui_style().font), width);
     return textCache[key];
 }
-// The ghost samples a cropped region of an existing thumbnail; no extra capture.
+// The ghost samples a cropped region of an existing thumbnail; no extra
+// capture.
 class GhostPass final : public IPassElement {
     SP<Render::ITexture> texture;
     CBox box;
@@ -341,8 +342,8 @@ class Pass final : public IPassElement {
             items.push_back(makeUnique<CRectPassElement>(CRectPassElement::SRectData{
                 .box = box, .color = color, .round = std::min<int>(style.rounding, std::max(0, int(std::min(box.w, box.h) / 2)))}));
         };
-        auto label = [&](const std::string &str, const CBox &box, float opacity = 1.f, uint32_t labelColor = 0) {
-            auto tex = text(str, static_cast<int>(style.font_size * outputScale), std::clamp(static_cast<int>(box.w), 1, 1000),
+        auto label = [&](const std::string &str, const CBox &box, float opacity = 1.f, uint32_t labelColor = 0, double fontScale = 1.) {
+            auto tex = text(str, static_cast<int>(style.font_size * outputScale * fontScale), std::clamp(static_cast<int>(box.w), 1, 1000),
                             labelColor ? labelColor : style.label);
             if (tex)
                 items.push_back(makeUnique<CTexPassElement>(
@@ -443,6 +444,16 @@ class Pass final : public IPassElement {
                           c.occupied ? 1.f : 0.45f);
                 }
             }
+            if (!c.secondary.empty()) {
+                const auto font = std::max(8, int(style.font_size * outputScale * .75));
+                if (auto caption = text(std::string(c.secondary), font, std::clamp(int(box.w - 8), 1, 1000), style.label)) {
+                    const auto h = std::min(box.h * .35, caption->m_size.y + 4);
+                    rect({box.x + 1, box.y + box.h - h - 1, std::min(box.w - 2, caption->m_size.x + 8), h},
+                         color(style.background, .8 * frame.alpha));
+                    label(std::string(c.secondary), {box.x + 5, box.y + box.h - h + 1, std::max(1., box.w - 10), std::max(1., h - 4)}, .5f,
+                          0, .75);
+                }
+            }
         }
         for (auto &l : frame.labels) {
             CBox b{l.rect.x, l.rect.y, l.rect.width, l.rect.height};
@@ -524,17 +535,20 @@ static void applyDrop(const hypr2d::UIDrop &drop) {
         return;
     if (!Doctor::healthy()) {
         (*ui)->overview_refuse(drop.window, now());
-        LOG(Log::ERR, "hypr2d: drop refused on inconsistent layout; run hyprctl hypr2d doctor");
+        LOG(Log::ERR, "hypr2d: drop refused on inconsistent layout; run hyprctl "
+                      "hypr2d doctor");
         damage();
         return;
     }
-    const auto sourceWorkspace = w->m_workspace; // Keep its monitor/space alive through both silent swap moves.
+    const auto sourceWorkspace = w->m_workspace; // Keep its monitor/space alive through both silent swap
+                                                 // moves.
     auto source = key(sourceWorkspace);
     auto other = findWindow(std::string(drop.stack.empty() ? drop.swap : drop.stack));
     if ((!drop.stack.empty() || !drop.swap.empty()) &&
         (!other || other == w || !other->m_workspace || key(other->m_workspace) != std::string(drop.workspace)))
         return;
-    { // Do not retain native groups across detach dispatchers: an empty group must expire.
+    { // Do not retain native groups across detach dispatchers: an empty group
+        // must expire.
         const auto oldGroup = w->grouping().group();
         const auto targetGroup = other ? other->grouping().group() : nullptr;
         const bool groupOperation = oldGroup || !drop.stack.empty() || targetGroup;
@@ -598,6 +612,16 @@ static bool applyingRegion = false;
 static void runUIAction(const std::string &input) {
     if (!ui || !core)
         return;
+    if (input.starts_with("@rename:")) {
+        auto error = core->rename(input.substr(8));
+        if (!error.empty()) {
+            LOG(Log::WARN, "hypr2d rename: {}", std::string(error));
+            (*ui)->overview_refuse("label", now());
+        }
+        build();
+        damage();
+        return;
+    }
     if (input.starts_with("@adopt ") || input.starts_with("@swap-grids ")) {
         MonitorPolicy::command(input.substr(1));
         return;
@@ -889,8 +913,10 @@ void init(hypr2d::Core *c) {
                     const auto &cap = *planned;
                     try {
                         if (!cache[k] || cache[k]->m_size != Vector2D{double(cap.capture_width), double(cap.capture_height)})
-                            LOG(Log::INFO, "hypr2d capture {} framebuffer={}x{} drawn={}x{} physical pixels", k, cap.capture_width,
-                                cap.capture_height, cap.width, cap.height);
+                            LOG(Log::INFO,
+                                "hypr2d capture {} framebuffer={}x{} drawn={}x{} physical "
+                                "pixels",
+                                k, cap.capture_width, cap.capture_height, cap.width, cap.height);
                         double t = now();
                         cache[k] = OverviewProbe::capture(cap, cache[k], profileCaptures);
                         const auto cost = now() - t;
@@ -1008,6 +1034,9 @@ void init(hypr2d::Core *c) {
         if (!kb)
             return;
         auto sym = xkb_state_key_get_one_sym(kb->m_xkbState, event.keycode + 8);
+        const auto unicode = xkb_keysym_to_utf32(sym);
+        if (unicode >= 0x100)
+            sym = 0x01000000 | unicode;
         const bool shift = xkb_state_mod_name_is_active(kb->m_xkbState, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) > 0;
         auto target = (*ui)->overview_key(sym, shift, now());
         damage();
@@ -1112,7 +1141,8 @@ std::string command(const std::string &input) {
     if (input == "overview cursor") {
         auto m = Desktop::focusState()->monitor();
         const auto &image = Pointer::mgr()->currentCursorImage();
-        return std::format("{{\"overview_open\":{},\"should_render\":{},\"texture\":{},\"image_width\":{},\"image_height\":{},\"software_"
+        return std::format("{{\"overview_open\":{},\"should_render\":{},\"texture\":{},\"image_"
+                           "width\":{},\"image_height\":{},\"software_"
                            "locked\":{},\"hardware_visible\":{}}}",
                            active(), g_pHyprRenderer->shouldRenderCursor(), bool(Pointer::mgr()->getCurrentCursorTexture()), image.size.x,
                            image.size.y, m && Pointer::mgr()->softwareLockedFor(m), m && Pointer::mgr()->hasVisibleHWCursor(m));
@@ -1132,7 +1162,8 @@ std::string command(const std::string &input) {
                                                       m ? m->m_scale : 1.0, now());
             auto cell = std::ranges::find_if(frame.cells, [&](const auto &c) { return std::string(c.key) == key; });
             const auto drawn = cell == frame.cells.end() ? Vector2D{} : Vector2D{std::ceil(cell->rect.width), std::ceil(cell->rect.height)};
-            images += std::format("{{\"key\":\"{}\",\"width\":{},\"height\":{},\"drawn_width\":{},\"drawn_height\":{},\"direct\":true}}",
+            images += std::format("{{\"key\":\"{}\",\"width\":{},\"height\":{},\"drawn_width\":{},"
+                                  "\"drawn_height\":{},\"direct\":true}}",
                                   escapeJSONStrings(key), fb->m_size.x, fb->m_size.y, drawn.x, drawn.y);
         }
         images += "]";
@@ -1149,9 +1180,12 @@ std::string command(const std::string &input) {
             bytes += fb->m_size.x * fb->m_size.y * 4. * 4. / 3.;
         for (auto &[id, fb] : backdrops)
             bytes += fb->m_size.x * fb->m_size.y * 4. * 4. / 3.;
-        return std::format("{{\"opening_dispatch_ms\":{},\"first_frame_ms\":{},\"first_frame_capture_ms\":{},\"max_frame_ms\":{},\"opening_"
-                           "max_frame_gap_ms\":{},\"completed_gpu\":{},\"gpu_rgba_bytes\":{},\"gpu_bytes_"
-                           "bound\":{},\"backdrop_captures\":{},\"max_capture_ms\":{},\"max_refresh_ms\":{},\"ui\":{},"
+        return std::format("{{\"opening_dispatch_ms\":{},\"first_frame_ms\":{},\"first_frame_"
+                           "capture_ms\":{},\"max_frame_ms\":{},\"opening_"
+                           "max_frame_gap_ms\":{},\"completed_gpu\":{},\"gpu_rgba_bytes\":{},"
+                           "\"gpu_bytes_"
+                           "bound\":{},\"backdrop_captures\":{},\"max_capture_ms\":{},\"max_"
+                           "refresh_ms\":{},\"ui\":{},"
                            "\"captures\":{},\"capture_ms\":{},\"pending\":{},\"images\":{}}}",
                            openingDispatchMs, firstFrameMs, firstFrameCaptureMs, maxFrameMs, maxFrameGapMs, profileCaptures, payload, bytes,
                            backdropCaptures, maxCaptureMs, maxRefreshMs,

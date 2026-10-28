@@ -160,12 +160,32 @@ impl crate::Core {
     ) -> crate::ffi::Reply {
         crate::guarded(|| {
             let operation = (|| {
-                let args: Vec<_> = input.split_whitespace().collect();
+                let words: Vec<String> = if let Some((operation, rest)) = input
+                    .split_once(' ')
+                    .filter(|(_, r)| r.trim_start().starts_with('['))
+                {
+                    let mut words = vec![operation.to_owned()];
+                    words.extend(
+                        serde_json::from_str::<Vec<String>>(rest).map_err(|e| e.to_string())?,
+                    );
+                    words
+                } else {
+                    input.split_whitespace().map(str::to_owned).collect()
+                };
+                let args: Vec<_> = words.iter().map(String::as_str).collect();
                 let select = |s: &str| {
-                    monitors
+                    if let Some(m) = monitors
                         .iter()
                         .find(|m| m.name == s || m.id.to_string() == s)
-                        .ok_or("unknown monitor")
+                    {
+                        return Ok(m);
+                    }
+                    let mut matches = monitors.iter().filter(|m| self.monitor_label(&m.name) == s);
+                    let first = matches.next().ok_or("unknown monitor")?;
+                    if matches.next().is_some() {
+                        return Err("ambiguous monitor label; use output name");
+                    }
+                    Ok(first)
                 };
                 let backup = self.assignments.clone();
                 let old = self.connected_slots.clone();
