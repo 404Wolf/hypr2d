@@ -68,6 +68,7 @@ static std::set<uint32_t> swallowedKeys;
 static std::set<std::string> emptiedSpecials;
 static bool swallowedButton = false;
 static std::vector<uint64_t> pendingDrops;
+static std::vector<uint64_t> pendingGlobal;
 static double now() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 static void damage() {
     for (auto &m : State::monitorState()->monitors()) {
@@ -336,6 +337,12 @@ class Pass final : public IPassElement {
     Pass(hypr2d::UIFrame f, Vector2D s, double scale, uint32_t id) : frame(std::move(f)), size(s), outputScale(scale), monitorID(id) {}
     std::vector<UP<IPassElement>> draw() override {
         std::vector<UP<IPassElement>> items;
+        for (auto &cell : frame.shelf_cells)
+            frame.cells.push_back(std::move(cell));
+        frame.shelf_cells.clear();
+        for (auto &panel : frame.shelf_backdrops)
+            frame.backdrops.push_back(std::move(panel));
+        frame.shelf_backdrops.clear();
         auto style = core->ui_style();
         auto rect = [&](const CBox &box, CHyprColor color) {
             items.push_back(makeUnique<CRectPassElement>(CRectPassElement::SRectData{
@@ -611,8 +618,38 @@ static void applyDrop(const hypr2d::UIDrop &drop) {
 }
 static bool applyingRegion = false;
 static void runUIAction(const std::string &input) {
-    if (!ui || !core)
+    if (!core || (!ui && !input.starts_with("@translate ")))
         return;
+    auto refuse = [&] {
+        if (ui)
+            (*ui)->overview_refuse("region", now());
+        damage();
+    };
+    if (input.starts_with("@catalog:")) {
+        MonitorPolicy::observeWorkspaces();
+        auto ms = MonitorPolicy::snapshot();
+        auto all = windows(true);
+        std::vector<hypr2d::Window> ws;
+        for (auto &w : all) {
+            uint32_t id = 0;
+            try {
+                id = std::stoul(std::string(w.workspace));
+            } catch (...) {
+            }
+            ws.push_back({id, w.monitor, w.id, w.title, w.title, false});
+        }
+        auto reply = core->command({ms.data(), ms.size()}, {ws.data(), ws.size()}, input.substr(9));
+        if (!reply.error.empty()) {
+            LOG(Log::WARN, "hypr2d catalogue: {}", std::string(reply.error));
+            (*ui)->overview_refuse("grid", now());
+        } else {
+            build();
+            (*ui)->overview_pick_grid(reply.output);
+            IPC::Socket2::sock()->postEvent({"hypr2d", "grids"});
+        }
+        damage();
+        return;
+    }
     if (input.starts_with("@rename:")) {
         auto error = core->rename(input.substr(8));
         if (!error.empty()) {
@@ -628,20 +665,22 @@ static void runUIAction(const std::string &input) {
         return;
     }
     if (!Doctor::healthy() || Desktop::windowState()->groupsLocked()) {
-        (*ui)->overview_refuse("region", now());
-        damage();
+        refuse();
         return;
     }
     const bool undo = input == "@undo";
-    if (!undo && !input.starts_with("@region:"))
+    const bool translate = input.starts_with("@translate ");
+    if (!undo && !translate && !input.starts_with("@region:"))
         return;
     auto all = windows(true);
     auto ms = MonitorPolicy::snapshot();
-    auto batch = undo ? core->region_inverse() : core->region_prepare(input.substr(8), {all.data(), all.size()}, {ms.data(), ms.size()});
+    LOG(Log::INFO, "hypr2d transaction: {} ({} windows)", input, all.size());
+    auto batch = undo        ? core->region_inverse()
+                 : translate ? core->translate_prepare(input.substr(11), {all.data(), all.size()}, {ms.data(), ms.size()})
+                             : core->region_prepare(input.substr(8), {all.data(), all.size()}, {ms.data(), ms.size()});
     if (!batch.error.empty()) {
         LOG(Log::WARN, "hypr2d region: {}", std::string(batch.error));
-        (*ui)->overview_refuse("region", now());
-        damage();
+        refuse();
         return;
     }
     if (batch.script.empty())
@@ -650,8 +689,7 @@ static void runUIAction(const std::string &input) {
     // Preflight all destinations before creating or moving workspace hosts.
     for (const auto &t : batch.targets)
         if (!std::ranges::any_of(State::monitorState()->monitors(), [&](const auto &m) { return m->m_id == t.monitor; })) {
-            (*ui)->overview_refuse("region", now());
-            damage();
+            refuse();
             return;
         }
     for (const auto &t : batch.targets) {
@@ -666,8 +704,7 @@ static void runUIAction(const std::string &input) {
         if (!ws)
             ws = State::Workspace::state()->createNumbered(Workspace::SWorkspaceNumberedID{t.workspace}, output);
         if (ws->m_monitor != output && !Config::Actions::moveToMonitor(ws, output)) {
-            (*ui)->overview_refuse("region", now());
-            damage();
+            refuse();
             return;
         }
         spaces.push_back(ws);
@@ -685,8 +722,7 @@ static void runUIAction(const std::string &input) {
     Hyprutils::Utils::CScopeGuard finish([] { applyingRegion = false; });
     if (auto error = lua->eval(std::string(batch.script))) {
         LOG(Log::ERR, "hypr2d region dispatcher: {}", *error);
-        (*ui)->overview_refuse("region", now());
-        damage();
+        refuse();
         return;
     }
     if (undo)
@@ -998,9 +1034,12 @@ void init(hypr2d::Core *c) {
             movePointer(pointer, 1);
         }
     }));
-    listeners.push_back(e.input.mouse.axis.listen([](IPointer::SAxisEvent, Event::SCallbackInfo &info) {
-        if (ui)
+    listeners.push_back(e.input.mouse.axis.listen([](IPointer::SAxisEvent event, Event::SCallbackInfo &info) {
+        if (ui) {
             info.cancelled = true;
+            (*ui)->overview_scroll(event.delta);
+            damage();
+        }
     }));
     listeners.push_back(e.input.keyboard.key.listen([](IKeyboard::SKeyEvent event, Event::SCallbackInfo &info) {
         if (ui) {
@@ -1081,10 +1120,34 @@ void init(hypr2d::Core *c) {
     listeners.push_back(e.workspace.specialActive.listen([changed](PHLWORKSPACE, PHLMONITOR) { changed(); }));
 }
 void shutdown() {
+    for (auto id : pendingGlobal)
+        g_pEventLoopManager->removeDoLater(id);
+    pendingGlobal.clear();
     listeners.clear();
     if (ui)
         release();
     core = nullptr;
+}
+std::string translate(const std::string &direction) {
+    if (!core)
+        return "error: plugin unavailable";
+    auto ms = MonitorPolicy::snapshot();
+    auto all = windows(true);
+    auto batch = core->translate_prepare(direction, {all.data(), all.size()}, {ms.data(), ms.size()});
+    if (!batch.error.empty())
+        return "error: " + std::string(batch.error);
+    pendingGlobal.push_back(g_pEventLoopManager->doLater([direction] {
+        if (!core || g_pHyprRenderer->m_renderData.currentFB) {
+            LOG(Log::WARN, "hypr2d deferred translation refused during render");
+            return;
+        }
+        try {
+            runUIAction("@translate " + direction);
+        } catch (const std::exception &e) {
+            LOG(Log::ERR, "hypr2d grid translation: {}", e.what());
+        }
+    }));
+    return "ok";
 }
 std::string command(const std::string &input) {
     if (input == "overview undo") {

@@ -105,8 +105,7 @@ impl Overview {
             }
             self.cancelled_release = false;
             if !self.parked.is_empty() && self.live_tab.contains(self.pointer.0, self.pointer.1) {
-                self.expanded = None;
-                self.reflow();
+                self.return_live();
                 return;
             }
             if !self.parked.is_empty() && self.parked_tab.contains(self.pointer.0, self.pointer.1) {
@@ -193,8 +192,7 @@ impl Overview {
                 .is_some_and(|g| self.card_at() == Some(g))
             {
                 if let Some(g) = self.card_at() {
-                    self.expanded = Some(g);
-                    self.reflow();
+                    self.select_card(g);
                 }
                 return ffi::UIDrop::default();
             }
@@ -368,7 +366,7 @@ mod tests {
         let start = frame
             .labels
             .iter()
-            .find(|l| l.text == "source grid")
+            .find(|l| l.band && l.text == "source grid")
             .unwrap()
             .rect
             .x;
@@ -378,7 +376,7 @@ mod tests {
             frame
                 .labels
                 .iter()
-                .find(|l| l.text == "source grid")
+                .find(|l| l.band && l.text == "source grid")
                 .unwrap()
                 .rect
                 .x
@@ -389,7 +387,7 @@ mod tests {
             .overview_frame(1000., 700., 1180.)
             .labels
             .iter()
-            .any(|l| l.text == "source grid" || l.text == "target grid"));
+            .any(|l| l.band && l.band && (l.text == "source grid" || l.text == "target grid")));
     }
     #[test]
     fn region_keyboard_cross_panel_alt_swap_and_escape_cancel() {

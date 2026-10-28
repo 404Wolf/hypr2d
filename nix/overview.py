@@ -262,7 +262,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         screenshot("ui-fit-default")
         def check_composition(ui):
             top=min(l["rect"][1] for l in ui["labels"])
-            bottom=max(c["rect"][1]+c["rect"][3] for c in ui["cells"])
+            bottom=max(r[1]+r[3] for r in [c["rect"] for c in ui["cells"]]+[l["rect"] for l in ui["labels"]])
             assert abs(top-(720-bottom))<2,(top,bottom)
             assert all(not c["label"] for c in ui["cells"] if not c["occupied"] and not c["key"].startswith("special:"))
         check_composition(fitted)
@@ -970,7 +970,7 @@ with (artifacts / "compositor.log").open("w+") as log:
         # Drag the now empty old grid card onto the live header to adopt it back.
         card=ui_state()["ui"]["cards"][0]["rect"]
         panel=ui_state()["ui"]["panels"][0]["rect"]
-        card_header=next(l["rect"] for l in ui_state()["ui"]["labels"] if l["text"].startswith(live["name"]+" ·"))
+        card_header=next(c["header"] for c in ui_state()["ui"]["shelf"]["cards"] if c["slot"]==live["slot"])
         pointer_to((card_header[0]+min(card_header[2],60)/2,card_header[1]+card_header[3]/2));pointer_command("down")
         pointer_to((panel[0]+min(panel[2],60)/2,panel[1]+panel[3]/2));screenshot("ui-card-adoption")
         pointer_command("up")

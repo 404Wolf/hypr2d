@@ -210,7 +210,7 @@ static int extensionReady(int, uint32_t, void *) {
     return 0;
 }
 static std::string execute(const std::string &input) {
-    if (input.starts_with("adopt ") || input.starts_with("swap-grids ")) {
+    if (input.starts_with("adopt ") || input.starts_with("swap-grids ") || input.starts_with("move-grid ")) {
         cancelSwipe();
         return MonitorPolicy::command(input);
     }
@@ -230,6 +230,10 @@ static std::string execute(const std::string &input) {
         if (input == "overview" || input.starts_with("overview ")) {
             cancelSwipe();
             return OverviewUI::command(input);
+        }
+        if (input.starts_with("translate-grid ")) {
+            cancelSwipe();
+            return OverviewUI::translate(input.substr(15));
         }
         auto ms = monitors();
         if (input.starts_with("probe "))
@@ -356,6 +360,8 @@ static int adoptLua(lua_State *L) {
 static int swapGridsLua(lua_State *L) {
     return dispatcher(L, std::string(hypr2d::grid_args("swap-grids", luaL_checkstring(L, 1), luaL_checkstring(L, 2))));
 }
+static int translateGridLua(lua_State *L) { return dispatcher(L, "translate-grid " + std::string(luaL_checkstring(L, 1))); }
+static int moveGridLua(lua_State *L) { return dispatcher(L, "move-grid " + std::string(luaL_checkstring(L, 1))); }
 static int parkedLua(lua_State *L) { return dispatcher(L, "overview parked"); }
 static int overviewLua(lua_State *L) { return dispatcher(L, "overview"); }
 static int carryLua(lua_State *L) { return dispatcher(L, "carry " + std::string(luaL_checkstring(L, 1))); }
@@ -451,6 +457,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
                                                                                      {"grid_delete", gridDeleteLua},
                                                                                      {"adopt", adoptLua},
                                                                                      {"swap_grids", swapGridsLua},
+                                                                                     {"translate_grid", translateGridLua},
+                                                                                     {"move_grid", moveGridLua},
                                                                                      {"move", moveLua},
                                                                                      {"carry", carryLua},
                                                                                      {"overview", overviewLua},

@@ -6,6 +6,7 @@ mod guides;
 mod mapping;
 mod region;
 mod rename;
+mod shelf;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Rect {
@@ -83,6 +84,10 @@ pub struct Overview {
     current_colour: u32,
     grid_names: Vec<String>,
     parked_attached: BTreeSet<usize>,
+    shelf: shelf::State,
+    materialized: BTreeSet<usize>,
+    group_current: Vec<u32>,
+    unit_scale: f64,
     group_slots: Vec<u32>,
     grid_specs: Vec<crate::grid::Grid>,
     refused: String,
@@ -130,6 +135,14 @@ impl Core {
         guarded(|| {
             let mut ui = Overview {
                 focused_panel: outputs.iter().position(|o| o.focused).unwrap_or(0),
+                unit_scale: 1.,
+                materialized: outputs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, o)| !o.parked)
+                    .map(|(i, _)| i)
+                    .collect(),
+                group_current: outputs.iter().map(|o| o.workspace).collect(),
                 current_colour: parse_colour(&self.theme.current),
                 grid_names: outputs.iter().map(|o| self.grid_name(o.slot)).collect(),
                 parked_attached: outputs
@@ -227,28 +240,49 @@ impl Core {
                     },
                     m.name.clone(),
                 ));
-                for y in 0..grid.rows {
-                    for x in 0..grid.columns {
-                        if let Ok(id) = grid.id(Cell { x, y }, m.slot) {
-                            let key = id.to_string();
-                            let occupied = windows.iter().any(|win| win.workspace == key);
-                            if m.focused && m.workspace == id {
-                                ui.selected = ui.cells.len();
-                            }
-                            ui.cells.push(CellView {
-                                key: key.clone(),
-                                monitor: m.id,
-                                rect: Rect::default(),
-                                label: cell_label(windows, &key),
-                                group,
-                                x,
-                                y,
-                                occupied,
-                                shown: m.workspace == id,
-                                visible: true,
-                                annotated: false,
-                            });
+                let coords: Vec<_> = if m.parked {
+                    let mut cells: BTreeSet<(u32, u32)> = (0..grid.rows.min(3))
+                        .flat_map(|y| (0..grid.columns.min(3)).map(move |x| (y, x)))
+                        .collect();
+                    for w in windows {
+                        if let Some(c) = w
+                            .workspace
+                            .parse::<u32>()
+                            .ok()
+                            .and_then(|id| grid.cell(id, m.slot))
+                        {
+                            cells.insert((c.y, c.x));
                         }
+                    }
+                    if let Some(c) = grid.cell(m.workspace, m.slot) {
+                        cells.insert((c.y, c.x));
+                    }
+                    cells.into_iter().collect()
+                } else {
+                    (0..grid.rows)
+                        .flat_map(|y| (0..grid.columns).map(move |x| (y, x)))
+                        .collect()
+                };
+                for (y, x) in coords {
+                    if let Ok(id) = grid.id(Cell { x, y }, m.slot) {
+                        let key = id.to_string();
+                        let occupied = windows.iter().any(|win| win.workspace == key);
+                        if m.focused && m.workspace == id {
+                            ui.selected = ui.cells.len();
+                        }
+                        ui.cells.push(CellView {
+                            key: key.clone(),
+                            monitor: m.id,
+                            rect: Rect::default(),
+                            label: cell_label(windows, &key),
+                            group,
+                            x,
+                            y,
+                            occupied,
+                            shown: m.workspace == id,
+                            visible: true,
+                            annotated: false,
+                        });
                     }
                 }
             }
@@ -310,6 +344,7 @@ impl Core {
                     ui.regions.push((m.id, row, title));
                 }
             }
+            ui.refresh_panel_counts();
             ui.reflow();
             Box::new(ui)
         })
@@ -321,6 +356,7 @@ impl Overview {
     }
     fn scaled_viewport(&self, width: f64, height: f64, scale: f64) -> Self {
         let mut layout = self.clone();
+        layout.unit_scale = scale;
         layout.font_height *= scale;
         layout.gap_pixels *= scale;
         for width in layout.header_widths.values_mut() {
@@ -343,10 +379,13 @@ impl Overview {
         }
     }
     fn header_visible(&self, g: usize) -> bool {
-        g == self.panels.len()
-            || self.parked.contains(&g)
-            || self.expanded.is_none()
-            || self.expanded == Some(g)
+        if g == self.panels.len() {
+            return self.cells.iter().any(|c| c.group == g);
+        }
+        if self.parked.contains(&g) {
+            return self.expanded == Some(g) || self.cards.contains_key(&g);
+        }
+        self.expanded.is_none()
     }
     fn card_at(&self) -> Option<usize> {
         self.cards
@@ -365,6 +404,7 @@ impl Overview {
         }
     }
     fn reflow(&mut self) {
+        self.ensure_expanded_cells();
         let header = self.header_height + self.header_gap;
         self.cards.clear();
         for (g, panel) in self.panels.iter().enumerate() {
@@ -510,84 +550,7 @@ impl Overview {
             .filter(|c| c.group == self.panels.len())
             .count()
             .max(1) as f64;
-        let card_groups: Vec<_> = self
-            .parked
-            .iter()
-            .copied()
-            .filter(|g| Some(*g) != self.expanded)
-            .collect();
-        let card_width = 160.;
-        let reserved = card_groups.len() as f64 * (card_width + 8.);
-        let special_right = (right - reserved).max(left + 100.);
-        let mut x = left;
-        for c in self
-            .cells
-            .iter_mut()
-            .filter(|c| c.group == self.panels.len())
-        {
-            let ratio = self
-                .outputs
-                .iter()
-                .find(|o| o.0 == c.monitor)
-                .map(|o| o.2 / o.1)
-                .unwrap_or(2. / 3.);
-            let w = ((special_right - left - self.gap * (n - 1.)) / n).clamp(1., 150.);
-            c.rect = Rect {
-                x,
-                y: bottom + header + self.header_gap,
-                w,
-                h: w * ratio,
-            };
-            x += w + self.gap;
-        }
-        for (index, g) in card_groups.iter().enumerate() {
-            let occupied: Vec<_> = self
-                .cells
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c.group == *g && c.occupied)
-                .map(|(i, _)| i)
-                .collect();
-            let card = Rect {
-                x: special_right + 8. + index as f64 * (card_width + 8.),
-                y: bottom + 2. * header + self.header_gap,
-                w: card_width,
-                h: 110.,
-            };
-            self.cards.insert(*g, card);
-            let occupied: Vec<_> = if occupied.is_empty() {
-                self.cells
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, c)| c.group == *g && c.x < 3 && c.y < 3)
-                    .map(|(i, _)| i)
-                    .collect()
-            } else {
-                occupied
-            };
-            let nx = (occupied.len() as f64).sqrt().ceil().clamp(1., 4.);
-            let ny = (occupied.len() as f64 / nx).ceil();
-            let ratio = self.outputs[*g].2 / self.outputs[*g].1;
-            let w = ((card.w - 4.) / nx).min(card.h / ny / ratio);
-            for (i, index) in occupied.iter().enumerate() {
-                self.cells[*index].visible = true;
-                self.cells[*index].rect = Rect {
-                    x: card.x + 2. + (i as f64 % nx) * w,
-                    y: card.y + (i as f64 / nx).floor() * w * ratio,
-                    w,
-                    h: w * ratio,
-                };
-            }
-            self.headers[*g] = (
-                Rect {
-                    x: card.x,
-                    y: card.y - header,
-                    w: card.w,
-                    h: self.header_height,
-                },
-                format!("{} · {}", self.panel_names[*g], self.panel_counts[*g]),
-            );
-        }
+        self.layout_shelf(left, right, bottom, n);
         self.live_tab = Rect {
             x: left,
             y: self
@@ -611,6 +574,7 @@ impl Overview {
             .filter(|c| c.visible)
             .map(|c| c.rect.y + c.rect.h)
             .fold(bottom + header, f64::max)
+            .max(self.shelf.area.y + self.shelf.area.h)
             + 28.;
     }
     /// Only visible occupied cells retain textures. Shared cache uses the largest
@@ -623,7 +587,12 @@ impl Overview {
                     self.scaled_viewport(viewport.width, viewport.height, viewport.x.max(1.));
                 layout.hover_motion.clear();
                 let frame = layout.frame(viewport.width, viewport.height, self.started + 1000.);
-                for cell in frame.cells.into_iter().filter(|c| c.occupied) {
+                for cell in frame
+                    .cells
+                    .into_iter()
+                    .chain(frame.shelf_cells)
+                    .filter(|c| c.occupied)
+                {
                     let w = cell.rect.width.ceil().max(1.) as u32;
                     let h = cell.rect.height.ceil().max(1.) as u32;
                     let entry = plans
@@ -692,6 +661,7 @@ impl Overview {
                 dirty.insert(w.workspace.clone());
             }
             self.windows = replacement;
+            self.refresh_panel_counts();
             self.validate_drag();
             for c in &mut self.cells {
                 c.occupied = self.windows.iter().any(|w| w.workspace == c.key);
@@ -713,7 +683,12 @@ impl Overview {
         guarded(|| {
             replacement.fit = self.fit;
             replacement.shift = self.shift;
-            replacement.mapping = self.mapping.clone();
+            replacement.mapping = if self.group_slots.len() == replacement.group_slots.len() {
+                self.mapping.clone()
+            } else {
+                mapping::State::default()
+            };
+            replacement.shelf.offset = self.shelf.offset;
             replacement.rename = self.rename.clone();
             replacement.alt = self.alt;
             replacement.control = self.control;
@@ -816,7 +791,7 @@ impl Overview {
         guarded(|| {
             let f = self.frame(width, height, now);
             let (s, ox, oy) = self.transform(width, height);
-            serde_json::json!({"region_mode":self.region.mode,"region_cells":f.region_rects.iter().map(|r|serde_json::json!({"key":r.key,"kind":r.kind,"rect":[r.rect.x,r.rect.y,r.rect.width,r.rect.height]})).collect::<Vec<_>>(),"guides":f.guides.iter().map(|g|serde_json::json!({"from":g.from_monitor,"to":g.to_monitor,"index":g.index,"vertical":g.vertical,"start":[g.start.x,g.start.y],"end":[g.end.x,g.end.y]})).collect::<Vec<_>>(),"expanded_parked":self.expanded.map(|g|self.panel_names[g].clone()),"cards":self.cards.iter().map(|(g,r)|serde_json::json!({"name":self.panel_names[*g],"rect":[r.x*s+ox,r.y*s+oy,r.w*s,r.h*s]})).collect::<Vec<_>>(),"labels":f.labels.iter().map(|l|serde_json::json!({"text":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>(),"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"ghost_count":f.ghost_count,"drop_mode":f.drop_mode,"refused":f.refused,"last_refused":self.refused,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":f.labels.iter().take(self.headers.iter().enumerate().filter(|(g,_)|self.header_visible(*g)).count()).map(|l|serde_json::json!({"label":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>()}).to_string()
+            serde_json::json!({"region_mode":self.region.mode,"region_cells":f.region_rects.iter().map(|r|serde_json::json!({"key":r.key,"kind":r.kind,"rect":[r.rect.x,r.rect.y,r.rect.width,r.rect.height]})).collect::<Vec<_>>(),"guides":f.guides.iter().map(|g|serde_json::json!({"from":g.from_monitor,"to":g.to_monitor,"index":g.index,"vertical":g.vertical,"start":[g.start.x,g.start.y],"end":[g.end.x,g.end.y]})).collect::<Vec<_>>(),"expanded_parked":self.expanded.map(|g|self.panel_names[g].clone()),"shelf":self.shelf_snapshot(s,ox,oy),"cards":self.cards.iter().filter(|(g,_)|self.parked.contains(g)).map(|(g,r)|serde_json::json!({"name":self.panel_names[*g],"rect":[r.x*s+ox,r.y*s+oy,r.w*s,r.h*s]})).collect::<Vec<_>>(),"labels":f.labels.iter().map(|l|serde_json::json!({"text":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>(),"fit":self.fit,"pointer":[self.pointer.0*s+ox,self.pointer.1*s+oy],"dragging":f.ghost.visible,"ghost_count":f.ghost_count,"drop_mode":f.drop_mode,"refused":f.refused,"last_refused":self.refused,"target":f.target,"windows":f.windows.iter().map(|w|serde_json::json!({"id":w.id,"workspace":w.workspace,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"floating":w.floating,"target":w.target})).collect::<Vec<_>>(),"open":f.alive,"alpha":f.alpha,"cells":f.cells.iter().map(|c|serde_json::json!({"key":c.key,"monitor":c.monitor,"rect":[c.rect.x,c.rect.y,c.rect.width,c.rect.height],"selected":c.selected,"hovered":c.hovered,"occupied":c.occupied,"shown":c.shown,"label":c.label})).collect::<Vec<_>>(),"panels":f.labels.iter().take(self.headers.iter().enumerate().filter(|(g,_)|self.header_visible(*g)).count()).map(|l|serde_json::json!({"label":l.text,"rect":[l.rect.x,l.rect.y,l.rect.width,l.rect.height]})).collect::<Vec<_>>()}).to_string()
         })
     }
     pub fn overview_frame(&self, width: f64, height: f64, now: f64) -> ffi::UIFrame {
@@ -851,11 +826,11 @@ impl Overview {
             };
             let (ghost, windows, target) = self.drag_frame(convert);
             let mut backgrounds = std::collections::BTreeMap::<u32, (Rect, f64, f64)>::new();
-            for c in self
-                .cells
-                .iter()
-                .filter(|c| c.visible && !c.key.starts_with("special:"))
-            {
+            for c in self.cells.iter().filter(|c| {
+                c.visible
+                    && !c.key.starts_with("special:")
+                    && (!self.parked.contains(&c.group) || self.expanded == Some(c.group))
+            }) {
                 let (bounds, _, _) = backgrounds
                     .entry(c.monitor)
                     .or_insert((c.rect, c.rect.w, c.rect.h));
@@ -869,6 +844,8 @@ impl Overview {
             let (mut region_rects, region_ghosts) = self.region_frame(convert);
             region_rects.extend(self.mapping_rects(convert));
             ffi::UIFrame {
+                shelf_cells:self.shelf_frame_cells(convert),
+                shelf_backdrops:self.shelf_frame_backdrops(convert),
                 region_rects,
                 region_ghosts,
                 region_drag: self.region.mode == 3,
@@ -920,7 +897,7 @@ impl Overview {
                     .enumerate()
                     .filter(|(_, c)| c.visible)
                     .map(|(i, c)| ffi::UICell {
-                        secondary: self.secondary.get(&c.key).cloned().unwrap_or_default(),
+                        secondary: if self.parked.contains(&c.group)&&self.expanded!=Some(c.group){String::new()}else{self.secondary.get(&c.key).cloned().unwrap_or_default()},
                         key: c.key.clone(),
                         monitor: c.monitor,
                         rect: {
@@ -942,7 +919,7 @@ impl Overview {
                             r.height *= 1. + 0.02 * lift;
                             r
                         },
-                        label: annotation_text(&c.label, self.annotations.get(&c.key)),
+                        label: if self.parked.contains(&c.group)&&self.expanded!=Some(c.group){String::new()}else{annotation_text(&c.label, self.annotations.get(&c.key))},
                         colour: self
                             .annotations
                             .get(&c.key)
@@ -992,22 +969,12 @@ impl Overview {
                             },
                         ]
                     })
-                    .chain(self.cards.values().next().map(|r| ffi::UILabel {
-                        rect: convert(Rect {
-                            x: r.x,
-                            y: r.y - 2. * (self.header_height + self.header_gap),
-                            w: 160.,
-                            h: self.header_height,
-                        }),
-                        text: "Parked".into(),
-                        colour: 0,
-                        band: false,
-                    }))
+                    .chain(self.shelf_labels(convert))
                     .chain(self.annotation_labels(convert))
                     .chain(self.mapping_labels(convert))
                     .chain(self.rename_labels(width,height))
-                    .chain((self.refused == "label" && now < self.refused_until).then_some(ffi::UILabel {
-                        text:"Label unchanged: configured name or state could not be saved".into(),
+                    .chain((matches!(self.refused.as_str(),"label"|"grid") && now < self.refused_until).then_some(ffi::UILabel {
+                        text:if self.refused=="grid"{"Grid unchanged: in use, configured or invalid"}else{"Label unchanged: configured name or state could not be saved"}.into(),
                         rect:ffi::UIRect{x:width*0.15,y:height*0.45,width:width*0.7,height:self.font_height+8.},colour:0xFFCB6B,band:true,
                     }))
 
@@ -1138,6 +1105,9 @@ impl Overview {
             } else {
                 vec![self.live_tab, self.parked_tab]
             });
+        let bounds = bounds
+            .chain(std::iter::once(self.shelf.area))
+            .chain(self.mapping.chosen().map(|_| self.mapping_footer()));
         let (left, top, right, bottom) = bounds.fold(
             (
                 f64::INFINITY,
@@ -1159,8 +1129,10 @@ impl Overview {
         }
         let w = (right - left).max(1.);
         let h = (bottom - top).max(1.);
-        let vertical_margin = 2. * (self.font_height + 12.).max(36.);
-        let s = ((width - 24.).max(1.) / w).min((height - vertical_margin).max(1.) / h);
+        let vertical_margin =
+            2. * (self.font_height + 12. * self.unit_scale).max(36. * self.unit_scale);
+        let s = ((width - 24. * self.unit_scale).max(1.) / w)
+            .min((height - vertical_margin).max(1.) / h);
         (
             s,
             (width - w * s) / 2. - left * s,
@@ -1229,10 +1201,15 @@ impl Overview {
             if self.drag.is_some() && key != 0xff1b {
                 return String::new();
             }
-            if let Some(action) = self.mapping_key(key, now) {
-                return action;
+            if self.region.mode == 0 {
+                if let Some(action) = self.mapping_key(key, now) {
+                    return action;
+                }
             }
             if let Some(action) = self.region_key(key) {
+                return action;
+            }
+            if let Some(action) = self.shelf_key(key) {
                 return action;
             }
             match key {
@@ -1244,7 +1221,9 @@ impl Overview {
                     if self.drag.take().is_some() {
                         self.pressed = None;
                         self.cancelled_release = true;
-                    } else if self.expanded.take().is_none() {
+                    } else if self.expanded.is_some() {
+                        self.return_live();
+                    } else {
                         self.begin_close(now);
                     }
                 }
@@ -1255,11 +1234,7 @@ impl Overview {
                         .collect();
                     order.push(self.panels.len());
                     order.extend(self.parked.iter().copied());
-                    order.retain(|g| {
-                        self.cells
-                            .iter()
-                            .any(|c| c.group == *g && (c.visible || !self.parked.contains(g)))
-                    });
+                    order.retain(|g| self.cells.iter().any(|c| c.group == *g));
                     let current = self.cells[self.selected].group;
                     let at = order.iter().position(|g| *g == current).unwrap_or(0);
                     let next = if shift || key == 0xfe20 {
@@ -1267,6 +1242,10 @@ impl Overview {
                     } else {
                         (at + 1) % order.len()
                     };
+                    if order[next] < self.panels.len() {
+                        self.reveal_shelf(order[next]);
+                        self.reflow();
+                    }
                     if let Some(i) = self.cells.iter().position(|c| {
                         c.group == order[next] && (c.visible || !self.parked.contains(&c.group))
                     }) {
@@ -1395,6 +1374,8 @@ impl Default for ffi::UIFrame {
             region_drag: false,
             ghost_count: 1,
             backdrops: vec![],
+            shelf_cells: vec![],
+            shelf_backdrops: vec![],
             ghost: ffi::UIGhost::default(),
             windows: vec![],
             target: String::new(),
@@ -1751,13 +1732,13 @@ mod tests {
             title: "kitty".into(),
         };
         let mut ui = core.overview_new(&[live, parked], &[], &[window], 0.);
-        assert_eq!(ui.cards.len(), 1);
+        assert_eq!(ui.cards.len(), 2);
         assert_eq!(
             ui.cells
                 .iter()
                 .filter(|c| c.group == 1 && c.visible)
                 .count(),
-            1
+            9
         );
         ui.overview_key(0xff09, false, 101.);
         assert_eq!(ui.cells[ui.selected].group, 1);
@@ -2108,6 +2089,7 @@ mod tests {
                 .cells
                 .iter()
                 .map(|c| c.rect.y + c.rect.height)
+                .chain(f.labels.iter().map(|l| l.rect.y + l.rect.height))
                 .fold(0., f64::max);
             assert!((top - (720. - bottom)).abs() < 0.001);
             assert!(f

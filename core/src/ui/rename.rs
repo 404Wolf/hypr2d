@@ -7,7 +7,11 @@ impl Overview {
                     self.rename = None;
                 }
                 0xff0d => {
-                    let action = format!("@rename:{}", serde_json::json!([target, value]));
+                    let action = if target == "grid:new" {
+                        format!("@catalog:{}", crate::grid_args("grid create", value, ""))
+                    } else {
+                        format!("@rename:{}", serde_json::json!([target, value]))
+                    };
                     self.rename = None;
                     return Some(action);
                 }
@@ -36,7 +40,17 @@ impl Overview {
             return None;
         }
         let cell = self.hover.unwrap_or(self.selected);
-        if let Some(g) = self.header_at() {
+        if let Some(g) = self
+            .mapping
+            .chosen()
+            .or_else(|| self.shelf_header_at())
+            .or_else(|| self.card_at())
+        {
+            self.rename = Some((
+                format!("grid:{}", self.group_slots[g]),
+                self.grid_names[g].clone(),
+            ));
+        } else if let Some(g) = self.header_at() {
             self.rename = Some((self.panel_targets[g].clone(), self.panel_names[g].clone()));
         } else if let Some(c) = self
             .cells
@@ -57,8 +71,15 @@ impl Overview {
     pub(super) fn rename_labels(&self, width: f64, height: f64) -> Vec<ffi::UILabel> {
         self.rename
             .as_ref()
-            .map(|(_, value)| ffi::UILabel {
-                text: format!("Rename: {value}│   Enter: save · Esc: cancel · Ctrl+A: clear"),
+            .map(|(target, value)| ffi::UILabel {
+                text: format!(
+                    "{}: {value}│   Enter: save · Esc: cancel · Ctrl+A: clear",
+                    if target == "grid:new" {
+                        "New grid"
+                    } else {
+                        "Rename"
+                    }
+                ),
                 rect: ffi::UIRect {
                     x: width * 0.15,
                     y: height * 0.45,

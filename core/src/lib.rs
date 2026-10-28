@@ -297,6 +297,8 @@ mod ffi {
         error: String,
     }
     struct UIFrame {
+        shelf_cells: Vec<UICell>,
+        shelf_backdrops: Vec<UIBackdropPanel>,
         guides: Vec<UIGuide>,
         region_rects: Vec<UIRegionRect>,
         region_ghosts: Vec<UIGhost>,
@@ -363,6 +365,8 @@ mod ffi {
         fn ui_style(self: &Core) -> UIStyle;
         fn backdrop_size(self: &Core, width: f64, height: f64, total_area: f64) -> UIRect;
         fn overview_hover_clock(self: &mut Overview, now: f64);
+        fn overview_scroll(self: &mut Overview, delta: f64);
+        fn overview_pick_grid(self: &mut Overview, response: &str);
         fn overview_modifiers(self: &mut Overview, shift: bool);
         fn overview_input_modifiers(self: &mut Overview, shift: bool, alt: bool, control: bool);
         fn overview_interactive(self: &Overview, now: f64) -> bool;

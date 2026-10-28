@@ -76,7 +76,7 @@
         hl.monitor({ output = "", mode = "1280x720@60", position = "auto", scale = 1 })
         hl.config({ xwayland = { enabled = false } })
         hl.on("hyprland.start", function()
-          hl.exec_cmd("${nested}/bin/hypr2d-nested --doctor-test >/tmp/hypr2d-doctor.log 2>&1 && ${nested}/bin/hypr2d-nested --smoke-test >/tmp/hypr2d-test.log 2>&1 && ${nested}/bin/hypr2d-nested --overview-test >/tmp/hypr2d-overview.log 2>&1; echo $? >/tmp/hypr2d-status")
+          hl.exec_cmd("${nested}/bin/hypr2d-nested --doctor-test >/tmp/hypr2d-doctor.log 2>&1 && ${nested}/bin/hypr2d-nested --smoke-test >/tmp/hypr2d-test.log 2>&1 && ${nested}/bin/hypr2d-nested --overview-test >/tmp/hypr2d-overview.log 2>&1 && ${nested}/bin/hypr2d-nested --catalog-test >/tmp/hypr2d-catalog.log 2>&1; echo $? >/tmp/hypr2d-status")
         end)
       '';
       integration = pkgs.testers.runNixOSTest {
@@ -104,7 +104,7 @@
           try:
               machine.wait_until_succeeds("test -f /tmp/hypr2d-status", timeout=900)
           finally:
-              for name in ["doctor", "test", "overview", "parent"]:
+              for name in ["doctor", "test", "overview", "catalog", "parent"]:
                   print(machine.execute("tail -c 24000 /tmp/hypr2d-" + name + ".log")[1])
               machine.execute("mkdir -p /tmp/hypr2d-diagnostics; cp /tmp/hypr2d-*.log /tmp/hypr2d-diagnostics/")
               machine.copy_from_machine("/tmp/hypr2d-diagnostics")
@@ -127,6 +127,8 @@
           machine.succeed("grep '^0$' /tmp/hypr2d-status")
           machine.copy_from_machine("/tmp/hypr2d-test.log")
           machine.copy_from_machine("/tmp/hypr2d-overview-results")
+          machine.succeed("grep 'PASS catalogue:' /tmp/hypr2d-catalog.log")
+          machine.copy_from_machine("/tmp/hypr2d-catalog-results")
         '';
       };
       catalogIntegration = import ./nix/catalog-vm.nix {inherit pkgs nested compositor;};

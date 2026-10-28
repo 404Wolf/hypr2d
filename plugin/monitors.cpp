@@ -171,7 +171,7 @@ static void reconcile() {
     IPC::Socket2::sock()->postEvent({"hypr2d", "monitors"});
 }
 std::string command(const std::string &input) {
-    if (input.starts_with("adopt ") || input.starts_with("swap-grids ")) {
+    if (input.starts_with("adopt ") || input.starts_with("swap-grids ") || input.starts_with("move-grid ")) {
         if (!Doctor::healthy())
             return "error: layout inconsistent; run hyprctl hypr2d doctor";
         deferred.push_back(g_pEventLoopManager->doLater([input] {
@@ -184,13 +184,25 @@ std::string command(const std::string &input) {
             try {
                 auto ms = snapshot();
                 core->monitor_observe({ms.data(), ms.size()});
-                auto result = core->grid_change({ms.data(), ms.size()}, input);
+                std::string operation = input;
+                std::optional<uint32_t> follow;
+                if (input.starts_with("move-grid ")) {
+                    auto plan = core->grid_host_prepare({ms.data(), ms.size()}, input.substr(10));
+                    if (!plan.error.empty())
+                        throw std::runtime_error(std::string(plan.error));
+                    operation = std::string(plan.command);
+                    follow = plan.focus;
+                }
+                auto result = core->grid_change({ms.data(), ms.size()}, operation);
                 if (!result.error.empty())
                     throw std::runtime_error(std::string(result.error));
                 changed = true;
                 applying = true;
                 Hyprutils::Utils::CScopeGuard done([] { applying = false; });
                 reconcile();
+                if (follow)
+                    if (auto target = monitor(*follow))
+                        (void)Config::Actions::focusMonitor(target);
             } catch (const std::exception &e) {
                 if (changed) {
                     applying = true;
