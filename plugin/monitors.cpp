@@ -1,24 +1,30 @@
 #include "monitors.hpp"
+#include "doctor.hpp"
+#include "ui.hpp"
 #include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/state/WindowState.hpp>
 #include <hyprland/src/desktop/view/window/Window.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/ipc/s2/S2.hpp>
+#include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 #include <hyprland/src/output/Monitor.hpp>
 #include <hyprland/src/state/MonitorState.hpp>
 #include <hyprland/src/state/workspace/State.hpp>
 #include <hyprland/src/workspace/HLWorkspace.hpp>
+#include <hyprutils/utils/ScopeGuard.hpp>
 #include <map>
 #include <optional>
 #include <sstream>
 namespace MonitorPolicy {
 static hypr2d::Core *core;
 static HANDLE handle;
+static bool applying = false;
+static std::vector<uint64_t> deferred;
 static CHyprSignalListener added, removed, before, active;
 static std::optional<hypr2d::UnplugPlan> pending;
 static std::map<std::string, std::array<std::string, 3>> testIdentities;
-static std::vector<hypr2d::Monitor> snapshot() {
+std::vector<hypr2d::Monitor> snapshot() {
     std::vector<hypr2d::Monitor> result;
     for (auto &m : State::monitorState()->monitors())
         if (m->m_enabled && m->m_name != "FALLBACK")
@@ -86,6 +92,8 @@ void init(hypr2d::Core *c, HANDLE h) {
     for (auto &m : State::monitorState()->monitors())
         restore(m);
     active = Event::bus()->m_events.workspace.active.listen([](PHLWORKSPACE) {
+        if (applying)
+            return;
         auto ms = snapshot();
         core->monitor_observe({ms.data(), ms.size()});
     });
@@ -118,7 +126,59 @@ void init(hypr2d::Core *c, HANDLE h) {
         IPC::Socket2::sock()->postEvent({"hypr2d", "monitors"});
     });
 }
+static void reconcile() {
+    const auto focus = Desktop::focusState()->monitor();
+    const auto ms = snapshot();
+    std::vector<std::pair<PHLMONITOR, uint32_t>> targets;
+    for (const auto &m : ms)
+        targets.emplace_back(monitor(m.id), core->restore_workspace(m));
+    for (const auto &m : ms) {
+        auto output = monitor(m.id);
+        std::vector<PHLWORKSPACE> owned;
+        for (auto &w : State::Workspace::state()->workspaces())
+            if (w->numberedID() && core->owns_workspace(m, *w->numberedID()))
+                owned.push_back(w.lock());
+        for (auto &w : owned)
+            if (w->m_monitor != output && !Config::Actions::moveToMonitor(w, output))
+                throw std::runtime_error("native workspace monitor move failed");
+    }
+    for (const auto &[m, id] : targets)
+        if (m && m->m_enabled) {
+            auto w = workspace(id, m);
+            if (!w || w->m_monitor != m)
+                throw std::runtime_error("grid current cell could not be restored");
+            m->changeWorkspace(w, false, true, m != focus);
+        }
+    if (focus && focus->m_enabled)
+        (void)Config::Actions::focusMonitor(focus);
+    OverviewUI::command("overview refresh");
+    IPC::Socket2::sock()->postEvent({"hypr2d", "monitors"});
+}
 std::string command(const std::string &input) {
+    if (input.starts_with("adopt ") || input.starts_with("swap-grids ")) {
+        if (!Doctor::healthy())
+            return "error: layout inconsistent; run hyprctl hypr2d doctor";
+        deferred.push_back(g_pEventLoopManager->doLater([input] {
+            const auto checkpoint = core->grid_checkpoint();
+            try {
+                if (!core || !Doctor::healthy())
+                    return;
+                auto ms = snapshot();
+                core->monitor_observe({ms.data(), ms.size()});
+                auto result = core->grid_change({ms.data(), ms.size()}, input);
+                if (!result.error.empty())
+                    throw std::runtime_error(std::string(result.error));
+                applying = true;
+                Hyprutils::Utils::CScopeGuard done([] { applying = false; });
+                reconcile();
+            } catch (const std::exception &e) {
+                LOG(Log::ERR, "hypr2d grid mapping: {}", e.what());
+                HyprlandAPI::addNotification(handle, std::string("Grid mapping refused: ") + e.what(), CHyprColor(1, .4, .3, 1), 4000);
+            }
+        }));
+        return "ok";
+    }
+
     if (!std::getenv("HYPR2D_TESTING"))
         return "error: test identity injection disabled";
     std::istringstream stream(input);
@@ -131,6 +191,9 @@ std::string command(const std::string &input) {
     return "ok";
 }
 void shutdown() {
+    for (auto id : deferred)
+        g_pEventLoopManager->removeDoLater(id);
+    deferred.clear();
     active.reset();
     added.reset();
     before.reset();

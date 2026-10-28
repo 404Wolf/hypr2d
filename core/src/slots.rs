@@ -122,6 +122,9 @@ impl Slots {
         }
         result
     }
+    pub fn known(&self) -> BTreeSet<u32> {
+        self.entries.iter().map(|e| e.slot).collect()
+    }
     pub fn aliases(&self, slot: u32) -> impl Iterator<Item = &str> {
         self.entries
             .iter()
@@ -216,6 +219,28 @@ impl crate::Core {
                     Err(e) => return Err(e.to_string()),
                 };
                 self.slots = Slots::open(state.join("hypr2d/slots.json"), pins)?;
+                let config_value: serde_json::Value =
+                    std::fs::read(config.join("hypr/hypr2d.json"))
+                        .ok()
+                        .and_then(|b| serde_json::from_slice(&b).ok())
+                        .unwrap_or_default();
+                let keep = match config_value
+                    .get("gridRestore")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("auto")
+                {
+                    "auto" => false,
+                    "keep" => true,
+                    _ => return Err("gridRestore must be auto or keep".into()),
+                };
+                self.assignments =
+                    crate::assignment::Assignment::open(state.join("hypr2d/grids.json"), keep)?;
+                self.remembered_cells = self
+                    .assignments
+                    .cells
+                    .iter()
+                    .map(|(a, b)| (*a, *b))
+                    .collect();
                 Ok::<_, String>(())
             })();
             init.err().unwrap_or_default()
@@ -227,7 +252,7 @@ impl crate::Core {
             let mut live = Vec::new();
             // Retain known live identities before considering serial fallbacks.
             for m in monitors {
-                if let Some(slot) = self.connected_slots.get(&m.name) {
+                if let Some(slot) = self.physical_slots.get(&m.name) {
                     live.push(*slot);
                 }
             }
@@ -246,7 +271,16 @@ impl crate::Core {
                     Err(e) => return e,
                 }
             }
-            self.connected_slots = connected;
+            let physical = connected.iter().map(|(n, s)| (n.clone(), *s)).collect();
+            let old = self.connected_slots.clone();
+            match self
+                .assignments
+                .connect(&physical, &old, &self.slots.known())
+            {
+                Ok(mapping) => self.connected_slots = mapping,
+                Err(e) => return e,
+            }
+            self.physical_slots = connected;
             String::new()
         })
     }
@@ -282,7 +316,21 @@ impl crate::Core {
         windows: &[crate::ffi::UIWindow],
     ) -> Vec<crate::ffi::UIOutput> {
         crate::guarded(|| {
-            let detached = self.slots.detached(&self.connected_slots);
+            let detached: Vec<_> = self
+                .slots
+                .detached(&self.connected_slots)
+                .into_iter()
+                .filter(|(slot, name)| {
+                    self.assignments.known(*slot)
+                        || windows.iter().any(|w| {
+                            w.workspace
+                                .parse()
+                                .ok()
+                                .and_then(|id| self.slot_grid(*slot, name).cell(id, *slot))
+                                .is_some()
+                        })
+                })
+                .collect();
             self.parked_counts = detached
                 .iter()
                 .map(|(slot, name)| {
@@ -312,8 +360,10 @@ impl crate::Core {
                             .ok()
                             .and_then(|id| grid.cell(id, slot))
                             .is_some()
-                    })?;
-                    let backing = outputs.iter().find(|o| o.id == window.monitor)?;
+                    });
+                    let backing = window
+                        .and_then(|w| outputs.iter().find(|o| o.id == w.monitor))
+                        .or_else(|| outputs.first())?;
                     Some(crate::ffi::UIOutput {
                         id: 0x80000000 | slot,
                         slot,
@@ -338,8 +388,13 @@ impl crate::Core {
     pub fn monitor_observe(&mut self, monitors: &[crate::ffi::Monitor]) {
         crate::guarded(|| {
             for m in monitors {
-                if self.owns_workspace(m, m.workspace) {
-                    self.remembered_cells.insert(m.slot, m.workspace);
+                if self.owns_workspace(m, m.workspace)
+                    && self.remembered_cells.insert(m.slot, m.workspace) != Some(m.workspace)
+                {
+                    self.assignments.cells.insert(m.slot, m.workspace);
+                    if let Err(e) = self.assignments.save() {
+                        eprintln!("hypr2d grid current-cell persistence: {e}");
+                    }
                 }
             }
         });

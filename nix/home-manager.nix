@@ -58,6 +58,7 @@ in {
   options.programs.hypr2d = {
     enable = mkEnableOption "hypr2d for Lua Hyprland 0.56";
     package = mkOption { type = types.package; default = flake.packages.${pkgs.stdenv.hostPlatform.system}.plugin; description = "Plugin and CLI built against the compositor flake input."; };
+    gridRestore = mkOption {type = types.enum [ "auto" "keep" ]; default = "auto"; description = "On reconnect prefer the grid remembered for the output (auto) or its last fallback assignment (keep). A live grid is never stolen."; };
     monitorSlots = mkOption {
       type = types.attrsOf (types.ints.between 0 999);
       default = {};
@@ -149,7 +150,7 @@ in {
       plugins = [ cfg.package ];
       extraConfig = lib.mkAfter lua;
     };
-    xdg.configFile."hypr/hypr2d.json".text = builtins.toJSON { version = 1; inherit theme; monitorSlots = cfg.monitorSlots; grid = { inherit (cfg.grid) stride; monitors = cfg.grids; }; gestures = cfg.gestures; pinch = cfg.pinch; };
+    xdg.configFile."hypr/hypr2d.json".text = builtins.toJSON { version = 1; inherit theme; gridRestore = cfg.gridRestore; monitorSlots = cfg.monitorSlots; grid = { inherit (cfg.grid) stride; monitors = cfg.grids; }; gestures = cfg.gestures; pinch = cfg.pinch; };
     programs.waybar = mkIf cfg.waybar.enable {
       enable = lib.mkDefault true;
       settings.${cfg.waybar.bar} = {

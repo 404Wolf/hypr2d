@@ -911,6 +911,15 @@ std::string command(const std::string &input) {
         }
         return "ok";
     }
+
+    if (input == "overview refresh") {
+        textCache.clear();
+        if (ui) {
+            rebuild = true;
+            damage();
+        }
+        return "ok";
+    }
     if (input == "overview invariants" && std::getenv("HYPR2D_TESTING")) {
         auto address = [](PHLWINDOW w) { return std::format("0x{:x}", reinterpret_cast<uintptr_t>(w.get())); };
         std::string result = std::format("{{\"focus\":\"{}\",\"order\":[", address(Desktop::focusState()->window()));

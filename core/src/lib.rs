@@ -1,4 +1,5 @@
 mod animation;
+mod assignment;
 mod doctor;
 mod drop_script;
 mod extension;
@@ -287,6 +288,9 @@ mod ffi {
         fn ui_header_width(self: &mut Core, text: &str, width: f64);
         fn ui_font_height(self: &mut Core, height: f64);
         fn grid_animation(self: &Core, monitor: &Monitor, target: u32) -> String;
+        fn grid_checkpoint(self: &Core) -> String;
+        fn grid_rollback(self: &mut Core, snapshot: &str) -> String;
+        fn grid_change(self: &mut Core, monitors: &[Monitor], input: &str) -> Reply;
         fn slots_init(self: &mut Core) -> String;
         fn slots_update(self: &mut Core, monitors: &[MonitorIdentity]) -> String;
         fn monitor_slot(self: &Core, name: &str) -> u32;
@@ -388,6 +392,8 @@ pub struct Core {
     ui_font_height: Option<f64>,
     ui_header_widths: HashMap<String, f64>,
     slots: slots::Slots,
+    assignments: assignment::Assignment,
+    physical_slots: HashMap<String, u32>,
     connected_slots: HashMap<String, u32>,
     remembered_cells: HashMap<u32, u32>,
     parked_counts: HashMap<u32, usize>,
@@ -412,6 +418,8 @@ impl Default for Core {
             ui_font_height: None,
             ui_header_widths: HashMap::new(),
             slots: slots::Slots::default(),
+            assignments: assignment::Assignment::default(),
+            physical_slots: HashMap::new(),
             connected_slots: HashMap::new(),
             remembered_cells: HashMap::new(),
             parked_counts: HashMap::new(),
@@ -496,12 +504,17 @@ impl Core {
     }
     fn slot_grid(&self, slot: u32, name: &str) -> Grid {
         self.grids
-            .get(name)
-            .or_else(|| self.grids.get(&slot.to_string()))
+            .get(&slot.to_string())
             .or_else(|| {
                 self.slots
                     .aliases(slot)
                     .find_map(|alias| self.grids.get(alias))
+            })
+            .or_else(|| {
+                self.connected_slots
+                    .is_empty()
+                    .then(|| self.grids.get(name))
+                    .flatten()
             })
             .copied()
             .unwrap_or(Grid {
@@ -562,6 +575,18 @@ impl Core {
             });
         }
         let args: Vec<_> = input.split_whitespace().collect();
+        if let ["grid-restore", mode] = args.as_slice() {
+            self.assignments.restore_keep = match *mode {
+                "auto" => false,
+                "keep" => true,
+                _ => return Err("restore must be auto or keep".into()),
+            };
+            return Ok(ffi::Reply {
+                error: String::new(),
+                output: "ok".into(),
+                moves: vec![],
+            });
+        }
         let mut reply = ffi::Reply {
             moves: vec![],
             output: "ok".into(),
@@ -580,13 +605,22 @@ impl Core {
                 .iter()
                 .find(|m| m.name == *name || m.slot.to_string() == *name);
             let id = matched.map_or(0, |m| m.id);
+            let configured_slot = self
+                .physical_slots
+                .get(*name)
+                .copied()
+                .or_else(|| name.parse::<u32>().ok())
+                .or_else(|| matched.map(|m| m.slot));
             let g = Grid {
                 columns: number(columns)?,
                 rows: number(rows)?,
                 wrap: wrap.parse().map_err(|_| "wrap must be true/false")?,
                 stride: number(stride)?,
             }
-            .validate(monitors.iter().find(|m| m.id == id).map_or(0, |m| m.slot))?;
+            .validate(
+                configured_slot
+                    .unwrap_or(monitors.iter().find(|m| m.id == id).map_or(0, |m| m.slot)),
+            )?;
             if monitors.iter().any(|other| other.slot >= g.stride) {
                 return Err("stride must exceed every monitor slot".into());
             }
@@ -603,8 +637,8 @@ impl Core {
             }
             self.stride = g.stride;
             self.grids.insert(
-                matched
-                    .map(|m| m.name.clone())
+                configured_slot
+                    .map(|s| s.to_string())
                     .unwrap_or_else(|| (*name).to_string()),
                 g,
             );

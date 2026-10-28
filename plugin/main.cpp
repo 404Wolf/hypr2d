@@ -206,6 +206,10 @@ static int extensionReady(int, uint32_t, void *) {
     return 0;
 }
 static std::string execute(const std::string &input) {
+    if (input.starts_with("adopt ") || input.starts_with("swap-grids ")) {
+        cancelSwipe();
+        return MonitorPolicy::command(input);
+    }
     if (input.starts_with("monitor-test "))
         return MonitorPolicy::command(input);
     try {
@@ -307,6 +311,15 @@ static int moveLua(lua_State *L) {
     }
     return dispatcher(L, cmd);
 }
+static int adoptLua(lua_State *L) {
+    std::string cmd = "adopt " + std::to_string(luaL_checkinteger(L, 1));
+    if (!lua_isnoneornil(L, 2))
+        cmd += " " + std::string(luaL_checkstring(L, 2));
+    return dispatcher(L, cmd);
+}
+static int swapGridsLua(lua_State *L) {
+    return dispatcher(L, "swap-grids " + std::string(luaL_checkstring(L, 1)) + " " + std::string(luaL_checkstring(L, 2)));
+}
 static int parkedLua(lua_State *L) { return dispatcher(L, "overview parked"); }
 static int overviewLua(lua_State *L) { return dispatcher(L, "overview"); }
 static int carryLua(lua_State *L) { return dispatcher(L, "carry " + std::string(luaL_checkstring(L, 1))); }
@@ -397,7 +410,9 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     MonitorPolicy::init(&**core, handle);
     ExternalAnimation::init(&**core, handle);
     LOG(Log::INFO, "hypr2d M0: C++ -> Rust -> C++: 41 -> {}", hypr2d::spike_round_trip(41));
-    for (const auto &[name, fn] : std::vector<std::pair<std::string, PLUGIN_LUA_FN>>{{"move", moveLua},
+    for (const auto &[name, fn] : std::vector<std::pair<std::string, PLUGIN_LUA_FN>>{{"adopt", adoptLua},
+                                                                                     {"swap_grids", swapGridsLua},
+                                                                                     {"move", moveLua},
                                                                                      {"carry", carryLua},
                                                                                      {"overview", overviewLua},
                                                                                      {"parked", parkedLua},
