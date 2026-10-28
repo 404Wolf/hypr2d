@@ -83,6 +83,20 @@ hl.bind("SUPER + ALT + TAB", hl.plugin.hypr2d.parked())
 end
 ```
 
+Lua dispatcher constructors are `hl.plugin.hypr2d.translate_grid("left")` and
+`hl.plugin.hypr2d.move_grid("left")`. Suggested additions (user-owned):
+
+```lua
+hl.bind("SUPER + CONTROL + SHIFT + H", hl.plugin.hypr2d.translate_grid("left"))
+hl.bind("SUPER + CONTROL + SHIFT + J", hl.plugin.hypr2d.translate_grid("down"))
+hl.bind("SUPER + CONTROL + SHIFT + K", hl.plugin.hypr2d.translate_grid("up"))
+hl.bind("SUPER + CONTROL + SHIFT + L", hl.plugin.hypr2d.translate_grid("right"))
+hl.bind("SUPER + CONTROL + SHIFT + MOD2 + H", hl.plugin.hypr2d.move_grid("left"))
+hl.bind("SUPER + CONTROL + SHIFT + MOD2 + J", hl.plugin.hypr2d.move_grid("down"))
+hl.bind("SUPER + CONTROL + SHIFT + MOD2 + K", hl.plugin.hypr2d.move_grid("up"))
+hl.bind("SUPER + CONTROL + SHIFT + MOD2 + L", hl.plugin.hypr2d.move_grid("right"))
+```
+
 Suggested overview bind (Lua, Hyprland 0.56):
 
 ```lua
@@ -255,6 +269,45 @@ their output labels; renaming a grid gives it an independent name.
 The focused development VM is `nix build .#catalog-integration --builders ''`.
 It tests grouped/floating clients, virtual IDs, adoption, two/three-output swaps,
 Lua CRUD, captures and restart persistence in an isolated compositor.
+
+### Shelf and whole-grid movement
+
+The **Grids** shelf lists live and parked grids, including empty ones. Each card
+shows its miniature, grid name, host display (or parked/disconnected) and window
+count. Drag a card header onto a live panel to bind it there; a live source swaps
+with the destination, while a parked source parks the displaced grid. Panel
+headers still swap directly. Click a parked card to expand it; Esc returns.
+Scroll over the shelf or use PgUp/PgDn to reach more cards. Textures are shared
+with the main panels; only the expanded parked grid materializes all its cells.
+
+`n` creates a grid through a name editor. `r` on a card header renames the grid;
+`r` on a monitor header continues to rename that display. Delete on an empty,
+parked card deletes its metadata, never its clients. For keyboard assignment,
+press `g`, use hjkl/arrows to choose a grid, Tab/Shift+Tab to choose the display,
+and Enter to bind (Esc cancels). `r` and Delete also address the chosen grid.
+
+`hypr2d translate-grid left|down|up|right` translates all contents of the focused
+grid by one cell and follows the same content. Groups and floating positions stay
+intact. Wrapping follows the grid setting; without wrap the operation is refused
+if any occupied cell or the current viewport would leave the grid. It is one
+operation in the overview's Ctrl+Z history. `hypr2d move-grid DIR` instead swaps
+the whole grid with the nearest display in that physical direction and moves
+keyboard focus with it; no neighbour means refusal. Ordinary `swap-grids` keeps
+focus on the original physical display. Mapping requests apply at the next idle
+boundary; refusal produces a compositor notification. Automation should check
+the resulting state.
+
+Home Manager can provision grids and seed bindings without installing these binds:
+
+```nix
+programs.hypr2d.namedGrids.work = { columns = 9; rows = 9; wrap = true; };
+programs.hypr2d.initialBindings = { "eDP-1" = "work"; };
+```
+
+Seeds apply only when an output is first recorded. Saved runtime assignments win
+on restart/replug. Configured names cannot be renamed/deleted at runtime. Native
+workspaces prevent changing a configured grid's dimensions until cleared, avoiding
+silent renumbering. `grids` remains the legacy per-output configuration option.
 
 ## Grid assignments and parked targets
 

@@ -80,3 +80,14 @@ Example reservation and callback:
 and blocking `next_event()`. `request()` preserves events received while waiting
 for its matching reply. Check `Response.ok`; a protocol error is not an IO error.
 Drop `Client` to end the session. Callers own reconnect policy and timeouts.
+
+## Grid catalogue in compositor state
+
+`hyprctl hypr2d state -j` / `hypr2d state` additionally expose `grids`: stable
+`slot`, display `name`, dimensions/wrap, current `workspace`, assigned `monitor`
+and `monitor_label` (null when parked), and window count. Each live monitor's
+`slot` identifies its currently displayed grid and `grid_name` supplies its name.
+These additive fields do not change extension protocol version 1. Cell targets
+still address the grid currently displayed by the specified native monitor ID.
+Catalogue mutations emit socket2 `hypr2d>>grids`; assignments emit the existing
+monitor event. The minimap follows the displayed grid and names it in its tooltip.

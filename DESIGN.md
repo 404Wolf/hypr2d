@@ -46,12 +46,16 @@ Rules:
 
 ## Grid model
 
-- **One grid per monitor.** Default 8×8, wrapping on. Configurable per
-  monitor: columns, rows, wrap.
-- **Numbering must match the user's current scheme** so nothing moves on
-  switchover: `workspace = 10 * (y * 8 + x) + monitor_id + 1`
-  (`max_screens = 10`, `matrix_size = 8`, x/y zero-based, monitor_id is
-  Hyprland's monitor id). Make the formula configurable (stride, columns).
+- **Independent grids, exclusively assigned to monitors.** Default 8×8,
+  wrapping on. Legacy grids retain their per-output configuration and numbering;
+  named grids have their own dimensions, wrap policy and persisted current cell.
+  Each output shows one grid; unassigned grids remain parked.
+- **Legacy numbering stays unchanged** so nothing moves on switchover:
+  `workspace = stride * (y * columns + x) + slot + 1`. Defaults reproduce
+  `10 * (y * 8 + x) + slot + 1`, with zero-based coordinates. The stable
+  legacy grid slot starts from its output slot (eDP-1 is 0), independently of
+  later monitor assignment. New named grids reserve separate workspace blocks;
+  see the catalogue findings below. Stride and columns remain configurable.
 - Moves:
   - `move <dir>`: focused monitor goes to its neighbouring cell.
   - `move <dir> all`: every monitor moves one cell in that direction, each
@@ -104,8 +108,10 @@ workspace list and offsets. See README for tunables and physical hand-tests.
 - Keyboard: hjkl/arrows within a grid, Tab/Shift-Tab across monitors and the
   specials strip, Enter to go, Esc to close. Mouse: click to go.
 - Drag & drop: drag a window thumbnail to any cell of any monitor's grid, into
-  or out of a special workspace, onto another window to swap, or (floating)
-  to a precise spot. Ghost + target highlight, Esc cancels.
+  or out of a special workspace, onto another window to stack, or (floating)
+  to a precise spot. Shift moves the whole stack; Alt swaps. Ghost + target
+  highlight, Esc cancels. Regions and undo use the deferred transaction path
+  described below.
 - Rendering follows hyprexpo's approach (render workspaces to framebuffers on
   open, then compose); include special workspaces, which hyprexpo skips.
   Layout and hit-testing math live in Rust.
@@ -1477,9 +1483,9 @@ Additional reviewed states: [hover](docs/audit/after-hover-2256.png),
 [card adoption](docs/audit/after-card-adoption-1280.png) and
 [parked-to-live ghost](docs/audit/after-parked-ghost-2256.png).
 
-## Fluid grid catalogue (in progress)
+## Fluid grid catalogue
 
-The assignment layer above is the foundation, not the complete catalogue UI.
+The catalogue extends the assignment layer above.
 Physical output identities remain permanent in slots.json; a grid has its own
 immutable ID, name, dimensions, wrap policy and current cell. Legacy grids keep
 their existing workspace numbering. New grids need a separate numeric workspace
@@ -1487,14 +1493,14 @@ namespace so creating a tenth grid cannot collide with the stride-10 legacy
 formula. IDs are never recycled. The catalogue and initial binding policy must
 migrate existing assignments without renumbering any occupied workspace.
 
-The overview shelf will list every grid, including live and empty grids, with
+The paged overview shelf lists every grid, including live and empty grids, with
 its name, current-cell thumbnail and host display label (or parked). Binding a
 parked grid parks the displaced grid; binding a grid already live elsewhere
 swaps the two hosts. Header-to-header swaps retain the current implementation.
-Keyboard actions must reach the same deferred planner. Shelf renaming addresses
+Keyboard actions reach the same deferred planner. Shelf renaming addresses
 the grid; `r` on a monitor header continues to rename the output. Deletion is
 allowed only for an empty, unassigned grid, never by closing its clients; deleted
-IDs remain reserved. Creation/renaming must reject ambiguous duplicate names.
+IDs remain reserved. Creation/renaming reject ambiguous duplicate names.
 
 Whole-grid translation moves all cell contents with one preflighted public-
 dispatcher transaction, preserving groups and intra-cell floating coordinates.
@@ -1505,11 +1511,11 @@ focuses that display, unlike the ordinary swap command which retains physical
 monitor focus. Neighbours come from physical output rectangles, not numeric
 monitor IDs; no neighbour means refusal, not an arbitrary output wrap.
 
-Initial grid-to-monitor bindings seed a new state file; persisted runtime
-assignments take precedence on later restarts. Replug still cannot steal a live
-grid. Lua constructors and CLI commands will cover catalogue management,
+Initial grid-to-monitor bindings seed each previously unseen output; persisted
+runtime assignments take precedence on later restarts. Replug still cannot steal a live
+grid. Lua constructors and CLI commands cover catalogue management,
 translation and directional host changes. Binds remain user-owned; this repo
-will document dispatcher forms without editing the Home Manager checkout.
+documents dispatcher forms without editing the Home Manager checkout.
 
 The pure catalogue/numbering foundation now reserves collision-free 65,536-ID
 blocks for named grids, sufficient for the existing 256×256 core limit. Legacy
@@ -1518,8 +1524,8 @@ progressions (including large custom strides) and existing workspace IDs;
 deleted IDs remain retired. Signed-positive compositor IDs bound allocation,
 and exhaustion returns an error. Rust tests cover round-trips, the signed-ID
 limit, custom-stride collisions, names, atomic persistence and more grids than
-physical outputs. Native catalogue integration is now verified; the shelf and whole-grid movement
-UI remain unfinished.
+physical outputs. Native catalogue integration, shelf CRUD/adoption, whole-grid wrap and single-step
+undo pass the focused VM and complete integration suite.
 
 The focused catalogue VM passed in 37.05s on Hyprland 0.56: a 2256×1504 eDP-1
 at (8934,6682), software cursor, a two-member group and floating window. Named
@@ -1529,3 +1535,62 @@ IDs, group membership/current, workspace accounting and per-grid current cells.
 Lua CRUD, deletion guards, ID retirement and plugin restart persistence pass.
 Rust also covers default-grid deletion/reconnect, metadata rollback on current-
 cell write failure, JSON quoting and loading 9×9 dimensions before restoration.
+
+Shelf miniatures share cached workspace textures with the main panels. Live cards
+add render-only cells; parked cards retain interactive window targets. Only the
+current page is drawn/captured. Empty parked grids start with sparse placeholders;
+expansion materializes their cells using an indexed membership set, not a
+quadratic scan. Captions show host labels and counts, while miniatures suppress
+app labels that would shrink into ellipses. PgUp/PgDn or scrolling pages the shelf;
+`g` chooses a grid with hjkl and a display with Tab. The chooser reserves its help
+line in the layout, and Escape from an expanded card restores live keyboard
+selection. Normal header renaming still addresses the display; shelf renaming
+addresses the grid. Configured grid names are protected.
+
+Content translations scan occupied cells and the current viewport rather than
+creating every empty native workspace. They preserve intact groups and floating
+coordinates, refuse blocked non-wrapping contents/viewports and record one inverse
+transaction. Directional host changes require a physically separated neighbour
+with overlap on the other axis, as panel guides do; an unequal
+monitor above the laptop is not its left neighbour merely because its centre is
+offset. Ordinary swaps preserve physical focus; directional swaps follow the grid.
+
+The VM exposed an important Lua 0.56 distinction: integer monitor selectors refer
+to list positions, not native IDs. Generated drop/region/translation scripts now
+resolve asserted monitor objects by `m.id` before dispatching. The single eDP-1
+fixture has a non-zero native ID after deleting the initial Wayland output, so
+these tests cover the actual mismatch. All window selectors retain their
+`address:` prefix and assertions. Native moves remain deferred public actions;
+no layout targets are exchanged directly.
+
+
+### Fluid shelf visual verification
+
+- [x] Names align with the painted miniatures, with the same text height and
+  scaled 8px gap as panel headers; the card slot padding no longer offsets them.
+  [Before](docs/grids/before-shelf-headers-2256.png) ·
+  [after](docs/grids/chooser-2256.png).
+- [x] Paged live/parked cards show grid names, host labels and window counts;
+  coloured synthetic clients demonstrate the shared thumbnail cache.
+  [Shelf](docs/grids/shelf-2256.png) · [adopted](docs/grids/adopted-2256.png).
+- [x] The keyboard chooser distinguishes the source grid and target display,
+  reserves its help line and handles real Shift+Tab keysyms. Escape returns
+  from expansion to live keyboard selection; region selection cannot
+  accidentally start a grid chooser.
+- [x] The full 9×9 grid, five specials and shelf fit at 2256×1504; unequal
+  three-output panels and expanded parked views retain aspect/alignment.
+  [Full](docs/grids/full-2256.png) · [three outputs](docs/grids/three-2256.png) ·
+  [expanded](docs/grids/expanded-2256.png).
+
+Final validation: `nix flake check --builders '' -L` passed all four x86_64
+checks. The complete VM finished in 548.00s, including the catalogue suite
+(two/three outputs, all four directional swaps with focus, whole-grid wrap,
+non-wrapping refusal, one-operation undo, shelf pointer/keyboard CRUD/adoption,
+configured seeds, restart persistence and native doctor/group/client invariants).
+Rust passes 78 core tests, 18 CLI tests, one reconnect test and two client tests;
+formatting and Clippy with warnings denied pass. The real Waybar remains 17px
+high with or without the minimap, and every measured minimap path stays below
+50ms. The full-grid visual fixture still captures only eight occupied cells/
+specials plus one backdrop, with zero thumbnail work on the first frame.
+Software-VM whole-frame timing still exceeds 30ms; hardware pacing remains
+user-owned. All VM processes exited; no live-session or Home Manager edits.

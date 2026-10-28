@@ -106,10 +106,10 @@ changed; flag anything that blocks you at the bottom under "Questions".
 
 ## Multiple grids, fluidly assigned to monitors
 - [x] Grids are first-class and independent of monitors: any number of named grids (persisted), each shown on at most one monitor at a time; monitors pick which grid they show, unassigned grids stay parked. Swapping which monitor shows which grid is instant and keeps every grid's windows and current cell
-- [ ] Overview UI for grids: a grid shelf/strip listing every grid (live mini-thumbnails, labels, which monitor shows it); drag a grid onto a monitor panel to bind it there (the displaced grid swaps back or parks), drag between monitor panels to swap, create/rename/delete grids; keyboard equivalents. VM screenshots
-- [ ] SUPER+CONTROL+SHIFT+H/J/K/L: move the entire current grid one step left/down/up/right, i.e. translate all of its workspaces/windows one cell in that direction (wrapping per grid wrap setting), keeping the view on the same content
+- [x] Overview UI for grids: a grid shelf/strip listing every grid (live mini-thumbnails, labels, which monitor shows it); drag a grid onto a monitor panel to bind it there (the displaced grid swaps back or parks), drag between monitor panels to swap, create/rename/delete grids; keyboard equivalents. VM screenshots
+- [x] SUPER+CONTROL+SHIFT+H/J/K/L: move the entire current grid one step left/down/up/right, i.e. translate all of its workspaces/windows one cell in that direction (wrapping per grid wrap setting), keeping the view on the same content
   - Interpretation by the orchestrator; if the user meant something else, note it under Questions.
-- [ ] SUPER+CONTROL+SHIFT+MOD2(caps)+H/J/K/L: move the current grid to the monitor left/down/up/right (swapping with that monitor's grid), focus follows the grid
-- [ ] Lua dispatchers + CLI for all of the above, HM module options for initial grid→monitor bindings; deferred public dispatchers only (crash-safe); VM regressions with two and three outputs
+- [x] SUPER+CONTROL+SHIFT+MOD2(caps)+H/J/K/L: move the current grid to the monitor left/down/up/right (swapping with that monitor's grid), focus follows the grid
+- [x] Lua dispatchers + CLI for all of the above, HM module options for initial grid→monitor bindings; deferred public dispatchers only (crash-safe); VM regressions with two and three outputs
 
 ## Questions
