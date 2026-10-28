@@ -1476,3 +1476,46 @@ Additional reviewed states: [hover](docs/audit/after-hover-2256.png),
 [empty parked target](docs/audit/after-empty-parked-target-1280.png),
 [card adoption](docs/audit/after-card-adoption-1280.png) and
 [parked-to-live ghost](docs/audit/after-parked-ghost-2256.png).
+
+## Fluid grid catalogue (in progress)
+
+The assignment layer above is the foundation, not the complete catalogue UI.
+Physical output identities remain permanent in slots.json; a grid has its own
+immutable ID, name, dimensions, wrap policy and current cell. Legacy grids keep
+their existing workspace numbering. New grids need a separate numeric workspace
+namespace so creating a tenth grid cannot collide with the stride-10 legacy
+formula. IDs are never recycled. The catalogue and initial binding policy must
+migrate existing assignments without renumbering any occupied workspace.
+
+The overview shelf will list every grid, including live and empty grids, with
+its name, current-cell thumbnail and host display label (or parked). Binding a
+parked grid parks the displaced grid; binding a grid already live elsewhere
+swaps the two hosts. Header-to-header swaps retain the current implementation.
+Keyboard actions must reach the same deferred planner. Shelf renaming addresses
+the grid; `r` on a monitor header continues to rename the output. Deletion is
+allowed only for an empty, unassigned grid, never by closing its clients; deleted
+IDs remain reserved. Creation/renaming must reject ambiguous duplicate names.
+
+Whole-grid translation moves all cell contents with one preflighted public-
+dispatcher transaction, preserving groups and intra-cell floating coordinates.
+Wrapping is per axis; without wrap, reject a translation that would discard
+occupied cells. The current cell advances with its content, and undo records
+one operation. Moving a grid to a neighbouring display swaps assignments and
+focuses that display, unlike the ordinary swap command which retains physical
+monitor focus. Neighbours come from physical output rectangles, not numeric
+monitor IDs; no neighbour means refusal, not an arbitrary output wrap.
+
+Initial grid-to-monitor bindings seed a new state file; persisted runtime
+assignments take precedence on later restarts. Replug still cannot steal a live
+grid. Lua constructors and CLI commands will cover catalogue management,
+translation and directional host changes. Binds remain user-owned; this repo
+will document dispatcher forms without editing the Home Manager checkout.
+
+The pure catalogue/numbering foundation now reserves collision-free 65,536-ID
+blocks for named grids, sufficient for the existing 256×256 core limit. Legacy
+workspace formulas remain unchanged. Allocation checks legacy arithmetic
+progressions (including large custom strides) and existing workspace IDs;
+deleted IDs remain retired. Signed-positive compositor IDs bound allocation,
+and exhaustion returns an error. Rust tests cover round-trips, the signed-ID
+limit, custom-stride collisions, names, atomic persistence and more grids than
+physical outputs. Native catalogue/shelf integration remains unfinished.

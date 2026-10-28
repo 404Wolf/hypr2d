@@ -1,6 +1,14 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Serialize)]
+/// A named grid encodes a reserved 65536-workspace block, independent of outputs.
+pub const VIRTUAL_GRID: u32 = 1 << 30;
+pub const GRID_BLOCK: u32 = 1 << 16;
+pub fn virtual_base(slot: u32) -> Option<u32> {
+    let block = slot.checked_sub(VIRTUAL_GRID)?;
+    (block > 0 && block <= 32767).then(|| block * GRID_BLOCK)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Grid {
     pub columns: u32,
     pub rows: u32,
@@ -93,7 +101,7 @@ impl Grid {
             || self.columns > 256
             || self.rows > 256
             || self.stride == 0
-            || monitor >= self.stride
+            || (monitor >= self.stride && virtual_base(monitor).is_none())
         {
             return Err(
                 "grid requires dimensions 1..256 and stride greater than every monitor id".into(),
@@ -109,7 +117,20 @@ impl Grid {
         Ok(self)
     }
     pub fn id(self, c: Cell, monitor: u32) -> Result<u32, String> {
-        if c.x >= self.columns || c.y >= self.rows || monitor >= self.stride {
+        if c.x >= self.columns || c.y >= self.rows {
+            return Err("cell outside grid".into());
+        }
+        if let Some(base) = virtual_base(monitor) {
+            return self
+                .columns
+                .checked_mul(c.y)
+                .and_then(|n| n.checked_add(c.x))
+                .filter(|n| *n < GRID_BLOCK)
+                .and_then(|n| base.checked_add(n))
+                .filter(|n| *n <= i32::MAX as u32)
+                .ok_or_else(|| "named grid workspace overflow".into());
+        }
+        if monitor >= self.stride {
             return Err("cell or monitor outside grid".into());
         }
         self.columns
@@ -121,6 +142,16 @@ impl Grid {
             .ok_or_else(|| "workspace id overflow".into())
     }
     pub fn cell(self, id: u32, monitor: u32) -> Option<Cell> {
+        if let Some(base) = virtual_base(monitor) {
+            let index = id.checked_sub(base)?;
+            return (self.columns > 0
+                && index < self.columns.checked_mul(self.rows)?
+                && index < GRID_BLOCK)
+                .then(|| Cell {
+                    x: index % self.columns,
+                    y: index / self.columns,
+                });
+        }
         if monitor >= self.stride {
             return None;
         }

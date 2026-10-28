@@ -1,5 +1,6 @@
 mod animation;
 mod assignment;
+pub mod catalog;
 mod doctor;
 mod drop_script;
 mod extension;
