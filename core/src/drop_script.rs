@@ -1,5 +1,7 @@
 //! Public Lua operations only. Never exchange targets between layout spaces.
 use crate::{ffi, guarded};
+// Numeric Lua selectors address monitor list positions, not native IDs.
+pub(crate) const MONITOR_LOOKUP:&str="local function monitor_by_id(id) for _,m in ipairs(hl.get_monitors()) do if m.id==id then return m end end error('target display missing') end; ";
 pub(crate) fn quote(value: &str) -> String {
     let mut out = String::from("\"");
     for c in value.chars() {
@@ -26,7 +28,7 @@ pub fn script(drop: &ffi::UIDrop, source: &str, x: f64, y: f64) -> String {
         let w = quote(&format!("address:{}", drop.window));
         let t = quote(&format!("address:{target}"));
         let dest = quote(&drop.workspace);
-        let mut code=format!("local w=assert(hl.get_window({w}),'source window not found'); assert(w.mapped,'source window unmapped'); local function dispatch(d) local result=hl.dispatch(d); assert(result.ok,result.error) end; ");
+        let mut code=MONITOR_LOOKUP.to_owned()+&format!("local w=assert(hl.get_window({w}),'source window not found'); assert(w.mapped,'source window unmapped'); local function dispatch(d) local result=hl.dispatch(d); assert(result.ok,result.error) end; ");
         if !target.is_empty() {
             code.push_str(&format!(
                 "local t=assert(hl.get_window({t}),'target window not found'); assert(t.mapped,'target window unmapped'); "
@@ -34,7 +36,7 @@ pub fn script(drop: &ffi::UIDrop, source: &str, x: f64, y: f64) -> String {
         }
         code.push_str("local saved={}; local focus=hl.get_active_monitor(); for _,m in ipairs(hl.get_monitors()) do saved[#saved+1]={monitor=m,workspace=m.active_workspace,special=m.active_special_workspace} end; local success,failure=pcall(function() ");
         code.push_str(&format!(
-            "dispatch(hl.dsp.focus({{monitor={}}})); ",
+            "dispatch(hl.dsp.focus({{monitor=monitor_by_id({})}})); ",
             drop.monitor
         ));
         code.push_str(
@@ -65,12 +67,15 @@ fn whole_group_script(drop: &ffi::UIDrop, source: &str, x: f64, y: f64) -> Strin
     let w = quote(&format!("address:{}", drop.window));
     let dest = quote(&drop.workspace);
     let src = quote(source);
-    let mut s=format!("local function dispatch(d) local r=hl.dispatch(d); assert(r.ok,r.error) end; local w=assert(hl.get_window({w}),'source missing'); assert(w.mapped,'source unmapped'); ");
+    let mut s=MONITOR_LOOKUP.to_owned()+&format!("local function dispatch(d) local r=hl.dispatch(d); assert(r.ok,r.error) end; local w=assert(hl.get_window({w}),'source missing'); assert(w.mapped,'source unmapped'); ");
     if !drop.swap.is_empty() {
         s+=&format!("local t=assert(hl.get_window({}),'target missing'); assert(t.mapped,'target unmapped'); ",quote(&format!("address:{}",drop.swap)));
     }
     s+="local saved={};local focused=hl.get_active_monitor(); for _,m in ipairs(hl.get_monitors()) do saved[#saved+1]={monitor=m,workspace=m.active_workspace,special=m.active_special_workspace} end; local success,failure=pcall(function() dispatch(hl.dsp.group.lock({action='set'})); ";
-    s += &format!("dispatch(hl.dsp.focus({{monitor={}}})); ", drop.monitor);
+    s += &format!(
+        "dispatch(hl.dsp.focus({{monitor=monitor_by_id({})}})); ",
+        drop.monitor
+    );
     if !drop.swap.is_empty() && source == drop.workspace {
         s += "dispatch(hl.dsp.window.swap({window=w,target=t})); ";
     } else {
@@ -104,6 +109,8 @@ mod tests {
         assert!(s.contains("group.lock({action='set'})"));
         assert!(s.contains("group.lock({action='unset'})"));
         assert_eq!(s.matches("window.move({window=w,workspace=").count(), 1);
+        assert!(s.contains("monitor_by_id(0)"));
+        assert!(s.contains("m.id==id"));
         d.swap = "0xb".into();
         let s = script(&d, "11", 0., 0.);
         assert!(s.contains("assert(hl.get_window(\"address:0xb\")"));
