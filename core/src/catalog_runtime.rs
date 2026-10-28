@@ -343,15 +343,22 @@ impl Core {
                     .iter()
                     .filter(|m| m.id != from.id)
                     .filter_map(|m| {
-                        let &(x, y) = self.origins.get(&m.id)?;
-                        let vx = x + m.width / 2. - cx;
-                        let vy = y + m.height / 2. - cy;
-                        let along = vx * dx as f64 + vy * dy as f64;
-                        if along <= 0. {
+                        let &(tx, ty) = self.origins.get(&m.id)?;
+                        let vx = tx + m.width / 2. - cx;
+                        let vy = ty + m.height / 2. - cy;
+                        let overlap_x = (x + from.width).min(tx + m.width) - x.max(tx);
+                        let overlap_y = (y + from.height).min(ty + m.height) - y.max(ty);
+                        let (gap, overlap, across) = match (dx, dy) {
+                            (-1, 0) => (x - tx - m.width, overlap_y, vy.abs()),
+                            (1, 0) => (tx - x - from.width, overlap_y, vy.abs()),
+                            (0, -1) => (y - ty - m.height, overlap_x, vx.abs()),
+                            (0, 1) => (ty - y - from.height, overlap_x, vx.abs()),
+                            _ => return None,
+                        };
+                        if gap < -1. || overlap <= 0. {
                             return None;
                         }
-                        let across = if dx != 0 { vy.abs() } else { vx.abs() };
-                        Some((m, along + across * 2.))
+                        Some((m, gap.max(0.) + across * 0.2))
                     })
                     .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.id.cmp(&b.0.id)))
                     .map(|(m, _)| m)
@@ -683,7 +690,8 @@ mod fluid_tests {
         let mut c = Core::default();
         let (a, ia) = monitor(0, 8934., 6682.);
         let (b, ib) = monitor(1, 11190., 6682.);
-        let (d, id) = monitor(2, 8934., 5178.);
+        let (mut d, id) = monitor(2, 8934., 5178.);
+        d.width = 1600.;
         assert!(c.slots_update(&[ia, ib, id]).is_empty());
         let ms = [a, b, d];
         assert_eq!(c.grid_host_prepare(&ms, "right").focus, 1);

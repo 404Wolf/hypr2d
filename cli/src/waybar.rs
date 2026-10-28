@@ -619,6 +619,15 @@ mod tests {
         serde_json::from_str(r#"{"version":1,"monitors":[{"id":0,"name":"DP<&","focused":true,"workspace":1,"grid":{"columns":2,"rows":1,"wrap":true},"cell":{"x":0,"y":0},"cells":[{"x":0,"y":0,"workspace":1,"windows":[]},{"x":1,"y":0,"workspace":11,"windows":[{"title":"<b>unsafe & title</b>","app_id":"app<","urgent":true}]}]}]}"#).unwrap()
     }
     #[test]
+    fn tooltip_names_the_assigned_grid_without_changing_minimap_size() {
+        let mut snapshot = fixture();
+        let before = render(&snapshot, None, 4, 1, &Colors::default());
+        snapshot.monitors[0].grid_name = "work <&>".into();
+        let after = render(&snapshot, None, 4, 1, &Colors::default());
+        assert_eq!(before.text, after.text);
+        assert!(after.tooltip.contains("Grid: work &lt;&amp;&gt;"));
+    }
+    #[test]
     fn completed_drop_uses_known_moves_without_a_second_ipc_query() {
         let mut calls = 0;
         let mut out = Vec::new();
