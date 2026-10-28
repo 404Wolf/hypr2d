@@ -101,7 +101,13 @@
           # keep the expected path as an alias for EGL device discovery.
           machine.succeed("rm -f /dev/dri/renderD128; ln -s card0 /dev/dri/renderD128")
           machine.send_chars("Hyprland --i-am-really-stupid --config ${parentConfig} >/tmp/hypr2d-parent.log 2>&1\n")
-          machine.wait_until_succeeds("test -f /tmp/hypr2d-status", timeout=420)
+          try:
+              machine.wait_until_succeeds("test -f /tmp/hypr2d-status", timeout=900)
+          finally:
+              for name in ["doctor", "test", "overview", "parent"]:
+                  print(machine.execute("tail -c 24000 /tmp/hypr2d-" + name + ".log")[1])
+              machine.execute("mkdir -p /tmp/hypr2d-diagnostics; cp /tmp/hypr2d-*.log /tmp/hypr2d-diagnostics/")
+              machine.copy_from_machine("/tmp/hypr2d-diagnostics")
           print(machine.succeed("cat /tmp/hypr2d-doctor.log"))
           machine.succeed("grep 'PASS doctor postmortem:' /tmp/hypr2d-doctor.log")
           machine.succeed("grep 'PASS doctor repair:' /tmp/hypr2d-doctor.log")

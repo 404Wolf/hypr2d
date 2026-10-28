@@ -49,7 +49,8 @@ for unsafe in [True, False]:
             def mapped(): return json.loads(ctl('-j','clients'))
             def diagnosis(): return json.loads(ctl('hypr2d','doctor'))
             def outputs(): return json.loads(ctl('-j','monitors'))
-            wait(lambda:any(m['name']!='FALLBACK' for m in outputs()),'doctor output')
+            # Each child owns a reliable headless output, even if the parent
+            # retires the Wayland bootstrap after the deliberate crash.
             ok('output','create','headless','eDP-1')
             wait(lambda:any(m['name']=='eDP-1' for m in outputs()),'eDP headless')
             ok('eval','hl.monitor({output="eDP-1",mode="2256x1504@60",position="8934x6682",scale=1}); hl.config({animations={enabled=false},input={follow_mouse=0},cursor={no_hardware_cursors=1},group={focus_removed_window=false}})')
